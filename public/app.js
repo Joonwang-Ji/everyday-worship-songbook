@@ -1233,13 +1233,111 @@
       <h1>${esc(s.title)}</h1>
       <div class="song-meta" style="margin-bottom:10px">${s.date ? `<span class="keybadge">${esc(fmtDate(s.date))}</span>` : ''}<span>${s.items.length}곡</span></div>
       ${s.memo ? `<div class="memo" style="margin-bottom:12px">${esc(s.memo)}</div>` : ''}
-      ${rows.length ? `<div class="row" style="margin-bottom:12px"><a class="btn primary big" href="#/play/${id}">▶ 연주 모드</a><button class="btn" id="offline" type="button">⬇ 오프라인 준비</button></div>` : ''}
+      ${rows.length ? `<div class="row" style="margin-bottom:8px"><a class="btn primary big" href="#/play/${id}">▶ 연주 모드</a><button class="btn" id="offline" type="button">⬇ 오프라인 준비</button></div>` : ''}
+      ${rows.length ? `<div class="exp-row"><button class="btn" id="x-text" type="button">💬 카톡용 텍스트 복사</button><button class="btn" id="x-pdf" type="button">📄 PDF 만들기</button><button class="btn" id="x-png" type="button">🖼 표지 이미지</button></div>` : ''}
       ${rows.length ? `<ul class="songs">${rows.join('')}</ul>` : '<p class="muted">아직 곡이 없습니다.</p>'}
       <p class="muted small">곡을 누르면 이 콘티의 키로 악보가 열립니다. 연주 모드에서는 좌우로 밀어 다음 곡으로 넘어가요.</p>`;
     const $off = document.getElementById('offline');
     if ($off) $off.onclick = async () => {
       $off.disabled = true;
       try { await prepareOffline(s.items); } finally { $off.disabled = false; }
+    };
+
+    // ----- 내보내기 (6차) -----
+    const baseName = [s.date, (s.title || '콘티').trim()].filter(Boolean).join(' ').replace(/[\\/:*?"<>|]/g, '').slice(0, 60) || '콘티';
+    const $xt = document.getElementById('x-text');
+    if ($xt) $xt.onclick = async () => {
+      const text = SongForm.kakaoText(s);
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('복사했습니다. 카카오톡에 붙여넣기 하세요.');
+      } catch {
+        // 복사가 막힌 환경: 글자를 보여 주고 직접 복사하게 한다
+        const sh = showSheet(`<h2 style="margin-top:0">카톡용 텍스트</h2><textarea id="xta" rows="12" readonly style="font-size:16px">${esc(text)}</textarea><p class="hint">글자를 길게 눌러 전체 선택 후 복사해 주세요.</p><button class="btn primary" id="xclose" type="button" style="width:100%">닫기</button>`);
+        sh.q('#xclose').onclick = () => sh.close();
+        const ta = sh.q('#xta');
+        ta.focus();
+        ta.select();
+      }
+    };
+    const guarded = async (btn, label, fn) => {
+      const orig = btn.textContent;
+      btn.disabled = true;
+      try {
+        await loadExporter();
+        await fn((t) => { btn.textContent = t; });
+      } catch (e) {
+        toast(e.message || `${label}을 만들지 못했습니다.`);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    };
+    const $xp = document.getElementById('x-png');
+    if ($xp) $xp.onclick = () => guarded($xp, '이미지', async () => {
+      showFileResult(await Exporter.coverPng(s), baseName + '.png', 'png');
+    });
+    const $xd = document.getElementById('x-pdf');
+    if ($xd) $xd.onclick = () => guarded($xd, 'PDF', async (setLabel) => {
+      const r = await Exporter.buildPdf(s, {
+        getSong: async (sid) => (await api('/songs/' + sid)).song,
+        getBytes: async (url) => {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error('file');
+          return res.arrayBuffer();
+        },
+        onProgress: (d, t, label) => setLabel(`만드는 중… ${Math.min(d + 1, t)}/${t} ${label}`),
+      });
+      showFileResult(r.blob, baseName + '.pdf', 'pdf', r.warnings);
+    });
+  }
+
+  // 내보내기 도구는 필요할 때만 불러온다 (PDF 도구 + export.js)
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = res;
+      s.onerror = () => rej(new Error('내보내기 도구를 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.'));
+      document.head.appendChild(s);
+    });
+  }
+  async function loadExporter() {
+    if (!window.PDFLib) await loadScript('vendor/pdf-lib.min.js');
+    if (!window.Exporter) await loadScript('export.js');
+  }
+  // 만든 파일을 바로 공유·저장할 수 있게 창을 띄운다. (오래 걸린 작업 뒤에는 브라우저가 공유를 막을 수 있어서, 새로 한 번 더 누르게 한다)
+  function showFileResult(blob, name, kind, warnings) {
+    const url = URL.createObjectURL(blob);
+    let canShare = false;
+    let file = null;
+    try {
+      file = new File([blob], name, { type: blob.type });
+      canShare = !!(navigator.canShare && navigator.canShare({ files: [file] }));
+    } catch {}
+    const kb = blob.size / 1024;
+    const size = kb > 1024 ? (kb / 1024).toFixed(1) + 'MB' : Math.round(kb) + 'KB';
+    const warn = warnings && warnings.length ? `<div class="memo" style="margin:8px 0">${warnings.map((w) => `<div>⚠ ${esc(w)}</div>`).join('')}</div>` : '';
+    const sh = showSheet(
+      `<h2 style="margin-top:0">${kind === 'pdf' ? 'PDF' : '표지 이미지'}가 준비됐어요</h2>
+       ${kind === 'png' ? `<div class="exp-result"><img src="${url}" alt="콘티 표지 미리보기"></div>` : ''}
+       <p class="muted small">${esc(name)} · ${size}</p>${warn}
+       <div class="row">
+         ${canShare ? '<button class="btn primary big" id="xshare" type="button">공유하기</button>' : ''}
+         <a class="btn ${canShare ? '' : 'primary big'}" href="${url}" download="${esc(name)}">저장</a>
+         <a class="btn" href="${url}" target="_blank" rel="noopener">열어 보기</a>
+       </div>
+       <button class="btn" id="xclose" type="button" style="width:100%;margin-top:8px">닫기</button>`,
+      () => setTimeout(() => URL.revokeObjectURL(url), 120000)
+    );
+    sh.q('#xclose').onclick = () => sh.close();
+    const $s = sh.q('#xshare');
+    if ($s) $s.onclick = async () => {
+      try {
+        await navigator.share({ files: [file], title: name });
+      } catch (e) {
+        if (e && e.name !== 'AbortError') toast('공유하지 못했습니다. "저장"을 눌러 주세요.');
+      }
     };
   }
 
@@ -1633,6 +1731,9 @@
         }
       : { date: nextSunday(), title: '', memo: '', items: [] };
     document.title = (id ? '콘티 편집' : '새 콘티') + ' · Everyday Worship Songbook';
+    // 송폼 탭 입력(6차): formSel = 카드별로 선택된 구간 번호, lastForms = 곡별 "지난번 송폼"
+    let formSel = {};
+    const lastForms = {};
 
     $app.innerHTML = `
       <div class="row between"><a href="${id ? '#/setlist/' + id : '#/setlists'}" class="small">← ${id ? '콘티 보기' : '콘티 목록'}</a><h2 style="margin:0">${id ? '콘티 편집' : '새 콘티'}</h2></div>
@@ -1688,13 +1789,117 @@
               <div class="song-title"><span class="num">${i + 1}</span>${esc(s.title)}</div>
               <span class="row" style="gap:4px"><button class="btn small" data-a="up" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="위로">↑</button><button class="btn small" data-a="down" data-i="${i}" ${i === data.items.length - 1 ? 'disabled' : ''} aria-label="아래로">↓</button><button class="btn small danger" data-a="rm" data-i="${i}" aria-label="빼기">빼기</button></span>
             </div>
-            <div class="grid2">${keyUI}${viewUI}
-              <div><label>송폼</label><input type="text" data-f="form" data-i="${i}" maxlength="200" placeholder="예: V1-C-V2-C-B-C" value="${esc(it.form)}"></div>
-              <div><label>메모</label><input type="text" data-f="memo" data-i="${i}" maxlength="500" placeholder="예: 천천히 시작" value="${esc(it.memo)}"></div>
-            </div>
+            <div class="grid2">${keyUI}${viewUI}</div>
+            <div class="formed" data-i="${i}">${formInner(i)}</div>
+            <label>메모</label><input type="text" data-f="memo" data-i="${i}" maxlength="500" placeholder="예: 천천히 시작" value="${esc(it.memo)}">
           </div>`;
         })
         .join('');
+    }
+
+    // ----- 송폼: 글자를 쓰지 않고 버튼을 눌러 순서대로 쌓는다 -----
+    // 구간 버튼을 누르면 맨 뒤(또는 선택한 구간 바로 뒤)에 들어가고, 쌓인 구간을 누르면 앞뒤 이동·복제·반복(×2)·삭제를 할 수 있다.
+    function formInner(i) {
+      const it = data.items[i];
+      const toks = SongForm.parse(it.form);
+      const sel = formSel[i];
+      const seq = toks.length
+        ? toks.map((t, k) => `<button type="button" class="fchip ${k === sel ? 'sel' : ''}" data-fa="sel" data-i="${i}" data-k="${k}">${esc(t)}</button>`).join('<span class="farrow" aria-hidden="true">›</span>')
+        : '<span class="muted small">아래 버튼을 눌러 순서대로 쌓아 보세요</span>';
+      const hasSel = sel !== undefined && toks[sel] !== undefined;
+      const tools = hasSel
+        ? `<div class="ftools on"><span class="small"><b>${esc(toks[sel])}</b> 선택됨 · 아래 버튼은 이 뒤에 들어가요</span>
+             <button type="button" class="btn small" data-fa="left" data-i="${i}" ${sel === 0 ? 'disabled' : ''} aria-label="앞으로">◀</button>
+             <button type="button" class="btn small" data-fa="right" data-i="${i}" ${sel === toks.length - 1 ? 'disabled' : ''} aria-label="뒤로">▶</button>
+             <button type="button" class="btn small" data-fa="dup" data-i="${i}">복제</button>
+             <button type="button" class="btn small" data-fa="rep" data-i="${i}">×반복</button>
+             <button type="button" class="btn small danger" data-fa="del" data-i="${i}">삭제</button></div>`
+        : toks.length || (it._undo && it._undo.length)
+          ? `<div class="ftools"><button type="button" class="btn small" data-fa="undo" data-i="${i}" ${it._undo && it._undo.length ? '' : 'disabled'}>↶ 되돌리기</button>${toks.length ? `<button type="button" class="btn small" data-fa="clear" data-i="${i}">모두 지우기</button>` : ''}</div>`
+          : '';
+      const last = !toks.length && lastForms[it.song_id] ? `<button type="button" class="btn small" data-fa="last" data-i="${i}">↺ 지난번 송폼 불러오기 <span class="muted">${esc(lastForms[it.song_id])}</span></button>` : '';
+      return `<label>송폼</label>
+        <div class="fseq">${seq}</div>${tools}${last}
+        <div class="fpal">${SongForm.PALETTE.map((p) => `<button type="button" class="pchip" data-fa="add" data-i="${i}" data-c="${esc(p.code)}">${esc(p.code)}${p.hint ? `<small>${esc(p.hint)}</small>` : ''}</button>`).join('')}</div>
+        <div class="fcustom"><input type="text" data-fcustom="${i}" maxlength="30" placeholder="그 밖의 구간 (예: 2절반복)" enterkeyhint="done"><button type="button" class="btn small" data-fa="addcustom" data-i="${i}">추가</button></div>`;
+    }
+    function drawForm(i) {
+      const box = el('items').querySelector(`.formed[data-i="${i}"]`);
+      if (!box) return;
+      const old = box.querySelector('[data-fcustom]');
+      const typed = old ? old.value : '';
+      box.innerHTML = formInner(i);
+      const nu = box.querySelector('[data-fcustom]');
+      if (nu && typed) nu.value = typed;
+    }
+    // tokens로 송폼을 바꾼다. 너무 길면 거부. 바꾸기 전 값은 되돌리기용으로 보관.
+    function setForm(i, str) {
+      const it = data.items[i];
+      if (str.length > SongForm.MAX) {
+        toast(`송폼이 너무 길어요. (최대 ${SongForm.MAX}자)`);
+        return false;
+      }
+      it._undo = it._undo || [];
+      it._undo.push(it.form);
+      if (it._undo.length > 30) it._undo.shift();
+      it.form = str;
+      return true;
+    }
+    function formAction(a, i, b) {
+      const it = data.items[i];
+      if (!it) return;
+      const toks = SongForm.parse(it.form);
+      let sel = formSel[i];
+      if (sel !== undefined && toks[sel] === undefined) sel = undefined;
+      if (a === 'sel') {
+        const k = +b.dataset.k;
+        if (sel === k) delete formSel[i];
+        else formSel[i] = k;
+      } else if (a === 'add' || a === 'addcustom') {
+        let add;
+        if (a === 'add') add = [b.dataset.c];
+        else {
+          const inp = el('items').querySelector(`[data-fcustom="${i}"]`);
+          add = SongForm.parse(inp ? inp.value : '');
+          if (!add.length) return;
+          inp.value = '';
+        }
+        const at = sel !== undefined ? sel + 1 : toks.length;
+        toks.splice(at, 0, ...add);
+        if (!setForm(i, SongForm.format(toks))) return;
+        if (sel !== undefined) formSel[i] = at + add.length - 1; // 선택이 새로 넣은 구간으로 따라가서 연달아 누르면 이어 붙는다
+      } else if (a === 'left' || a === 'right') {
+        const j = a === 'left' ? sel - 1 : sel + 1;
+        if (sel === undefined || j < 0 || j >= toks.length) return;
+        [toks[sel], toks[j]] = [toks[j], toks[sel]];
+        if (!setForm(i, SongForm.format(toks))) return;
+        formSel[i] = j;
+      } else if (a === 'dup') {
+        if (sel === undefined) return;
+        toks.splice(sel + 1, 0, toks[sel]);
+        if (!setForm(i, SongForm.format(toks))) return;
+        formSel[i] = sel + 1;
+      } else if (a === 'rep') {
+        if (sel === undefined) return;
+        toks[sel] = SongForm.cycleRepeat(toks[sel]);
+        if (!setForm(i, SongForm.format(toks))) return;
+      } else if (a === 'del') {
+        if (sel === undefined) return;
+        toks.splice(sel, 1);
+        if (!setForm(i, SongForm.format(toks))) return;
+        delete formSel[i];
+      } else if (a === 'undo') {
+        if (!it._undo || !it._undo.length) return;
+        it.form = it._undo.pop();
+        delete formSel[i];
+      } else if (a === 'clear') {
+        if (!setForm(i, '')) return;
+        delete formSel[i];
+      } else if (a === 'last') {
+        if (!lastForms[it.song_id] || !setForm(i, lastForms[it.song_id])) return;
+        delete formSel[i];
+      }
+      drawForm(i);
     }
     // 입력칸은 다시 그리지 않고 값만 저장해서, 타이핑 중에 커서가 튀지 않게 한다.
     const onField = (ev) => {
@@ -1704,6 +1909,8 @@
     el('items').addEventListener('input', onField);
     el('items').addEventListener('change', onField);
     el('items').onclick = (ev) => {
+      const fb = ev.target.closest && ev.target.closest('button[data-fa]');
+      if (fb) return formAction(fb.dataset.fa, +fb.dataset.i, fb);
       const b = ev.target.closest && ev.target.closest('button[data-a]');
       if (!b) return;
       const i = +b.dataset.i;
@@ -1714,8 +1921,24 @@
         if (j < 0 || j >= data.items.length) return;
         [data.items[i], data.items[j]] = [data.items[j], data.items[i]];
       }
+      formSel = {}; // 곡 순서가 바뀌면 카드 번호가 달라지므로 선택 상태를 비운다
       drawItems();
     };
+    // 직접 입력칸에서 Enter 를 누르면 "추가"
+    el('items').addEventListener('keydown', (ev) => {
+      const t = ev.target;
+      if (ev.key === 'Enter' && t.dataset && t.dataset.fcustom !== undefined) {
+        ev.preventDefault();
+        formAction('addcustom', +t.dataset.fcustom, t);
+      }
+    });
+    // 우리 팀이 지난번에 쓴 송폼 (불러오지 못해도 입력에는 지장 없음)
+    api('/team/last-forms' + (id ? '?exclude=' + id : ''))
+      .then((r) => {
+        Object.assign(lastForms, r.forms || {});
+        data.items.forEach((_, i) => drawForm(i));
+      })
+      .catch(() => {});
 
     function drawPickChips() {
       if (!el('pchips')) return;

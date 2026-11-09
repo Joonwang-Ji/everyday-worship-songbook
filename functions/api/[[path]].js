@@ -812,6 +812,23 @@ export async function onRequest({ request, env }) {
         await db.prepare('UPDATE teams SET leader_pin_hash=? WHERE id=?').bind(hash, t.id).run();
         return json({ leaderToken: await leaderToken(env, { ...t, leader_pin_hash: hash }) });
       }
+      // 곡별 "지난번 송폼" (6차): 콘티에 곡을 넣을 때 우리 팀이 가장 최근에 쓴 송폼을 한 번에 불러오기 위한 조회.
+      // ?exclude=<콘티 번호> 로 지금 고치는 콘티는 빼고 찾는다. 송폼이 비어 있던 항목은 건너뛴다.
+      if (parts[1] === 'last-forms' && method === 'GET') {
+        const ex = parseInt(url.searchParams.get('exclude') || '', 10);
+        const { results } = await db
+          .prepare(
+            `SELECT i.song_id AS song_id, i.form AS form
+             FROM setlist_items i JOIN setlists l ON l.id = i.setlist_id
+             WHERE l.team_id=? AND i.form <> '' AND l.id <> ?
+             ORDER BY COALESCE(l.date,'') DESC, l.id DESC, i.position`
+          )
+          .bind(t.id, Number.isInteger(ex) ? ex : -1)
+          .all();
+        const forms = {};
+        for (const r of results) if (!(r.song_id in forms)) forms[r.song_id] = r.form;
+        return json({ forms });
+      }
       // 곡별 "우리 팀 기본 키"
       if (parts[1] === 'keys' && parts[2] && method === 'PUT') {
         requireLeader(ctx);

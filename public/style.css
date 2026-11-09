@@ -261,3 +261,22 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .menu-list { display: flex; flex-direction: column; }
 .menu-row { display: block; width: 100%; text-align: left; padding: 14px 4px; font-size: 17px; background: none; border: 0; border-bottom: 1px solid var(--line); color: var(--text); text-decoration: none; cursor: pointer; }
 .menu-row:last-child { border-bottom: 0; }
+
+/* ---- 6차: 송폼 탭 입력 ---- */
+.formed { margin-top: 4px; }
+.fseq { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; min-height: 52px; padding: 6px 8px; border: 1px dashed var(--line); border-radius: 10px; background: var(--accent-bg); }
+.fchip { min-height: 40px; min-width: 40px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); font-weight: 700; font-size: 15px; cursor: pointer; }
+.fchip.sel { background: var(--brand); color: var(--brand-text); border-color: var(--brand); }
+.farrow { color: var(--muted); font-size: 14px; }
+.ftools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; }
+.ftools.on { padding: 8px; border-radius: 10px; background: var(--accent-bg); }
+.ftools.on > .small { flex-basis: 100%; }
+.fpal { display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); gap: 6px; margin: 10px 0 6px; }
+.pchip { min-height: 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-weight: 700; font-size: 16px; cursor: pointer; line-height: 1.15; padding: 4px 6px; }
+.pchip small { font-weight: 400; font-size: 11px; color: var(--muted); }
+.pchip:active, .fchip:active { transform: scale(.96); }
+.fcustom { display: flex; gap: 6px; align-items: center; margin: 4px 0 8px; }
+.fcustom input { flex: 1; }
+.exp-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.exp-result { text-align: center; }
+.exp-result img { max-width: 100%; max-height: 50vh; border: 1px solid var(--line); border-radius: 8px; }
