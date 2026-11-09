@@ -38,6 +38,25 @@
     return data;
   }
 
+  // 이미지·PDF 한 장 올리기 (사진은 먼저 줄인다)
+  async function uploadFile(songId, file) {
+    const { blob, type } = await Files.prepare(file);
+    const headers = { 'Content-Type': type };
+    const t = ls.get('ews_token', '');
+    if (t) headers.Authorization = 'Bearer ' + t;
+    const a = ls.get('ews_admin', '');
+    if (a) headers['X-Admin-Token'] = a;
+    let res;
+    try {
+      res = await fetch(`/api/songs/${songId}/files`, { method: 'POST', headers, body: blob });
+    } catch {
+      throw new Error('인터넷 연결을 확인해 주세요.');
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || '업로드에 실패했습니다.');
+    return data.file;
+  }
+
   async function loadMe() {
     me = await api('/me');
     if (!me.isAdmin && ls.get('ews_admin', '')) ls.del('ews_admin'); // 만료/무효 토큰 정리
@@ -126,7 +145,7 @@
         .map(
           (s) => `<li class="song-item"><a href="#/song/${s.id}">
             <div class="song-title">${esc(s.title)}</div>
-            <div class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${s.artist ? `<span>${esc(s.artist)}</span>` : ''}${s.tempo ? `<span>♩${s.tempo}</span>` : ''}${(s.tags ? s.tags.split(',') : []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
+            <div class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${s.has_chords ? '<span class="tag">코드</span>' : ''}${s.file_count ? `<span class="tag">${(s.file_kinds || '').includes('image') ? '이미지' : 'PDF'}${s.file_count > 1 ? ' ' + s.file_count : ''}</span>` : ''}${s.artist ? `<span>${esc(s.artist)}</span>` : ''}${s.tempo ? `<span>♩${s.tempo}</span>` : ''}${(s.tags ? s.tags.split(',') : []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
           </a></li>`
         )
         .join('');
@@ -194,6 +213,8 @@
     const origKey = gk.key;
     const hasKey = !!Chord.parseKey(origKey);
     const kobj = Chord.parseKey(origKey);
+    const files = song.files || [];
+    const hasText = /\S/.test(song.chordpro || '');
 
     const prefs = { size: +ls.get('ews_size', '18'), chords: ls.get('ews_chords', '1') === '1', acc: ls.get('ews_acc', 'auto') };
     let saved = {};
@@ -213,6 +234,9 @@
         ${yt ? `<a href="${esc(yt)}" target="_blank" rel="noopener noreferrer">▶ 유튜브</a>` : ''}
         ${(song.tags ? song.tags.split(',') : []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}
       </div>
+      ${hasText && files.length ? '<div class="tabs" id="tabs"><button class="tab" data-tab="chord">코드 악보</button><button class="tab" data-tab="img">이미지 악보</button></div>' : ''}
+      ${!hasText && !files.length ? `<p class="muted">등록된 악보가 아직 없습니다.${me.canEdit ? ' 편집에서 코드 악보를 입력하거나 이미지·PDF를 올려 주세요.' : ''}</p>` : ''}
+      <div id="pane-chord">
       <div class="controls">
         <div class="row">
           <span class="ctl-label">키</span>
@@ -234,6 +258,8 @@
         <div class="capo-note" id="note"></div>
       </div>
       <div class="score" id="score"></div>
+      </div>
+      <div id="pane-img" hidden></div>
       ${song.memo ? `<h2>메모</h2><div class="memo">${esc(song.memo)}</div>` : ''}
       <p class="muted small" style="margin-top:20px">키 변경은 이 기기에만 저장됩니다.</p>`;
 
@@ -275,6 +301,22 @@
     document.getElementById('fdown').onclick = () => { prefs.size = Math.max(12, prefs.size - 2); ls.set('ews_size', prefs.size); draw(); };
     $chtoggle.onclick = () => { prefs.chords = !prefs.chords; ls.set('ews_chords', prefs.chords ? '1' : '0'); draw(); };
     draw();
+
+    // 코드 악보 / 이미지 악보 전환 (둘 다 있을 때만 탭 표시, 선택은 이 기기에 기억)
+    const $pc = document.getElementById('pane-chord');
+    const $pi = document.getElementById('pane-img');
+    $pi.innerHTML = Files.renderPane(files);
+    Files.bindPane($pi, files);
+    function showTab(t) {
+      $pc.hidden = t !== 'chord';
+      $pi.hidden = t !== 'img';
+      document.querySelectorAll('#tabs .tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+      if (hasText && files.length) ls.set('ews_tab_' + id, t);
+    }
+    const $tabs = document.getElementById('tabs');
+    if ($tabs) $tabs.onclick = (ev) => ev.target.dataset.tab && showTab(ev.target.dataset.tab);
+    showTab(hasText && !(files.length && ls.get('ews_tab_' + id, '') === 'img') ? 'chord' : files.length ? 'img' : 'chord');
+    if (!hasText) $pc.hidden = true;
   }
 
   // ---------- 곡 편집 ----------
@@ -326,6 +368,14 @@
 [D/F#]  [Am7]  [Csus4]  [?](불확실한 코드)</pre>
             </details>
           </div>
+          <div class="card">
+            <h2>이미지·PDF 악보</h2>
+            <p class="hint">악보 사진이나 PDF를 그대로 올릴 수 있습니다. 코드 악보와 함께 두거나, 이것만 올려도 됩니다. 사진은 올리기 전에 자동으로 줄여서 저장합니다. 여러 장은 올린 순서대로 보입니다.</p>
+            <div class="file-list" id="files"></div>
+            <p class="hint" id="fnote" hidden>새 곡은 <b>저장</b>할 때 함께 올라갑니다.</p>
+            <input type="file" id="fi" accept="image/*,application/pdf" multiple hidden>
+            <div class="row"><button class="btn" id="addfile" type="button">+ 이미지·PDF 추가</button><span class="muted small" id="fstat"></span></div>
+          </div>
           <p class="error" id="err"></p>
           <div class="row">
             <button class="btn primary" id="save">저장</button>
@@ -351,6 +401,66 @@
     $('key').onchange = preview;
     preview();
 
+    // ----- 이미지·PDF 악보 관리 -----
+    const files = song.files || [];
+    const pending = []; // 새 곡일 때, 저장과 함께 올릴 파일
+    function drawFiles() {
+      $('files').innerHTML =
+        files
+          .map((f) => `<div class="file-item">${f.kind === 'image' ? `<img class="thumb" src="${esc(f.url)}" alt="">` : '<div class="thumb">📄</div>'}<button class="btn small danger" type="button" data-del="${f.id}">삭제</button></div>`)
+          .join('') +
+        pending
+          .map((p, i) => `<div class="file-item"><div class="thumb">⏳</div><div>${esc(p.name.slice(0, 12))}</div><button class="btn small" type="button" data-rm="${i}">빼기</button></div>`)
+          .join('');
+      $('fnote').hidden = !pending.length;
+    }
+    // 여러 장을 차례로 올린다. 문제가 생기면 그 메시지를 돌려준다.
+    async function uploadMany(songId, list) {
+      for (let i = 0; i < list.length; i++) {
+        $('fstat').textContent = `올리는 중… (${i + 1}/${list.length})`;
+        try {
+          files.push(await uploadFile(songId, list[i]));
+          drawFiles();
+        } catch (e) {
+          $('fstat').textContent = '';
+          return e.message;
+        }
+      }
+      $('fstat').textContent = '';
+      return '';
+    }
+    $('addfile').onclick = () => $('fi').click();
+    $('fi').onchange = async () => {
+      const picked = [...$('fi').files];
+      $('fi').value = '';
+      if (!picked.length) return;
+      $('err').textContent = '';
+      if (!id) {
+        pending.push(...picked);
+        drawFiles();
+        return;
+      }
+      const msg = await uploadMany(id, picked);
+      if (msg) $('err').textContent = msg;
+    };
+    $('files').onclick = async (ev) => {
+      const d = ev.target.dataset;
+      if (d.rm !== undefined) {
+        pending.splice(+d.rm, 1);
+        drawFiles();
+      } else if (d.del !== undefined) {
+        if (!confirm('이 악보 파일을 삭제할까요?')) return;
+        try {
+          await api('/files/' + d.del, { method: 'DELETE' });
+          files.splice(files.findIndex((f) => String(f.id) === d.del), 1);
+          drawFiles();
+        } catch (e) {
+          $('err').textContent = e.message;
+        }
+      }
+    };
+    drawFiles();
+
     async function save(force) {
       const err = $('err');
       err.textContent = '';
@@ -362,6 +472,14 @@
       btn.disabled = true;
       try {
         const r = id ? await api('/songs/' + id, { method: 'PUT', body }) : await api('/songs', { method: 'POST', body });
+        if (!id && pending.length) {
+          const msg = await uploadMany(r.id, pending);
+          if (msg) {
+            toast('곡은 저장했지만 파일을 다 올리지 못했습니다: ' + msg);
+            location.hash = '#/edit/' + r.id;
+            return;
+          }
+        }
         toast('저장했습니다.');
         location.hash = '#/song/' + r.id;
       } catch (e) {

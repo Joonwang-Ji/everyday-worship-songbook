@@ -1,6 +1,6 @@
 // Everyday Worship Score — API (Cloudflare Pages Functions)
-// 1차: 교회 접속암호 로그인, 관리자 PIN(편집 권한), 곡 목록/보기/저장/삭제.
-// 필요한 설정: D1 바인딩 이름 DB, 환경변수 CHURCH_CODE (필수), ADMIN_PIN (권장)
+// 접속암호 로그인, 관리자 PIN(편집 권한), 곡 목록/보기/저장/삭제, 악보 파일(이미지·PDF) 업로드.
+// 필요한 설정: D1 바인딩 DB, R2 바인딩 BUCKET(이미지 악보용), 환경변수 CHURCH_CODE (필수), ADMIN_PIN (권장)
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -21,24 +21,59 @@ function hmacKey(env) {
   const secret = env.TOKEN_SECRET || `${env.CHURCH_CODE}|${env.ADMIN_PIN || ''}|ews-v1`;
   return crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
 }
-async function signToken(env, role, days) {
-  const payload = { r: role, exp: Math.floor(Date.now() / 1000) + days * 86400 };
+async function signPayload(env, payload) {
   const body = b64uEncode(enc.encode(JSON.stringify(payload)));
   const sig = await crypto.subtle.sign('HMAC', await hmacKey(env), enc.encode(body));
   return body + '.' + b64uEncode(new Uint8Array(sig));
 }
-async function verifyToken(env, token, role) {
+function signToken(env, role, days) {
+  return signPayload(env, { r: role, exp: Math.floor(Date.now() / 1000) + Math.floor(days * 86400) });
+}
+// 서명이 맞고 만료되지 않았으면 내용(payload)을, 아니면 null
+async function readToken(env, token) {
   try {
-    if (!token) return false;
+    if (!token) return null;
     const [body, sig] = token.split('.');
-    if (!body || !sig) return false;
+    if (!body || !sig) return null;
     const ok = await crypto.subtle.verify('HMAC', await hmacKey(env), b64uDecode(sig), enc.encode(body));
-    if (!ok) return false;
+    if (!ok) return null;
     const payload = JSON.parse(dec.decode(b64uDecode(body)));
-    return payload.r === role && payload.exp > Date.now() / 1000;
+    return payload.exp > Date.now() / 1000 ? payload : null;
   } catch {
-    return false;
+    return null;
   }
+}
+async function verifyToken(env, token, role) {
+  const p = await readToken(env, token);
+  return !!p && p.r === role;
+}
+
+// ---------- 악보 파일(R2) ----------
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_FILES_PER_SONG = 30;
+const FILE_TYPES = { 'image/jpeg': 'image', 'image/png': 'image', 'image/webp': 'image', 'image/gif': 'image', 'application/pdf': 'pdf' };
+function magicOk(type, buf) {
+  const u = new Uint8Array(buf, 0, Math.min(12, buf.byteLength));
+  const at = (i, s) => [...s].every((c, k) => u[i + k] === c.charCodeAt(0));
+  if (type === 'image/jpeg') return u[0] === 0xff && u[1] === 0xd8;
+  if (type === 'image/png') return u[0] === 0x89 && at(1, 'PNG');
+  if (type === 'image/gif') return at(0, 'GIF8');
+  if (type === 'image/webp') return at(0, 'RIFF') && at(8, 'WEBP');
+  if (type === 'application/pdf') return at(0, '%PDF');
+  return false;
+}
+function requireBucket(env) {
+  if (!env.BUCKET) throw new HttpError(500, '이미지 저장소(R2)가 연결되지 않았습니다. 설치 안내의 R2 연결 단계(변수 이름: BUCKET)를 확인해 주세요.');
+}
+// 파일은 <img> 로 바로 불러야 하므로, 한두 시간 유효한 서명 주소를 만들어 준다.
+// (같은 시간대에는 같은 주소가 나와서 브라우저 캐시가 잘 먹는다)
+async function fileUrl(env, fid) {
+  const exp = (Math.floor(Date.now() / 3600000) + 2) * 3600;
+  return `/api/files/${fid}?s=${await signPayload(env, { r: 'file', f: fid, exp })}`;
+}
+async function songFiles(env, songId) {
+  const { results } = await env.DB.prepare('SELECT id,kind FROM song_files WHERE song_id=? ORDER BY id').bind(songId).all();
+  return Promise.all(results.map(async (f) => ({ id: f.id, kind: f.kind, url: await fileUrl(env, f.id) })));
 }
 async function safeEqual(a, b) {
   const [ha, hb] = await Promise.all([
@@ -215,8 +250,38 @@ export async function onRequest({ request, env }) {
       return json({ token: await signToken(env, 'member', 180) });
     }
 
+    // 악보 파일 보기: <img src> 로 불러야 해서 헤더 대신 서명 주소(?s=)로 확인한다
+    if (parts[0] === 'files' && parts[1] && method === 'GET') {
+      const fid = parseInt(parts[1], 10);
+      const p = await readToken(env, url.searchParams.get('s') || '');
+      if (!Number.isInteger(fid) || !p || p.r !== 'file' || p.f !== fid) throw new HttpError(401, '파일 주소가 만료되었습니다. 곡 화면을 새로 고쳐 주세요.');
+      requireBucket(env);
+      const row = await env.DB.prepare('SELECT r2_key FROM song_files WHERE id=?').bind(fid).first();
+      const obj = row && (await env.BUCKET.get(row.r2_key));
+      if (!obj) throw new HttpError(404, '파일을 찾을 수 없습니다.');
+      return new Response(obj.body, {
+        headers: {
+          'Content-Type': (obj.httpMetadata && obj.httpMetadata.contentType) || 'application/octet-stream',
+          'Cache-Control': 'private, max-age=3600',
+          'Content-Disposition': 'inline',
+          'X-Content-Type-Options': 'nosniff',
+          'X-Robots-Tag': 'noindex, nofollow',
+        },
+      });
+    }
+
     // 이하 모두 교회 접속암호 로그인 필요
     if (!(await isMember(env, request))) throw new HttpError(401, '로그인이 필요합니다.');
+
+    if (parts[0] === 'files' && parts[1] && method === 'DELETE') {
+      if (!(await canEdit(env, request))) throw new HttpError(403, '악보를 편집할 권한이 없습니다. 관리자 PIN을 입력해 주세요.');
+      const fid = parseInt(parts[1], 10);
+      const row = Number.isInteger(fid) && (await env.DB.prepare('SELECT r2_key FROM song_files WHERE id=?').bind(fid).first());
+      if (!row) throw new HttpError(404, '파일을 찾을 수 없습니다.');
+      await env.DB.prepare('DELETE FROM song_files WHERE id=?').bind(fid).run();
+      if (env.BUCKET) await env.BUCKET.delete(row.r2_key).catch(() => {});
+      return json({ ok: true });
+    }
 
     if (parts[0] === 'me' && method === 'GET') {
       return json({ canEdit: await canEdit(env, request), adminRequired: !!env.ADMIN_PIN, isAdmin: await isAdmin(env, request) });
@@ -241,12 +306,49 @@ export async function onRequest({ request, env }) {
       if (!id && method === 'GET') {
         const q = (url.searchParams.get('q') || '').trim().toLowerCase();
         const { results } = await db
-          .prepare('SELECT id,title,artist,original_key,tempo,tags,chordpro,updated_at FROM songs ORDER BY title')
+          .prepare(
+            `SELECT id,title,artist,original_key,tempo,tags,chordpro,updated_at,
+              (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
+              (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds
+             FROM songs ORDER BY title`
+          )
           .all();
         const songs = results
           .filter((s) => !q || [s.title, s.artist, s.tags, lyricsOnly(s.chordpro)].join(' ').toLowerCase().includes(q))
-          .map(({ chordpro, ...rest }) => rest);
+          .map((s) => {
+            const { chordpro, ...rest } = s;
+            return { ...rest, file_kinds: rest.file_kinds || '', has_chords: /\S/.test(chordpro) };
+          });
         return json({ songs });
+      }
+
+      // 악보 파일(이미지·PDF) 올리기: 본문 자체가 파일 내용이다
+      if (id && parts[2] === 'files' && method === 'POST') {
+        if (!(await canEdit(env, request))) throw new HttpError(403, '악보를 편집할 권한이 없습니다. 관리자 PIN을 입력해 주세요.');
+        requireBucket(env);
+        if (!(await db.prepare('SELECT id FROM songs WHERE id=?').bind(id).first())) throw new HttpError(404, '곡을 찾을 수 없습니다.');
+        const type = (request.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+        const kind = FILE_TYPES[type];
+        if (!kind) throw new HttpError(400, '이미지(JPG·PNG·WEBP·GIF) 또는 PDF만 올릴 수 있습니다.');
+        if (parseInt(request.headers.get('Content-Length') || '0', 10) > MAX_FILE_BYTES) throw new HttpError(413, '파일이 너무 큽니다. (최대 25MB)');
+        const buf = await request.arrayBuffer();
+        if (!buf.byteLength) throw new HttpError(400, '빈 파일입니다.');
+        if (buf.byteLength > MAX_FILE_BYTES) throw new HttpError(413, '파일이 너무 큽니다. (최대 25MB)');
+        if (!magicOk(type, buf)) throw new HttpError(400, '파일 내용이 형식과 맞지 않습니다.');
+        const cnt = await db.prepare('SELECT COUNT(*) AS n FROM song_files WHERE song_id=?').bind(id).first();
+        if (cnt.n >= MAX_FILES_PER_SONG) throw new HttpError(400, `곡 하나에는 파일을 ${MAX_FILES_PER_SONG}개까지 올릴 수 있습니다.`);
+        const key = `songs/${id}/${crypto.randomUUID()}`;
+        await env.BUCKET.put(key, buf, { httpMetadata: { contentType: type } });
+        let fid;
+        try {
+          const r = await db.prepare('INSERT INTO song_files (song_id,r2_key,kind) VALUES (?,?,?)').bind(id, key, kind).run();
+          fid = r.meta.last_row_id;
+        } catch (e) {
+          await env.BUCKET.delete(key).catch(() => {});
+          throw e;
+        }
+        await db.prepare('UPDATE songs SET updated_at=? WHERE id=?').bind(new Date().toISOString(), id).run();
+        return json({ file: { id: fid, kind, url: await fileUrl(env, fid) } }, 201);
       }
 
       // 새 곡
@@ -273,6 +375,7 @@ export async function onRequest({ request, env }) {
       if (id && method === 'GET') {
         const song = await db.prepare('SELECT * FROM songs WHERE id=?').bind(id).first();
         if (!song) throw new HttpError(404, '곡을 찾을 수 없습니다.');
+        song.files = await songFiles(env, id);
         return json({ song });
       }
 
@@ -298,11 +401,13 @@ export async function onRequest({ request, env }) {
 
       if (id && method === 'DELETE') {
         if (!(await canEdit(env, request))) throw new HttpError(403, '악보를 편집할 권한이 없습니다. 관리자 PIN을 입력해 주세요.');
+        const { results: files } = await db.prepare('SELECT r2_key FROM song_files WHERE song_id=?').bind(id).all();
         await db.batch([
           db.prepare('DELETE FROM song_versions WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM song_files WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM songs WHERE id=?').bind(id),
         ]);
+        if (env.BUCKET && files.length) await env.BUCKET.delete(files.map((f) => f.r2_key)).catch(() => {});
         return json({ ok: true });
       }
     }
