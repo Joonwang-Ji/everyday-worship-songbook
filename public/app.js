@@ -492,6 +492,7 @@
       ${SongFilter.tagsLineHTML(song.tags, esc)}
       ${usageHTML(song.usage)}
       ${hasText && files.length ? '<div class="tabs" id="tabs"><button class="tab" data-tab="chord">코드 악보</button><button class="tab" data-tab="img">이미지 악보</button></div>' : ''}
+      ${isLeader && files.length && !hasText ? `<div class="row" id="imgkeyrow" style="margin:6px 0"><span class="ctl-label">우리 팀 키</span><select id="imgkey" aria-label="우리 팀 기본 키">${['', ...(Chord.parseKey(origKey) && Chord.parseKey(origKey).minor ? KEYS_MINOR : KEYS_MAJOR)].map((k) => `<option value="${k}">${k || '선택'}</option>`).join('')}</select><button class="btn small" id="imgkeysave" type="button">팀 기본 키로 저장</button></div><p class="hint" style="margin-top:0">이미지 악보는 화면에서 키가 바뀌지 않아요. 우리 팀이 부르는 키를 기록해 두면 콘티에 곡을 넣을 때 기본값이 됩니다.</p>` : ''}
       ${!hasText && !files.length ? `<p class="muted">등록된 악보가 아직 없습니다.${me.canEdit ? ' 편집에서 코드 악보를 입력하거나 이미지·PDF를 올려 주세요.' : ''}</p>` : ''}
       <div id="pane-chord"><div class="score" id="score"></div></div>
       <div id="pane-img" hidden></div>
@@ -602,6 +603,27 @@
         $tk.disabled = false;
       }
     };
+    // 팀장: 이미지·PDF만 있는 곡의 팀 기본 키(기록용). 비워서 저장하면 지워진다.
+    const $ik = document.getElementById('imgkey');
+    const $iks = document.getElementById('imgkeysave');
+    if ($ik && $iks) {
+      $ik.value = song.team_key || '';
+      $iks.onclick = async () => {
+        const k = $ik.value;
+        $iks.disabled = true;
+        try {
+          await api('/team/keys/' + id, { method: 'PUT', body: { key: k } });
+          const b = document.getElementById('tkbadge');
+          b.textContent = k;
+          (document.getElementById('tkwrap') || b.parentNode).hidden = !k;
+          toast(k ? `우리 팀 기본 키를 ${k}(으)로 저장했습니다.` : '우리 팀 기본 키를 지웠습니다.');
+        } catch (e) {
+          toast(e.message);
+        } finally {
+          $iks.disabled = false;
+        }
+      };
+    }
     $acc.onchange = () => { prefs.acc = $acc.value; ls.set('ews_acc', prefs.acc); draw(); };
     document.getElementById('fup').onclick = () => { prefs.size = Math.min(40, prefs.size + 2); ls.set('ews_size', prefs.size); draw(); };
     document.getElementById('fdown').onclick = () => { prefs.size = Math.max(12, prefs.size - 2); ls.set('ews_size', prefs.size); draw(); };
@@ -2077,10 +2099,11 @@
 
     // ----- 곡 불러오기 (한 번 불러온 곡은 이 화면 안에서 다시 쓴다. 악보 이미지 주소는 오래되면 만료되니 40분 뒤엔 새로 받는다) -----
     const songCache = new Map();
+    const readySongs = new Map(); // 이미 받아 둔 곡(옆으로 밀 때 이웃 곡을 바로 보여 주는 데 쓴다)
     function loadSong(sid) {
       const hit = songCache.get(sid);
       if (hit && Date.now() - hit.t < 40 * 60 * 1000) return hit.p;
-      const p = api('/songs/' + sid).then((r) => r.song);
+      const p = api('/songs/' + sid).then((r) => { readySongs.set(sid, r.song); return r.song; });
       songCache.set(sid, { t: Date.now(), p });
       p.catch(() => songCache.delete(sid));
       return p;
@@ -2171,28 +2194,31 @@
       updateDots();
     }
     // 코드 악보 2단 보기: 넓은 화면에서 두 단으로 나누고, 스크롤 없이 한 화면에 들어오도록 글자를 줄여 맞춘다. (못 맞추면 1단)
-    function fitCols() {
-      $play.style.setProperty('--song-size', P.size + 'px');
-      const sc = $pb.querySelector('.score');
-      $pb.classList.remove('cols');
+    // body/varEl을 바꿔 쓰면 옆으로 밀려 들어오는 이웃 화면(ghost)도 같은 규칙으로 맞출 수 있다.
+    function fitCols(body, varEl) {
+      body = body || $pb;
+      varEl = varEl || $play;
+      varEl.style.setProperty('--song-size', P.size + 'px');
+      const sc = body.querySelector('.score');
+      body.classList.remove('cols');
       if (sc) sc.style.height = '';
-      if (!sc || !cur || cur.tab === 'img' || cur.tab === 'none') return;
-      if (P.cols === '1' || (P.cols === 'auto' && $pb.clientWidth < 700)) return;
-      $pb.classList.add('cols');
-      const cs = getComputedStyle($pb);
-      sc.style.height = Math.max(100, $pb.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) + 'px';
-      const avail = $pb.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      if (!sc) return;
+      if (P.cols === '1' || (P.cols === 'auto' && body.clientWidth < 700)) return;
+      body.classList.add('cols');
+      const cs = getComputedStyle(body);
+      sc.style.height = Math.max(100, body.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) + 'px';
+      const avail = body.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
       let size = P.size;
       for (;;) {
-        $play.style.setProperty('--song-size', size + 'px');
+        varEl.style.setProperty('--song-size', size + 'px');
         if (sc.scrollWidth <= avail + 2) return;
         if (size <= 14) break;
         size -= 1;
       }
       // 글자를 가장 작게 줄여도 두 단에 다 안 들어가면 1단으로 되돌린다
-      $pb.classList.remove('cols');
+      body.classList.remove('cols');
       sc.style.height = '';
-      $play.style.setProperty('--song-size', P.size + 'px');
+      varEl.style.setProperty('--song-size', P.size + 'px');
     }
     function updateDots() {
       const parts = [];
@@ -2201,9 +2227,11 @@
       g('pdots').textContent = parts.join(' · ');
       g('pdots').hidden = !parts.length;
     }
+    let loading = false;
     async function show(i, startPage) {
       idx = i;
       const my = ++nav;
+      loading = true;
       const it = items[i];
       g('ptitle').textContent = (multi ? `${i + 1}. ` : '') + '불러오는 중…';
       g('pinfo').innerHTML = '';
@@ -2215,6 +2243,7 @@
         song = await loadSong(it.song_id);
       } catch (e) {
         if (my !== nav) return;
+        loading = false;
         cur = null;
         g('ptitle').textContent = (multi ? `${i + 1}. ` : '') + (it.title || '');
         $pb.innerHTML = `<div class="card"><p class="error">${esc(e.message)}</p><p class="muted small">인터넷이 없다면, 미리 “오프라인 준비”를 해 둔 곡만 열 수 있어요.</p><button class="btn" id="pretry" type="button">다시 시도</button></div>`;
@@ -2225,22 +2254,179 @@
       cur = buildState(song, it);
       if (startPage === 'last' && cur.tab === 'img') cur.page = Math.max(0, cur.pages.length - 1);
       document.title = song.title + ' · Everyday Worship Songbook';
+      loading = false;
       draw();
       prefetch(i + 1);
       prefetch(i - 1);
     }
     // 이미지 악보가 여러 쪽이면 쪽을 먼저 넘기고, 끝에서 다음(이전) 곡으로 넘어간다.
-    function step(d) {
+    // d(+1 다음 / -1 이전)로 갔을 때 어디가 나오는지: 같은 곡의 다른 쪽, 다른 곡, 또는 null(끝)
+    function target(d) {
       if (cur && cur.tab === 'img' && cur.pages.length > 1) {
         const n = cur.page + d;
-        if (n >= 0 && n < cur.pages.length) { cur.page = n; draw(); return; }
+        if (n >= 0 && n < cur.pages.length) return { type: 'page', page: n };
       }
       const n = idx + d;
-      if (n < 0 || n >= items.length) {
+      if (n < 0 || n >= items.length) return null;
+      return { type: 'song', i: n, start: d < 0 ? 'last' : 0 };
+    }
+    function apply(tg) {
+      if (tg.type === 'page') { cur.page = tg.page; draw(); return Promise.resolve(); }
+      return show(tg.i, tg.start);
+    }
+
+    // ----- 손가락을 따라 옆으로 넘기기 (아이폰·아이패드 기본 앱처럼) -----
+    // 지금 화면 옆에 이웃 화면(ghost)을 붙여 두고 함께 움직인다. 놓으면 충분히 넘겼는지에 따라 넘어가거나 제자리로 돌아온다.
+    const REDUCE = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const SLIDE_MS = 260;
+    const SLIDE_EASE = 'cubic-bezier(.22,.8,.3,1)';
+    let busy = false;
+    let ghost = null;
+    let ghostDir = 0;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const bodyW = () => $pb.clientWidth || 1;
+    function dropGhost() {
+      if (ghost) ghost.remove();
+      ghost = null;
+      ghostDir = 0;
+    }
+    function makeGhost(d) {
+      const tg = target(d);
+      if (!tg) return null;
+      let st = null;
+      let page = 0;
+      if (tg.type === 'page') {
+        st = cur;
+        page = tg.page;
+      } else {
+        const s = readySongs.get(items[tg.i].song_id);
+        if (s) {
+          st = buildState(s, items[tg.i]);
+          page = tg.start === 'last' ? Math.max(0, st.pages.length - 1) : 0;
+        }
+      }
+      const el = document.createElement('div');
+      el.className = 'play-body play-ghost';
+      el.setAttribute('aria-hidden', 'true');
+      let chordShown = false;
+      if (!st) {
+        el.innerHTML = '<p class="muted center" style="margin-top:40px">불러오는 중…</p>';
+      } else if (st.tab === 'img' && st.pages.length) {
+        el.classList.add('img');
+        el.innerHTML = `<img class="sheet" src="${esc(st.pages[page].url)}" alt="">`;
+      } else if (st.tab === 'img') {
+        el.innerHTML = Files.renderPane(st.files);
+      } else if (st.tab === 'chord') {
+        el.innerHTML = `<div class="score">${Chord.renderHTML(st.parsed, { originalKey: st.origKey, shift: st.shift, capo: st.capo, acc: P.acc, showChords: P.chords })}</div>`;
+        chordShown = true;
+      } else {
+        el.innerHTML = '<p class="muted center" style="margin-top:40px">등록된 악보가 아직 없습니다.</p>';
+      }
+      g('pbody').parentNode.insertBefore(el, g('pel'));
+      if (chordShown) fitCols(el, el);
+      else el.style.setProperty('--song-size', P.size + 'px');
+      return el;
+    }
+    // dx: 지금 화면이 움직인 거리(px). 이웃 화면은 그 옆(±너비)에서 같이 움직인다.
+    function setX(dx) {
+      $pb.style.transform = `translate3d(${dx}px,0,0)`;
+      if (ghost) ghost.style.transform = `translate3d(${dx + (ghostDir > 0 ? bodyW() : -bodyW())}px,0,0)`;
+    }
+    function setTransition(on) {
+      const t = on && !REDUCE ? `transform ${SLIDE_MS}ms ${SLIDE_EASE}` : 'none';
+      $pb.style.transition = t;
+      if (ghost) ghost.style.transition = t;
+    }
+    async function settleBack() {
+      busy = true;
+      setTransition(true);
+      setX(0);
+      await sleep(REDUCE ? 0 : SLIDE_MS + 30);
+      setTransition(false);
+      $pb.style.transform = '';
+      dropGhost();
+      busy = false;
+    }
+    async function settleForward(dir) {
+      busy = true;
+      const w = bodyW();
+      setTransition(true);
+      $pb.style.transform = `translate3d(${-dir * w}px,0,0)`;
+      ghost.style.transform = 'translate3d(0,0,0)';
+      await sleep(REDUCE ? 0 : SLIDE_MS + 30);
+      // 이웃 화면이 덮고 있는 동안 실제 화면을 바꾼다 → 다 그려지면 이웃 화면을 걷는다
+      setTransition(false);
+      $pb.style.transform = '';
+      const tg = target(dir);
+      try {
+        if (tg) await apply(tg);
+        const im = $pb.querySelector('img.sheet');
+        if (im && !im.complete) await new Promise((r) => { im.onload = im.onerror = r; setTimeout(r, 1500); });
+      } finally {
+        dropGhost();
+        busy = false;
+      }
+    }
+    // 버튼·가장자리 탭·방향키: 손가락 없이도 같은 방식으로 슬라이드
+    function slide(d) {
+      if (busy || loading) return;
+      if (!cur) { const n = idx + d; if (n >= 0 && n < items.length) show(n, d < 0 ? 'last' : 0); return; }
+      if (!target(d)) {
         if (multi) toast(d > 0 ? '마지막 곡입니다.' : '첫 곡입니다.');
         return;
       }
-      show(n, d < 0 ? 'last' : 0);
+      dropGhost();
+      ghost = makeGhost(d);
+      ghostDir = d;
+      setTransition(false);
+      setX(0);
+      void $pb.offsetWidth;
+      settleForward(d);
+    }
+
+    function bindSwipe(el) {
+      let sx = 0, sy = 0, lx = 0, lt = 0, vx = 0, mode = ''; // mode: '' 아직 모름 / 'h' 가로 넘기기 / 'x' 무시(세로 스크롤·여러 손가락·펜)
+      el.addEventListener('touchstart', (e) => {
+        const t = e.touches[0];
+        if (e.touches.length > 1 && mode === 'h') settleBack(); // 넘기는 중에 두 번째 손가락이 닿으면 제자리로
+        if (busy || loading || e.touches.length !== 1 || t.touchType === 'stylus') { mode = 'x'; return; } // Apple Pencil은 넘기기에 쓰지 않는다
+        sx = lx = t.clientX; sy = t.clientY; lt = Date.now(); vx = 0; mode = '';
+      }, { passive: true });
+      el.addEventListener('touchmove', (e) => {
+        if (mode === 'x') return;
+        if (e.touches.length > 1) { if (mode === 'h') settleBack(); mode = 'x'; return; }
+        const t = e.touches[0];
+        const dx = t.clientX - sx, dy = t.clientY - sy;
+        if (!mode) {
+          if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+          mode = Math.abs(dx) > Math.abs(dy) * 1.2 ? 'h' : 'x';
+          if (mode === 'x') return;
+          setTransition(false);
+        }
+        e.preventDefault(); // 가로로 넘기는 동안은 화면이 같이 스크롤되지 않게
+        const dir = dx < 0 ? 1 : -1;
+        if (dir !== ghostDir) { dropGhost(); ghost = makeGhost(dir); ghostDir = dir; if (ghost) setTransition(false); }
+        const now = Date.now();
+        if (now > lt) vx = 0.7 * vx + 0.3 * ((t.clientX - lx) / (now - lt));
+        lx = t.clientX; lt = now;
+        setX(ghost ? dx : dx * 0.3); // 더 갈 곳이 없으면 고무줄처럼 뻑뻑하게
+      }, { passive: false });
+      const end = (e, cancelled) => {
+        if (mode !== 'h') { mode = ''; return; }
+        mode = '';
+        const t = e.changedTouches[0];
+        const dx = t.clientX - sx;
+        const w = bodyW();
+        const fast = Math.abs(vx) > 0.4 && Math.abs(dx) > 24 && vx * dx > 0;
+        const far = Math.abs(dx) > w * 0.28 && !(Math.abs(vx) > 0.3 && vx * dx < 0);
+        if (!cancelled && ghost && (fast || far)) settleForward(ghostDir);
+        else {
+          if (!cancelled && !ghost && multi) toast(dx < 0 ? '마지막 곡입니다.' : '첫 곡입니다.');
+          settleBack();
+        }
+      };
+      el.addEventListener('touchend', (e) => end(e, false), { passive: true });
+      el.addEventListener('touchcancel', (e) => end(e, true), { passive: true });
     }
 
     // ----- 화면 꺼짐 방지 -----
@@ -2258,33 +2444,15 @@
     }
     const onVis = () => { if (document.visibilityState === 'visible') acquireWake(); };
 
-    // ----- 좌우 스와이프로 넘기기 (세로로 훑는 동작이나 짧은 움직임은 무시) -----
-    function bindSwipe(el) {
-      let sx = 0, sy = 0, st = 0, tracking = false;
-      el.addEventListener('touchstart', (e) => {
-        if (e.touches.length !== 1) { tracking = false; return; }
-        sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now(); tracking = true;
-      }, { passive: true });
-      el.addEventListener('touchmove', (e) => { if (e.touches.length > 1) tracking = false; }, { passive: true });
-      el.addEventListener('touchend', (e) => {
-        if (!tracking) return;
-        tracking = false;
-        const t = e.changedTouches[0];
-        const dx = t.clientX - sx, dy = t.clientY - sy;
-        if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5 || Date.now() - st > 800) return;
-        step(dx < 0 ? 1 : -1);
-      }, { passive: true });
-      el.addEventListener('touchcancel', () => { tracking = false; }, { passive: true });
-    }
     bindSwipe($pb);
     bindSwipe(g('pel'));
     bindSwipe(g('per'));
-    g('pel').onclick = () => step(-1);
-    g('per').onclick = () => step(1);
+    g('pel').onclick = () => slide(-1);
+    g('per').onclick = () => slide(1);
 
     // ----- 위쪽 버튼, 설정·곡 목록 창 -----
     g('pinfo').onclick = (ev) => {
-      if (ev.target.closest && ev.target.closest('#pnext')) { if (idx + 1 < items.length) show(idx + 1, 0); return; }
+      if (ev.target.closest && ev.target.closest('#pnext')) { if (idx + 1 < items.length) { if (cur && cur.tab === 'img' && cur.pages.length > 1) { busy || loading || show(idx + 1, 0); } else slide(1); } return; }
       if (!cur || !ev.target.closest || !ev.target.closest('#pswap')) return;
       cur.tab = cur.tab === 'chord' ? 'img' : 'chord';
       cur.page = 0;
@@ -2350,8 +2518,8 @@
 
     const onKey = (e) => {
       if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '')) return;
-      if (e.key === 'ArrowLeft') step(-1);
-      else if (e.key === 'ArrowRight') step(1);
+      if (e.key === 'ArrowLeft') slide(-1);
+      else if (e.key === 'ArrowRight') slide(1);
       else if (e.key === 'Escape') closeSheets();
     };
     const onNet = () => { g('poff').hidden = !(navigator.onLine === false || servedFromCache); };

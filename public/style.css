@@ -404,3 +404,10 @@ main.wide, #app.wide { max-width: 1280px; }
 .play-body.cols { overflow: hidden; }
 .play-body.cols .score { column-count: 2; column-gap: 36px; column-fill: auto; padding: 0; }
 .play-body.cols .score .cm:first-child { margin-top: 0; }
+
+/* ===== 10차: 손가락을 따라 넘기기 (연주 모드) ===== */
+.play-main { overflow: hidden; }
+.play-body { background: var(--bg); will-change: transform; }
+.play-body.play-ghost { position: absolute; left: 0; right: 0; top: 0; bottom: 0; z-index: 1; pointer-events: none; overflow-y: hidden; }
+.play-body.img.play-ghost { overflow: hidden; }
+@media (prefers-reduced-motion: reduce) { .play-body, .play-body.play-ghost { transition: none !important; } }
