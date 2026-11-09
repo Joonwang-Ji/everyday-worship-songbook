@@ -356,7 +356,10 @@
     // 코드 악보 / 이미지 악보 전환 (둘 다 있을 때만 탭 표시, 선택은 이 기기에 기억)
     const $pc = document.getElementById('pane-chord');
     const $pi = document.getElementById('pane-img');
-    $pi.innerHTML = Files.renderPane(files);
+    // 콘티에서 열었는데 이미지 악보의 원래 키와 부르는 키가 다르면, 이미지 위에 알려 준다.
+    const wantKey = q.get('key') || '';
+    const keyBanner = wantKey && origKey && wantKey !== origKey ? `<div class="memo" style="margin-bottom:10px">이 콘티에서는 <b>${esc(wantKey)}</b> 키로 부릅니다. 이미지 악보는 원래 키(<b>${esc(origKey)}</b>) 기준입니다.</div>` : '';
+    $pi.innerHTML = (files.length ? keyBanner : '') + Files.renderPane(files);
     Files.bindPane($pi, files);
     function showTab(t, remember) {
       $pc.hidden = t !== 'chord';
@@ -770,7 +773,7 @@
       const key = it.key || it.original_key || '';
       const imageOnly = it.view === 'image' || (!it.has_chords && it.file_count > 0);
       const p = new URLSearchParams();
-      if (it.key && it.has_chords) p.set('key', it.key);
+      if (it.key) p.set('key', it.key);
       if (it.view !== 'auto') p.set('view', it.view);
       p.set('sl', id);
       const imgKeyNote = imageOnly && it.key && it.original_key && it.key !== it.original_key;
@@ -781,7 +784,7 @@
           ${imageOnly ? '<span class="tag">이미지 악보</span>' : it.has_chords ? '<span class="tag">코드 악보</span>' : ''}
           ${it.memo ? `<span>${esc(it.memo)}</span>` : ''}
         </div>
-        ${imgKeyNote ? `<div class="hint" style="margin:2px 0 0">이미지 악보는 원래 키(${esc(it.original_key)})로 보입니다.</div>` : ''}
+        ${imgKeyNote ? `<div class="hint" style="margin:2px 0 0">이미지 악보는 원래 키(${esc(it.original_key)}) 기준 · 이 콘티에서는 ${esc(it.key)}로 부름</div>` : ''}
       </a></li>`;
     });
     $app.innerHTML = `
@@ -852,9 +855,8 @@
         .map((it, i) => {
           const s = byId[it.song_id];
           const hasBoth = s.has_chords && s.file_count > 0;
-          const keyUI = s.has_chords
-            ? `<div><label>키</label><select data-f="key" data-i="${i}">${keyOptionsFor(s, it.key).map(([v, t]) => `<option value="${esc(v)}" ${v === it.key ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></div>`
-            : `<div><label>키</label><div class="keyfixed"><span class="keybadge">${esc(s.original_key || '-')}</span><span class="hint" style="margin:0">${s.file_count ? '이미지 악보는 원래 키로만 볼 수 있어요' : '코드 악보가 없어 키를 바꿀 수 없어요'}</span></div></div>`;
+          // 이미지 악보는 화면에서 키가 바뀌지 않는다. 대신 "실제로 부르는 키"를 직접 기록해 둘 수 있다.
+          const keyUI = `<div><label>${s.has_chords ? '키' : '부르는 키 (기록용)'}</label><select data-f="key" data-i="${i}">${keyOptionsFor(s, it.key).map(([v, t]) => `<option value="${esc(v)}" ${v === it.key ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>${s.has_chords ? '' : `<div class="hint" style="margin:4px 0 0">이미지 악보는 키가 바뀌지 않아요${s.original_key ? ` (악보는 원래 키 ${esc(s.original_key)} 기준)` : ''}. 키를 올리거나 내려 부른다면 직접 계산해서 기록해 두세요.</div>`}</div>`;
           const viewUI = hasBoth
             ? `<div><label>보여 줄 악보</label><select data-f="view" data-i="${i}">
                 <option value="auto" ${it.view === 'auto' ? 'selected' : ''}>자동 (코드 악보 우선)</option>
@@ -917,7 +919,7 @@
       const s = byId[+b.dataset.add];
       if (data.items.length >= 60) return toast('콘티에는 곡을 60개까지 넣을 수 있습니다.');
       // 기본 키: 우리 팀 기본 키 ▶ 원래 키
-      data.items.push({ song_id: s.id, key: s.has_chords ? s.team_key || s.original_key || '' : s.original_key || '', form: '', memo: '', view: 'auto' });
+      data.items.push({ song_id: s.id, key: s.team_key || s.original_key || '', form: '', memo: '', view: 'auto' });
       drawItems();
       drawResults();
       toast(`"${s.title}" 추가`);
@@ -932,8 +934,7 @@
         title: el('st').value,
         memo: el('sm').value,
         items: data.items.map((it) => {
-          const s = byId[it.song_id];
-          return { song_id: it.song_id, key: s.has_chords ? it.key : s.original_key || '', form: it.form, memo: it.memo, view: it.view };
+          return { song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view };
         }),
       };
       el('save').disabled = true;
