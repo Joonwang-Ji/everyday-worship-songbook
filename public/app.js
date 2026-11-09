@@ -575,8 +575,17 @@
             <div class="hint">코드 악보 본문의 가사는 자동으로 검색됩니다. <b>이미지·PDF 악보만 있는 곡</b>은 가사가 글자로 없어서 검색되지 않으니, 후렴 몇 줄을 여기에 적어 주세요. (악보 화면에는 보이지 않고 검색에만 쓰입니다)</div>
           </div>
           <div class="card">
+            <div id="draftbar" class="draftbar" hidden></div>
             <label for="cp" style="margin-top:0">악보 본문 (ChordPro)</label>
+            <div class="ctools" id="ctools">
+              <div class="ctools-row" id="ct-chords"></div>
+              <div class="ctools-row" id="ct-quals"></div>
+              <div class="ctools-row" id="ct-bass" hidden></div>
+              <div class="ctools-row" id="ct-secs"></div>
+              <p class="hint" id="ct-hint" style="margin:2px 0 0"></p>
+            </div>
             <textarea id="cp" class="code" spellcheck="false" placeholder="${esc(SAMPLE)}">${esc(song.chordpro)}</textarea>
+            <div id="cpcheck" class="cpcheck" hidden></div>
             <details>
               <summary>입력 방법 보기</summary>
               <pre class="help">코드는 글자 바로 앞에 [코드] 로 넣습니다.
@@ -617,9 +626,113 @@
       const gk = Chord.guessKey(parsed, pvKey());
       $('pv').innerHTML = Chord.renderHTML(parsed, { originalKey: gk.key, showChords: true }) || '<p class="muted">본문을 입력하면 여기에 악보가 나타납니다.</p>';
     }
-    $('cp').oninput = preview;
-    $('key').onchange = preview;
+    $('cp').addEventListener('input', preview);
+    $('key').addEventListener('change', preview);
     preview();
+
+    // ----- 코드·구간 버튼줄 (7차 A단계): 괄호·지시어를 직접 치지 않고 누르기만 하면 글자가 들어간다 -----
+    const ta = $('cp');
+    let sel = { a: ta.value.length, b: ta.value.length };
+    const bassRow = $('ct-bass');
+    function rememberSel() {
+      sel = { a: ta.selectionStart, b: ta.selectionEnd };
+      showBassRow();
+    }
+    ['select', 'keyup', 'click', 'input', 'blur', 'touchend', 'focus'].forEach((ev) => ta.addEventListener(ev, rememberSel));
+    function drawTools() {
+      if (!ta.isConnected) return;
+      const gk = Chord.guessKey(Chord.parseChordPro(ta.value), $('key').value);
+      const dia = ChordEdit.diatonic(gk.key);
+      const roots = dia || ['C', 'D', 'E', 'F', 'G', 'A', 'B'].map((c) => ({ label: '', chord: c }));
+      $('ct-chords').innerHTML =
+        roots.map((d) => `<button type="button" class="chip ctb" data-chord="${esc(d.chord)}"><b>${esc(d.chord)}</b>${d.label ? `<small>${esc(d.label)}</small>` : ''}</button>`).join('') +
+        '<button type="button" class="chip ctb" data-chord="?" title="불확실한 코드">?</button>';
+      $('ct-hint').textContent = dia
+        ? `키 ${gk.key}${gk.guessed ? ' (첫 코드로 추정)' : ''}의 기본 코드예요. 글자 사이에 커서를 두고 누르면 그 자리에 들어갑니다.`
+        : '원래 키를 고르면 그 키에 맞는 코드가 나와요. 지금은 기본 7개 음입니다.';
+      const bn = ChordEdit.bassNotes(gk.key);
+      bassRow.dataset.notes = bn ? bn.join(',') : '';
+      showBassRow();
+    }
+    $('ct-quals').innerHTML =
+      '<span class="ctl-label">모양</span>' + ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-q="${esc(q)}">${esc(lab)}</button>`).join('');
+    $('ct-secs').innerHTML =
+      '<span class="ctl-label">구간</span>' + ChordEdit.SECTION_NAMES.map((n) => `<button type="button" class="chip ctb sm" data-sec="${esc(n)}">${esc(n)}</button>`).join('');
+    function showBassRow() {
+      const notes = (bassRow.dataset.notes || '').split(',').filter(Boolean);
+      const c = ChordEdit.chordAt(ta.value, sel.a);
+      bassRow.hidden = !(c && notes.length);
+      if (bassRow.hidden) return;
+      bassRow.innerHTML = '<span class="ctl-label">베이스</span>' + notes.map((n) => `<button type="button" class="chip ctb sm" data-bass="${esc(n)}">/${esc(n)}</button>`).join('') + '<button type="button" class="chip ctb sm" data-bass="">없음</button>';
+    }
+    // text[from,to)를 insert로 바꾼다. 가능하면 브라우저 기본 입력 방식을 써서 "되돌리기(실행 취소)"가 그대로 동작하게 한다.
+    function applyEdit(from, to, insert, cursor) {
+      ta.focus({ preventScroll: true });
+      ta.setSelectionRange(from, to);
+      let done = false;
+      try { done = document.execCommand('insertText', false, insert); } catch { done = false; }
+      if (!done) {
+        ta.setRangeText(insert, from, to, 'end');
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      ta.setSelectionRange(cursor, cursor);
+      rememberSel();
+    }
+    $('ctools').addEventListener('mousedown', (ev) => { if (ev.target.closest('button')) ev.preventDefault(); }); // 글자 입력칸에서 커서가 빠지지 않게
+    $('ctools').addEventListener('click', (ev) => {
+      const b = ev.target.closest('button');
+      if (!b) return;
+      const d = b.dataset;
+      const text = ta.value;
+      if (d.chord !== undefined) {
+        const ins = '[' + d.chord + ']';
+        applyEdit(sel.a, sel.a, ins, sel.a + ins.length); // 선택한 글자는 지우지 않고 그 앞에 넣는다
+      } else if (d.q !== undefined || d.bass !== undefined) {
+        const c = ChordEdit.chordAt(text, sel.a);
+        const nc = c && ChordEdit.changeChord(c.inner, d.q !== undefined ? { quality: d.q } : { bass: d.bass });
+        if (!nc) { toast('먼저 코드를 넣거나, 바꿀 코드 [ ] 안쪽에 커서를 두세요.'); return; }
+        applyEdit(c.start + 1, c.end - 1, nc, c.start + nc.length + 2);
+      } else if (d.sec !== undefined) {
+        const r = ChordEdit.sectionEdit(text, sel.a, sel.b, d.sec);
+        applyEdit(r.from, r.to, r.insert, r.cursor);
+      }
+    });
+    $('key').addEventListener('change', drawTools);
+    ta.addEventListener('input', () => { clearTimeout(drawTools.t); drawTools.t = setTimeout(drawTools, 300); });
+    drawTools();
+
+    // ----- 저장 전 점검(실시간 표시) -----
+    function runCheck() {
+      if (!ta.isConnected) return [];
+      const r = ChordEdit.check(ta.value, $('key').value);
+      const el = $('cpcheck');
+      if (!r.length) { el.hidden = true; el.innerHTML = ''; return r; }
+      const shown = r.slice(0, 8);
+      el.hidden = false;
+      el.innerHTML =
+        `<b>점검 결과</b> <span class="muted small">(저장은 막지 않아요)</span><ul>` +
+        shown.map((x) => `<li class="${x.level}">${x.line ? `<button type="button" class="linkish" data-line="${x.line}">${x.line}줄</button> ` : ''}${esc(x.msg)}</li>`).join('') +
+        (r.length > shown.length ? `<li class="muted">… 외 ${r.length - shown.length}건</li>` : '') + '</ul>';
+      return r;
+    }
+    $('cpcheck').onclick = (ev) => {
+      const b = ev.target.closest('button[data-line]');
+      if (!b) return;
+      const lines = ta.value.split('\n');
+      const n = Math.min(+b.dataset.line, lines.length);
+      let pos = 0;
+      for (let i = 0; i < n - 1; i++) pos += lines[i].length + 1;
+      ta.focus({ preventScroll: true });
+      ta.setSelectionRange(pos, pos + lines[n - 1].length);
+      const lh = parseFloat(getComputedStyle(ta).lineHeight) || 22;
+      ta.scrollTop = Math.max(0, (n - 3) * lh);
+      ta.scrollIntoView({ block: 'nearest' });
+    };
+    let checkTimer;
+    const scheduleCheck = () => { clearTimeout(checkTimer); checkTimer = setTimeout(runCheck, 500); };
+    ta.addEventListener('input', scheduleCheck);
+    $('key').addEventListener('change', scheduleCheck);
+    runCheck();
 
     // ----- 태그: 추천 칩(주제·빠르기·절기 …) 누르면 넣고 빼기 -----
     const tagList = () => $('tags').value.split(/[,，]/).map((t) => t.trim()).filter(Boolean);
@@ -708,9 +821,47 @@
     };
     drawFiles();
 
-    async function save(force) {
+    // ----- 입력 중 자동 임시저장 (이 기기 안에만 저장. 앱이 닫히거나 새로고침돼도 이어서 쓸 수 있다) -----
+    const draftKey = 'ews_draft_' + (id || 'new');
+    const FIELDS = { title: 'title', orig_title: 'otitle', artist: 'artist', original_key: 'key', tempo: 'tempo', tags: 'tags', youtube_url: 'yt', memo: 'memo', lyrics_extra: 'lx', chordpro: 'cp' };
+    const readForm = () => Object.fromEntries(Object.entries(FIELDS).map(([k, i]) => [k, $(i).value]));
+    const baseline = JSON.stringify(readForm());
+    let draftTimer;
+    function saveDraft() {
+      if (!ta.isConnected) return;
+      const f = readForm();
+      if (JSON.stringify(f) === baseline) ls.del(draftKey);
+      else ls.set(draftKey, JSON.stringify({ t: Date.now(), f }));
+    }
+    const scheduleDraft = () => { clearTimeout(draftTimer); draftTimer = setTimeout(saveDraft, 600); };
+    document.querySelector('.edit-wrap').addEventListener('input', scheduleDraft);
+    document.querySelector('.edit-wrap').addEventListener('change', scheduleDraft);
+    (function offerDraft() {
+      let d = null;
+      try { d = JSON.parse(ls.get(draftKey, 'null')); } catch { d = null; }
+      if (!d || !d.f || JSON.stringify(Object.assign(readForm(), d.f)) === baseline) { if (d) ls.del(draftKey); return; }
+      const bar = $('draftbar');
+      bar.hidden = false;
+      bar.innerHTML = `<span>저장하지 않은 작업이 있어요. (${esc(fmtTime(new Date(d.t).toISOString()))})</span> <button type="button" class="btn small primary" id="dr-use">이어서 작업</button> <button type="button" class="btn small" id="dr-drop">버리기</button>`;
+      $('dr-use').onclick = () => {
+        for (const [k, i] of Object.entries(FIELDS)) if (typeof d.f[k] === 'string') $(i).value = d.f[k];
+        bar.hidden = true;
+        preview(); drawTagChips(); drawExt(); drawTools(); runCheck();
+        toast('저장하지 않았던 작업을 불러왔습니다. 저장을 눌러야 반영돼요.');
+      };
+      $('dr-drop').onclick = () => { ls.del(draftKey); bar.hidden = true; };
+    })();
+
+    async function save(force, checked) {
       const err = $('err');
       err.textContent = '';
+      if (!checked) {
+        const warns = runCheck().filter((x) => x.level === 'warn');
+        if (warns.length) {
+          const list = warns.slice(0, 6).map((x) => '· ' + (x.line ? x.line + '줄: ' : '') + x.msg).join('\n');
+          if (!confirm(`악보에 확인할 곳이 ${warns.length}곳 있습니다.\n\n${list}${warns.length > 6 ? '\n· …' : ''}\n\n그래도 저장할까요?`)) return;
+        }
+      }
       const body = {
         title: $('title').value, orig_title: $('otitle').value, lyrics_extra: $('lx').value, artist: $('artist').value, original_key: $('key').value, tempo: $('tempo').value,
         youtube_url: $('yt').value, tags: $('tags').value, chordpro: $('cp').value, memo: $('memo').value, force: !!force,
@@ -719,6 +870,8 @@
       btn.disabled = true;
       try {
         const r = id ? await api('/songs/' + id, { method: 'PUT', body }) : await api('/songs', { method: 'POST', body });
+        clearTimeout(draftTimer);
+        ls.del(draftKey);
         if (!id && pending.length) {
           const msg = await uploadMany(r.id, pending);
           if (msg) {
@@ -730,7 +883,7 @@
         toast('저장했습니다.');
         location.hash = '#/song/' + r.id;
       } catch (e) {
-        if (e.status === 409 && confirm(`"${e.data.duplicate.title}" 곡이 이미 있습니다.\n그래도 새 곡으로 저장할까요?`)) return save(true);
+        if (e.status === 409 && confirm(`"${e.data.duplicate.title}" 곡이 이미 있습니다.\n그래도 새 곡으로 저장할까요?`)) return save(true, true);
         if (e.status === 403) { await loadMe(); }
         err.textContent = e.message;
       } finally {

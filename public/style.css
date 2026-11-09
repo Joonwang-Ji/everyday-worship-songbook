@@ -280,3 +280,28 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .exp-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .exp-result { text-align: center; }
 .exp-result img { max-width: 100%; max-height: 50vh; border: 1px solid var(--line); border-radius: 8px; }
+
+/* ---- 7차 A단계: 코드·구간 버튼줄, 점검, 임시저장 ---- */
+.ctools { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px; margin: 0 0 8px; }
+.ctools-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; margin: 4px 0; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.ctools-row::-webkit-scrollbar { display: none; }
+.ctools-row > * { flex: none; }
+@media (min-width: 900px) { .ctools { position: sticky; top: 0; z-index: 5; } }
+.ctools-row[hidden] { display: none; }
+.ctools .ctl-label { flex: none; min-width: 2.6em; padding-top: 0; font-size: 12px; color: var(--muted); }
+.ctools .hint { font-size: 12px; }
+.chip.ctb { min-height: 44px; min-width: 44px; white-space: nowrap; padding: 4px 12px; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.1; font-size: 16px; }
+.chip.ctb small { font-size: 10px; color: var(--muted); font-weight: 400; }
+.chip.ctb.sm { min-height: 38px; min-width: 38px; font-size: 14px; flex-direction: row; }
+.chip.ctb:active { transform: scale(.95); }
+.cpcheck { margin: 8px 0; padding: 8px 12px; border-radius: 10px; background: var(--accent-bg); font-size: 14px; }
+.cpcheck ul { margin: 6px 0 0; padding-left: 18px; }
+.cpcheck li.warn { color: #9a5b00; }
+.cpcheck li.info { color: var(--muted); }
+@media (prefers-color-scheme: dark) { .cpcheck li.warn { color: #f0b765; } }
+.linkish { background: none; border: 0; padding: 0 2px; color: var(--brand); text-decoration: underline; font-size: inherit; cursor: pointer; }
+.draftbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; margin: 0 0 10px; border-radius: 10px; background: #fff4d6; color: #5a4300; font-size: 14px; }
+.draftbar[hidden] { display: none; }
+@media (prefers-color-scheme: dark) { .draftbar { background: #3a3114; color: #f2dc9a; } }
+.edit-wrap > div { min-width: 0; }
+.ctools { min-width: 0; max-width: 100%; box-sizing: border-box; }
