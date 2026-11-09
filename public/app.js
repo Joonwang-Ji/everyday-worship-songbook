@@ -37,6 +37,16 @@
   }
   function clearSession() {
     ['ews_token', 'ews_admin', 'ews_team', 'ews_leader', 'ews_team_skip'].forEach((k) => ls.del(k));
+    // 오프라인용으로 저장해 둔 악보·콘티도 이 기기에서 지운다 (다른 사람이 같은 기기를 쓸 때를 위해)
+    try { if (window.caches) caches.keys().then((ks) => ks.filter((k) => k.startsWith('ews-data') || k.startsWith('ews-img')).forEach((k) => caches.delete(k))); } catch {}
+  }
+  // 검색: 띄어쓰기·기호·대소문자를 무시하고 비교 (서버의 검색과 같은 규칙)
+  const searchKey = (s) => String(s == null ? '' : s).normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  function localMatch(hayParts, q) {
+    const tokens = String(q || '').split(/\s+/).map(searchKey).filter(Boolean);
+    if (!tokens.length) return true;
+    const hay = hayParts.map(searchKey).join('');
+    return hay.includes(tokens.join('')) || tokens.every((t) => hay.includes(t));
   }
   async function api(path, { method = 'GET', body } = {}) {
     const headers = { 'Content-Type': 'application/json', ...authHeaders() };
@@ -46,10 +56,17 @@
     } catch {
       throw Object.assign(new Error('인터넷 연결을 확인해 주세요.'), { status: 0 });
     }
+    // 인터넷이 안 돼서 이 기기에 저장해 둔 내용으로 보여 주는 중인지 (서비스 워커가 표시를 붙여 준다)
+    const cached = res.headers.get('X-From-Cache') === '1';
+    if (cached !== servedFromCache) {
+      servedFromCache = cached;
+      window.dispatchEvent(new Event('ews-net'));
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw Object.assign(new Error(data.error || '오류가 발생했습니다.'), { status: res.status, data });
     return data;
   }
+  let servedFromCache = false;
 
   // 이미지·PDF 한 장 올리기 (사진은 먼저 줄인다)
   async function uploadFile(songId, file) {
@@ -87,7 +104,12 @@
   }
 
   // ---------- 라우터 ----------
+  let teardown = null; // 연주 모드처럼 화면을 떠날 때 정리할 일(화면 꺼짐 방지 해제 등)
   async function route() {
+    if (teardown) {
+      try { teardown(); } catch {}
+      teardown = null;
+    }
     const [hash, qs] = (location.hash.replace(/^#/, '') || '/').split('?');
     const q = new URLSearchParams(qs || '');
     window.scrollTo(0, 0);
@@ -105,6 +127,8 @@
       let m;
       if (hash === '/' || hash === '') return await viewList();
       if ((m = /^\/song\/(\d+)$/.exec(hash))) return await viewSong(+m[1], q);
+      if ((m = /^\/play\/song\/(\d+)$/.exec(hash))) return await viewPlay({ songId: +m[1] }, q);
+      if ((m = /^\/play\/(\d+)$/.exec(hash))) return await viewPlay({ sl: +m[1] }, q);
       if (hash === '/new') return viewEdit(null, q);
       if ((m = /^\/history\/(\d+)$/.exec(hash))) return await viewHistory(+m[1]);
       if ((m = /^\/edit\/(\d+)$/.exec(hash))) return await viewEdit(+m[1]);
@@ -194,7 +218,7 @@
   async function viewList() {
     $app.innerHTML = `
       <div class="row between"><h1>곡 목록</h1>${me.canEdit ? '<a class="btn primary" href="#/new">+ 새 곡</a>' : ''}</div>
-      <input type="search" id="q" placeholder="제목 · 가사 · 아티스트 · 태그 검색" value="${esc(listState.q)}">
+      <input type="search" id="q" placeholder="제목 · 원제 · 가사(후렴) · 아티스트 · 태그 검색" value="${esc(listState.q)}">
       <details class="filter" id="filter"><summary id="fsum">분류로 찾기</summary><div id="chips"></div></details>
       ${me.team ? `<div class="row sortrow"><span class="ctl-label">정렬</span><select id="sort" aria-label="정렬"><option value="title">제목순</option><option value="old">오래 안 부른 순</option><option value="recent">최근 부른 순</option></select></div>` : ''}
       <ul class="songs" id="list"></ul>
@@ -246,7 +270,8 @@
         .map((s) => {
           const used = me.team && anyUsed ? (s.last_used ? `<span class="tag used" title="우리 팀이 가장 최근에 부른 날">최근 ${mmdd(s.last_used)}</span>` : '<span class="tag unused">안 불러 봄</span>') : '';
           return `<li class="song-item"><a href="#/song/${s.id}">
-            <div class="song-title">${esc(s.title)}</div>
+            <div class="song-title">${esc(s.title)}${s.orig_title ? `<span class="orig"> · ${esc(s.orig_title)}</span>` : ''}</div>
+            ${s.snippet ? `<div class="snip"><span class="tag">${esc(s.snippet.label)}</span> ${esc(s.snippet.text)}</div>` : ''}
             <div class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${s.has_chords ? '<span class="tag">코드</span>' : ''}${s.file_count ? `<span class="tag">${(s.file_kinds || '').includes('image') ? '이미지' : 'PDF'}${s.file_count > 1 ? ' ' + s.file_count : ''}</span>` : ''}${s.artist ? `<span>${esc(s.artist)}</span>` : ''}${s.tempo ? `<span>♩${s.tempo}</span>` : ''}${used}${(s.tags ? s.tags.split(',') : []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
           </a></li>`;
         })
@@ -348,6 +373,8 @@
     $app.innerHTML = `
       <div class="row between"><a href="${slId ? '#/setlist/' + slId : '#/'}" class="small">← ${slId ? '콘티' : '목록'}</a>${me.canEdit ? `<span class="row" style="gap:6px"><a class="btn small" href="#/history/${id}">수정 이력</a><a class="btn small" href="#/edit/${id}">편집</a></span>` : ''}</div>
       <h1>${esc(song.title)}</h1>
+      ${song.orig_title ? `<div class="orig-line">원제 ${esc(song.orig_title)}</div>` : ''}
+      <div class="row" style="margin:6px 0 8px"><a class="btn small primary" href="#/play/${slId ? slId + '?song=' + id : 'song/' + id + (q.toString() ? '?' + q.toString() : '')}">▶ 연주 모드</a></div>
       <div class="song-meta" style="margin-bottom:8px">
         ${song.artist ? `<span>${esc(song.artist)}</span>` : ''}
         ${hasKey ? `<span>원키 <span class="keybadge">${esc(origKey)}</span>${gk.guessed ? ' (추정)' : ''}</span>` : ''}
@@ -485,7 +512,7 @@
       return;
     }
     document.querySelector('main').classList.add('wide');
-    let song = { title: '', artist: '', original_key: '', tempo: '', youtube_url: '', tags: '', chordpro: '', memo: '' };
+    let song = { title: '', orig_title: '', lyrics_extra: '', artist: '', original_key: '', tempo: '', youtube_url: '', tags: '', chordpro: '', memo: '' };
     if (id) song = (await api('/songs/' + id)).song;
     else if (q && q.get('title')) song.title = q.get('title').slice(0, 200); // 목록에서 "새 곡으로 등록"으로 넘어온 검색어
     const tagInfo = await api('/tags');
@@ -499,6 +526,7 @@
           <div class="card">
             <label for="title">제목</label><input id="title" type="text" value="${esc(song.title)}">
             <div class="hint" id="extfind" style="margin:6px 0 0"></div>
+            <label for="otitle">원제 (원곡이 영어 등일 때 · 선택)</label><input id="otitle" type="text" placeholder="예: The Heart of Worship" value="${esc(song.orig_title)}">
             <div class="grid2">
               <div><label for="artist">아티스트</label><input id="artist" type="text" value="${esc(song.artist)}"></div>
               <div><label for="key">원래 키</label><select id="key">${keyOptions.map((k) => `<option value="${k}" ${k === song.original_key ? 'selected' : ''}>${k || '(모름)'}</option>`).join('')}</select></div>
@@ -508,6 +536,8 @@
             <div id="tagchips"></div>
             <label for="yt">유튜브 링크</label><input id="yt" type="url" placeholder="https://" value="${esc(song.youtube_url)}">
             <label for="memo">메모</label><textarea id="memo" rows="2">${esc(song.memo)}</textarea>
+            <label for="lx">검색용 가사 · 후렴 (선택)</label><textarea id="lx" rows="3" placeholder="후렴 한두 줄을 적어 두면 가사로 검색돼요">${esc(song.lyrics_extra)}</textarea>
+            <div class="hint">코드 악보 본문의 가사는 자동으로 검색됩니다. <b>이미지·PDF 악보만 있는 곡</b>은 가사가 글자로 없어서 검색되지 않으니, 후렴 몇 줄을 여기에 적어 주세요. (악보 화면에는 보이지 않고 검색에만 쓰입니다)</div>
           </div>
           <div class="card">
             <label for="cp" style="margin-top:0">악보 본문 (ChordPro)</label>
@@ -647,7 +677,7 @@
       const err = $('err');
       err.textContent = '';
       const body = {
-        title: $('title').value, artist: $('artist').value, original_key: $('key').value, tempo: $('tempo').value,
+        title: $('title').value, orig_title: $('otitle').value, lyrics_extra: $('lx').value, artist: $('artist').value, original_key: $('key').value, tempo: $('tempo').value,
         youtube_url: $('yt').value, tags: $('tags').value, chordpro: $('cp').value, memo: $('memo').value, force: !!force,
       };
       const btn = $('save');
@@ -1010,8 +1040,405 @@
       <h1>${esc(s.title)}</h1>
       <div class="song-meta" style="margin-bottom:10px">${s.date ? `<span class="keybadge">${esc(fmtDate(s.date))}</span>` : ''}<span>${s.items.length}곡</span></div>
       ${s.memo ? `<div class="memo" style="margin-bottom:12px">${esc(s.memo)}</div>` : ''}
+      ${rows.length ? `<div class="row" style="margin-bottom:12px"><a class="btn primary" href="#/play/${id}">▶ 연주 모드</a><button class="btn" id="offline" type="button">⬇ 오프라인 준비</button></div>` : ''}
       ${rows.length ? `<ul class="songs">${rows.join('')}</ul>` : '<p class="muted">아직 곡이 없습니다.</p>'}
-      <p class="muted small">곡을 누르면 이 콘티의 키로 악보가 열립니다.</p>`;
+      <p class="muted small">곡을 누르면 이 콘티의 키로 악보가 열립니다. 연주 모드에서는 좌우로 밀어 다음 곡으로 넘어가요.</p>`;
+    const $off = document.getElementById('offline');
+    if ($off) $off.onclick = async () => {
+      $off.disabled = true;
+      try { await prepareOffline(s.items); } finally { $off.disabled = false; }
+    };
+  }
+
+  // ---------- 연주 모드 (5차) ----------
+  // 전체 화면 악보. 콘티에서 열면 좌우 스와이프(또는 아래 버튼)로 이전·다음 곡으로 넘어가고,
+  // 위쪽에는 그 곡의 키·송폼·메모가 계속 보인다. 화면 꺼짐 방지, 자동 스크롤, 다크모드, 큰 글씨를 지원한다.
+  // src: { sl: 콘티 번호 } 또는 { songId: 곡 번호 }  ·  q: ?i=시작 순서 / ?song=곡 번호 / (곡 하나일 때) key, view
+  async function viewPlay(src, q) {
+    q = q || new URLSearchParams();
+    let items;
+    if (src.sl) {
+      items = (await api('/setlists/' + src.sl)).setlist.items;
+    } else {
+      items = [{ song_id: src.songId, key: q.get('key') || '', form: '', memo: '', view: ['chord', 'image'].includes(q.get('view')) ? q.get('view') : 'auto' }];
+    }
+    if (!items.length) {
+      $app.innerHTML = noteBox(`<p>이 콘티에는 아직 곡이 없습니다.</p><a class="btn" href="#/setlist/${src.sl}">콘티로 돌아가기</a>`);
+      return;
+    }
+    let idx = 0;
+    if (src.sl) {
+      if (/^\d+$/.test(q.get('i') || '')) idx = Math.min(items.length - 1, +q.get('i'));
+      else if (/^\d+$/.test(q.get('song') || '')) idx = Math.max(0, items.findIndex((it) => it.song_id === +q.get('song')));
+    }
+    const multi = items.length > 1;
+    const P = {
+      size: Math.min(48, Math.max(14, +ls.get('ews_play_size', '22') || 22)),
+      chords: ls.get('ews_chords', '1') === '1',
+      acc: ls.get('ews_acc', 'auto'),
+      theme: ls.get('ews_play_theme', 'auto'),
+      speed: Math.min(10, Math.max(1, +ls.get('ews_play_speed', '3') || 3)),
+      wake: ls.get('ews_play_wake', '1') === '1',
+      fit: ls.get('ews_play_fit', 'width'),
+    };
+    const exitHref = src.sl ? '#/setlist/' + src.sl : '#/song/' + src.songId + (q.toString() ? '?' + q.toString() : '');
+
+    $app.innerHTML = `
+      <div class="play" id="play">
+        <div class="play-top">
+          <div class="play-row">
+            <a class="pbtn" id="pexit" href="${exitHref}" aria-label="연주 모드 나가기">✕ 나가기</a>
+            <div class="play-title" id="ptitle"></div>
+            <span class="play-off" id="poff" hidden>오프라인</span>
+            <button class="pbtn" id="pgear" type="button">설정</button>
+          </div>
+          <div class="play-info" id="pinfo"></div>
+        </div>
+        <div class="play-body" id="pbody"></div>
+        <div class="play-bar">
+          <button class="pbtn" id="pprev" type="button" ${multi ? '' : 'hidden'}>‹ 이전</button>
+          ${multi ? '<button class="pbtn" id="plist" type="button"></button>' : ''}
+          <button class="pbtn" id="pscroll" type="button">▶ 스크롤</button>
+          <button class="pbtn" id="pnext" type="button" ${multi ? '' : 'hidden'}>다음 ›</button>
+        </div>
+        <div class="play-sheet" id="psheet" hidden></div>
+        <div class="play-sheet" id="plsheet" hidden></div>
+      </div>`;
+    const g = (id) => document.getElementById(id);
+    const $play = g('play');
+    const $pb = g('pbody');
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    // ----- 곡 불러오기 (한 번 불러온 곡은 이 화면 안에서 다시 쓴다. 악보 이미지 주소는 오래되면 만료되니 40분 뒤엔 새로 받는다) -----
+    const songCache = new Map();
+    function loadSong(sid) {
+      const hit = songCache.get(sid);
+      if (hit && Date.now() - hit.t < 40 * 60 * 1000) return hit.p;
+      const p = api('/songs/' + sid).then((r) => r.song);
+      songCache.set(sid, { t: Date.now(), p });
+      p.catch(() => songCache.delete(sid));
+      return p;
+    }
+    function prefetch(i) {
+      if (i < 0 || i >= items.length) return;
+      loadSong(items[i].song_id)
+        .then((s) => (s.files || []).filter((f) => f.kind === 'image').slice(0, 2).forEach((f) => { new Image().src = f.url; }))
+        .catch(() => {});
+    }
+
+    // ----- 곡마다 시작 상태: 키는 콘티 ▶ 이 기기에서 바꿔 둔 키 ▶ 팀 기본 키 ▶ 원래 키 -----
+    function buildState(song, it) {
+      const parsed = Chord.parseChordPro(song.chordpro);
+      const gk = Chord.guessKey(parsed, song.original_key);
+      const origKey = gk.key;
+      const kobj = Chord.parseKey(origKey);
+      const hasKey = !!kobj;
+      const files = song.files || [];
+      const hasText = /\S/.test(song.chordpro || '');
+      let saved = {};
+      try { saved = JSON.parse(ls.get('ews_song_' + song.id, '{}')) || {}; } catch {}
+      const startFrom = (name) => {
+        const k = Chord.parseKey(name);
+        return hasKey && k ? (((k.idx - kobj.idx) % 12) + 12) % 12 : null;
+      };
+      let shift = startFrom(it.key);
+      if (shift === null) shift = Number.isInteger(saved.shift) ? saved.shift : startFrom(song.team_key);
+      if (shift === null) shift = 0;
+      const capo = Number.isInteger(saved.capo) ? saved.capo : 0;
+      let tab = 'none';
+      if (hasText && files.length) tab = it.view === 'image' ? 'img' : it.view === 'chord' ? 'chord' : ls.get('ews_tab_' + song.id, '') === 'img' ? 'img' : 'chord';
+      else if (hasText) tab = 'chord';
+      else if (files.length) tab = 'img';
+      return { song, it, parsed, origKey, hasKey, files, hasText, shift, capo, tab };
+    }
+
+    let cur = null;
+    let nav = 0;
+    const setBodyH = () => $play.style.setProperty('--bodyh', $pb.clientHeight + 'px');
+    function applyLook() {
+      $play.classList.toggle('dark', P.theme === 'dark');
+      $play.classList.toggle('light', P.theme === 'light');
+      $play.style.setProperty('--song-size', P.size + 'px');
+    }
+    function updateNav() {
+      if (!multi) return;
+      g('pprev').disabled = idx <= 0;
+      g('pnext').disabled = idx >= items.length - 1;
+      g('plist').textContent = `${idx + 1}/${items.length} 목록`;
+    }
+    function draw() {
+      if (!cur) return;
+      const { song, it, parsed, origKey, hasKey, files, hasText } = cur;
+      const top = $pb.scrollTop;
+      let keyTxt = '';
+      let extra = '';
+      if (cur.tab === 'chord') {
+        const p = Chord.plan(origKey, cur.shift, cur.capo, P.acc);
+        keyTxt = hasKey ? p.soundKey : it.key || '';
+        if (cur.capo) extra = `카포 ${cur.capo} · ${p.shapeKey} 코드`;
+      } else {
+        keyTxt = it.key || origKey || '';
+        if (it.key && origKey && it.key !== origKey) extra = `악보는 원키 ${origKey} 기준`;
+      }
+      g('ptitle').textContent = (multi ? `${idx + 1}. ` : '') + song.title;
+      g('pinfo').innerHTML = [
+        keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '',
+        extra ? `<span class="pi muted">${esc(extra)}</span>` : '',
+        song.tempo ? `<span class="pi muted">♩${song.tempo}</span>` : '',
+        it.form ? `<span class="pi"><b>송폼</b> ${esc(it.form)}</span>` : '',
+        it.memo ? `<span class="pi"><b>메모</b> ${esc(it.memo)}</span>` : '',
+        hasText && files.length ? `<button class="pbtn mini" id="pswap" type="button">${cur.tab === 'chord' ? '이미지 악보로' : '코드 악보로'}</button>` : '',
+      ].join('');
+      $pb.classList.toggle('fit', P.fit === 'screen' && cur.tab === 'img');
+      if (cur.tab === 'chord') {
+        $pb.innerHTML = `<div class="score">${Chord.renderHTML(parsed, { originalKey: origKey, shift: cur.shift, capo: cur.capo, acc: P.acc, showChords: P.chords })}</div>`;
+      } else if (cur.tab === 'img') {
+        $pb.innerHTML = Files.renderPane(files);
+        Files.bindPane($pb, files);
+      } else {
+        $pb.innerHTML = `<p class="muted center" style="margin-top:40px">등록된 악보가 아직 없습니다.</p>`;
+      }
+      setBodyH();
+      $pb.scrollTop = top;
+      updateNav();
+    }
+    async function show(i) {
+      idx = i;
+      const my = ++nav;
+      setScrolling(false);
+      const it = items[i];
+      g('ptitle').textContent = (multi ? `${i + 1}. ` : '') + '불러오는 중…';
+      g('pinfo').innerHTML = '';
+      $pb.innerHTML = '';
+      $pb.scrollTop = 0;
+      updateNav();
+      if (src.sl) history.replaceState(null, '', '#/play/' + src.sl + '?i=' + i);
+      let song;
+      try {
+        song = await loadSong(it.song_id);
+      } catch (e) {
+        if (my !== nav) return;
+        cur = null;
+        g('ptitle').textContent = (multi ? `${i + 1}. ` : '') + it.title;
+        $pb.innerHTML = `<div class="card"><p class="error">${esc(e.message)}</p><p class="muted small">인터넷이 없다면, 미리 “오프라인 준비”를 해 둔 곡만 열 수 있어요.</p><button class="btn" id="pretry" type="button">다시 시도</button></div>`;
+        g('pretry').onclick = () => show(i);
+        return;
+      }
+      if (my !== nav) return;
+      cur = buildState(song, it);
+      document.title = song.title + ' · Everyday Worship Songbook';
+      draw();
+      prefetch(i + 1);
+      prefetch(i - 1);
+    }
+    function go(d) {
+      const n = idx + d;
+      if (n < 0 || n >= items.length) {
+        if (multi) toast(d > 0 ? '마지막 곡입니다.' : '첫 곡입니다.');
+        return;
+      }
+      show(n);
+    }
+
+    // ----- 자동 스크롤 -----
+    let scrolling = false;
+    let raf = 0;
+    let lastTs = 0;
+    let pos = 0;
+    let resumeAt = 0;
+    let touching = false;
+    function setScrolling(on) {
+      scrolling = on;
+      cancelAnimationFrame(raf);
+      const b = g('pscroll');
+      if (b) b.textContent = on ? '⏸ 멈춤' : '▶ 스크롤';
+      if (on) {
+        pos = $pb.scrollTop;
+        lastTs = 0;
+        resumeAt = 0;
+        raf = requestAnimationFrame(tick);
+      }
+    }
+    function tick(ts) {
+      if (!scrolling) return;
+      const dt = lastTs ? (ts - lastTs) / 1000 : 0;
+      lastTs = ts;
+      if (touching || ts < resumeAt) {
+        pos = $pb.scrollTop; // 손으로 움직이는 동안엔 멈추고, 손을 뗀 1.5초 뒤 그 자리에서 이어 간다
+      } else {
+        const max = $pb.scrollHeight - $pb.clientHeight;
+        pos += P.speed * 6 * dt;
+        if (pos >= max) {
+          $pb.scrollTop = max;
+          setScrolling(false);
+          return;
+        }
+        $pb.scrollTop = pos;
+      }
+      raf = requestAnimationFrame(tick);
+    }
+
+    // ----- 화면 꺼짐 방지 -----
+    let wl = null;
+    async function acquireWake() {
+      if (!P.wake || !('wakeLock' in navigator) || document.visibilityState !== 'visible' || wl) return;
+      try {
+        wl = await navigator.wakeLock.request('screen');
+        wl.addEventListener('release', () => { wl = null; });
+      } catch { wl = null; }
+    }
+    function releaseWake() {
+      try { if (wl) wl.release(); } catch {}
+      wl = null;
+    }
+    const onVis = () => { if (document.visibilityState === 'visible') acquireWake(); };
+
+    // ----- 스와이프로 곡 넘기기 -----
+    // 확대 중이거나, 악보가 가로로 스크롤되는 중이거나, 세로로 훑는 동작일 땐 넘기지 않는다.
+    let sx = 0, sy = 0, st = 0, tracking = false;
+    $pb.addEventListener('touchstart', (e) => {
+      touching = true;
+      if (e.touches.length !== 1) { tracking = false; return; }
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now(); tracking = true;
+    }, { passive: true });
+    $pb.addEventListener('touchmove', (e) => { if (e.touches.length > 1) tracking = false; }, { passive: true });
+    $pb.addEventListener('touchend', (e) => {
+      touching = false;
+      resumeAt = performance.now() + 1500;
+      if (!tracking || !multi) return;
+      tracking = false;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - sx, dy = t.clientY - sy;
+      if (window.visualViewport && window.visualViewport.scale > 1.02) return;
+      if ($pb.scrollWidth > $pb.clientWidth + 4) return;
+      if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 2 || Date.now() - st > 700) return;
+      go(dx < 0 ? 1 : -1);
+    }, { passive: true });
+    $pb.addEventListener('touchcancel', () => { tracking = false; touching = false; }, { passive: true });
+
+    // ----- 아래 버튼, 위쪽 "이미지↔코드" 전환, 설정·곡 목록 창 -----
+    g('pprev').onclick = () => go(-1);
+    g('pnext').onclick = () => go(1);
+    g('pscroll').onclick = () => setScrolling(!scrolling);
+    g('pinfo').onclick = (ev) => {
+      if (!cur || ev.target.id !== 'pswap') return;
+      cur.tab = cur.tab === 'chord' ? 'img' : 'chord';
+      ls.set('ews_tab_' + cur.song.id, cur.tab);
+      $pb.scrollTop = 0;
+      draw();
+    };
+    const closeSheets = () => { g('psheet').hidden = true; g('plsheet').hidden = true; };
+    function openSettings() {
+      const seg = (name, opts, val) => opts.map(([v, t]) => `<button type="button" class="seg ${val === v ? 'on' : ''}" data-a="${name}" data-v="${v}">${t}</button>`).join('');
+      g('psheet').innerHTML = `
+        <div class="sheet-card">
+          <div class="srow"><span>글자 크기</span><span class="row"><button type="button" class="seg" data-a="fdown">가−</button><b>${P.size}</b><button type="button" class="seg" data-a="fup">가+</button></span></div>
+          <div class="srow"><span>코드 표시</span><span class="row">${seg('chords', [['1', '보기'], ['0', '숨기기']], P.chords ? '1' : '0')}</span></div>
+          <div class="srow"><span>코드 표기</span><span class="row">${seg('acc', [['auto', '자동'], ['sharp', '♯'], ['flat', '♭']], P.acc)}</span></div>
+          <div class="srow"><span>화면 색</span><span class="row">${seg('theme', [['auto', '자동'], ['light', '밝게'], ['dark', '어둡게']], P.theme)}</span></div>
+          <div class="srow"><span>이미지 악보</span><span class="row">${seg('fit', [['width', '너비에 맞춤'], ['screen', '한 화면에']], P.fit)}</span></div>
+          <div class="srow"><span>자동 스크롤 속도</span><span class="row"><input type="range" id="pspd" min="1" max="10" value="${P.speed}"><b id="pspdv">${P.speed}</b></span></div>
+          <div class="srow"><span>화면 꺼짐 방지</span><span class="row">${seg('wake', [['1', '켜기'], ['0', '끄기']], P.wake ? '1' : '0')}</span></div>
+          ${'wakeLock' in navigator ? '' : '<p class="hint">이 브라우저는 화면 꺼짐 방지를 지원하지 않아요. 기기 설정의 자동 잠금 시간을 길게 바꿔 두세요.</p>'}
+          <p class="hint">키 변경은 곡 보기 화면에서 하세요. 콘티에서 정한 키로 열립니다.</p>
+          <button type="button" class="btn primary" data-a="close" style="width:100%">닫기</button>
+        </div>`;
+      g('psheet').hidden = false;
+    }
+    function openList() {
+      g('plsheet').innerHTML = `
+        <div class="sheet-card">
+          <h2 style="margin-top:0">곡 목록</h2>
+          ${items.map((it, i) => `<button type="button" class="pick ${i === idx ? 'now' : ''}" data-i="${i}"><span class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</span><span class="song-meta">${it.key ? `<span class="keybadge">${esc(it.key)}</span>` : ''}${it.form ? `<span>송폼 ${esc(it.form)}</span>` : ''}</span></button>`).join('')}
+          <button type="button" class="btn" data-a="close" style="width:100%;margin-top:6px">닫기</button>
+        </div>`;
+      g('plsheet').hidden = false;
+    }
+    g('pgear').onclick = openSettings;
+    if (multi) g('plist').onclick = openList;
+    g('plsheet').onclick = (ev) => {
+      const b = ev.target.closest && ev.target.closest('button');
+      if (ev.target === g('plsheet') || (b && b.dataset.a === 'close')) return closeSheets();
+      if (b && b.dataset.i !== undefined) { closeSheets(); show(+b.dataset.i); }
+    };
+    g('psheet').onclick = (ev) => {
+      const b = ev.target.closest && ev.target.closest('button');
+      if (ev.target === g('psheet')) return closeSheets();
+      if (!b || !b.dataset.a) return;
+      const a = b.dataset.a;
+      const v = b.dataset.v;
+      if (a === 'close') return closeSheets();
+      if (a === 'fup') P.size = Math.min(48, P.size + 2);
+      else if (a === 'fdown') P.size = Math.max(14, P.size - 2);
+      else if (a === 'chords') { P.chords = v === '1'; ls.set('ews_chords', v); }
+      else if (a === 'acc') { P.acc = v; ls.set('ews_acc', v); }
+      else if (a === 'theme') { P.theme = v; ls.set('ews_play_theme', v); }
+      else if (a === 'fit') { P.fit = v; ls.set('ews_play_fit', v); }
+      else if (a === 'wake') { P.wake = v === '1'; ls.set('ews_play_wake', v); if (P.wake) acquireWake(); else releaseWake(); }
+      ls.set('ews_play_size', String(P.size));
+      applyLook();
+      draw();
+      openSettings();
+    };
+    g('psheet').addEventListener('input', (ev) => {
+      if (ev.target.id !== 'pspd') return;
+      P.speed = +ev.target.value;
+      ls.set('ews_play_speed', String(P.speed));
+      g('pspdv').textContent = P.speed;
+    });
+
+    const onKey = (e) => {
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '')) return;
+      if (e.key === 'ArrowLeft') go(-1);
+      else if (e.key === 'ArrowRight') go(1);
+      else if (e.key === ' ') { e.preventDefault(); setScrolling(!scrolling); }
+      else if (e.key === 'Escape') closeSheets();
+    };
+    const onNet = () => { g('poff').hidden = !(navigator.onLine === false || servedFromCache); };
+    const onOnline = () => { servedFromCache = false; onNet(); }; // 인터넷이 돌아오면 배지를 끈다 (다음 요청에서 다시 확인)
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('resize', setBodyH);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onNet);
+    window.addEventListener('ews-net', onNet);
+    teardown = () => {
+      setScrolling(false);
+      releaseWake();
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('resize', setBodyH);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onNet);
+      window.removeEventListener('ews-net', onNet);
+      document.body.style.overflow = prevOverflow;
+    };
+
+    applyLook();
+    onNet();
+    acquireWake();
+    await show(idx);
+  }
+
+  // 콘티의 곡들을 오프라인에서도 열 수 있게 미리 받아 둔다. (서비스 워커가 받은 내용을 이 기기에 저장한다)
+  async function prepareOffline(items) {
+    if (!(navigator.serviceWorker && navigator.serviceWorker.controller)) {
+      toast('처음 한 번은 앱을 새로 고친 뒤 다시 눌러 주세요.');
+      return;
+    }
+    let done = 0;
+    let fail = 0;
+    for (const it of items) {
+      try {
+        const { song } = await api('/songs/' + it.song_id);
+        for (const f of song.files || []) if (f.kind === 'image') await fetch(f.url).then((r) => r.blob());
+      } catch {
+        fail++;
+      }
+      toast(`오프라인 준비 중… ${++done}/${items.length}`);
+    }
+    toast(fail ? `${fail}곡은 저장하지 못했어요. 인터넷을 확인하고 다시 눌러 주세요.` : '이 콘티를 오프라인에서도 열 수 있어요. (PDF 악보는 제외)');
   }
 
   // ---------- 콘티 편집 (팀장) ----------
@@ -1138,10 +1565,10 @@
       drawPickChips();
     }
     function drawResults() {
-      const q = el('sq').value.trim().toLowerCase();
+      const q = el('sq').value.trim();
       const want = Object.values(pickSel);
       const found = songs
-        .filter((s) => !q || [s.title, s.artist, s.tags].join(' ').toLowerCase().includes(q))
+        .filter((s) => localMatch([s.title, s.orig_title, s.artist, s.tags], q))
         .filter((s) => want.every((w) => (s.tags || '').split(',').includes(w)))
         .slice(0, 30);
       const used = {};
@@ -1150,7 +1577,7 @@
         found
           .map(
             (s) => `<button class="pick" type="button" data-add="${s.id}">
-              <span class="song-title">${esc(s.title)}</span>
+              <span class="song-title">${esc(s.title)}${s.orig_title ? `<span class="orig"> · ${esc(s.orig_title)}</span>` : ''}</span>
               <span class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${s.team_key ? `<span>우리 팀 ${esc(s.team_key)}</span>` : ''}${s.last_used ? `<span class="tag used">최근 ${mmdd(s.last_used)}</span>` : ''}${s.has_chords ? '<span class="tag">코드</span>' : ''}${s.file_count ? '<span class="tag">이미지·PDF</span>' : ''}${used[s.id] ? `<span class="tag">✓ 추가됨${used[s.id] > 1 ? ' ×' + used[s.id] : ''}</span>` : ''}</span>
             </button>`
           )
@@ -1435,4 +1862,9 @@
   }
 
   route();
+
+  // 오프라인 지원: 서비스 워커가 앱 파일과 본 악보·콘티를 이 기기에 저장해 둔다.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  }
 })();

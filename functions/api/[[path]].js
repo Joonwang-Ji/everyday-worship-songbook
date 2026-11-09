@@ -213,7 +213,32 @@ async function ensureSchema(db) {
   await db.batch(SCHEMA.map((sql) => db.prepare(sql)));
   // 콘티 항목에서 코드 악보/이미지 악보 중 무엇을 보여 줄지: auto | chord | image
   await ensureColumn(db, 'setlist_items', 'view', `"view" TEXT NOT NULL DEFAULT 'auto'`);
+  // 원곡이 영어 등일 때 적어 두는 원제 / 이미지·PDF 악보 곡을 위한 "검색용 가사(후렴 등)"
+  await ensureColumn(db, 'songs', 'orig_title', `orig_title TEXT NOT NULL DEFAULT ''`);
+  await ensureColumn(db, 'songs', 'lyrics_extra', `lyrics_extra TEXT NOT NULL DEFAULT ''`);
+  await addMidTempoOnce(db);
   schemaReady = true;
+}
+// 빠르기에 "중간곡" 추가 (6차에서 요청). 관리자가 이미 추천 목록을 저장해 두었다면 기본값이 적용되지 않으므로,
+// 저장본의 "빠르기" 분류에 한 번만 끼워 넣는다. 이후 관리자가 지워도 다시 넣지 않는다.
+async function addMidTempoOnce(db) {
+  const done = await db.prepare(`SELECT v FROM settings WHERE k='mid_tempo_added'`).first();
+  if (done) return;
+  const row = await db.prepare(`SELECT v FROM settings WHERE k='tag_presets'`).first();
+  if (row) {
+    try {
+      const list = JSON.parse(row.v);
+      const g = Array.isArray(list) && list.find((x) => x && x.group === '빠르기');
+      if (g && Array.isArray(g.items) && !g.items.includes('중간곡')) {
+        const at = g.items.indexOf('빠른곡');
+        g.items.splice(at >= 0 ? at + 1 : g.items.length, 0, '중간곡');
+        await db.prepare(`UPDATE settings SET v=? WHERE k='tag_presets'`).bind(JSON.stringify(list)).run();
+      }
+    } catch {
+      /* 저장값이 깨졌으면 건드리지 않는다 */
+    }
+  }
+  await db.prepare(`INSERT OR REPLACE INTO settings (k,v) VALUES ('mid_tempo_added','1')`).run();
 }
 
 // ---------- 공통 ----------
@@ -357,8 +382,11 @@ function cleanSong(body, { requireTitle = true } = {}) {
   let youtube = str(body.youtube_url, 500);
   if (youtube && !/^https?:\/\//i.test(youtube)) youtube = '';
   const tags = [...new Set(str(body.tags, 300).split(/[,，]/).map((t) => t.trim()).filter(Boolean))].join(',');
+  const lyricsExtra = typeof body.lyrics_extra === 'string' ? body.lyrics_extra.replace(/\r\n?/g, '\n').trim().slice(0, 3000) : '';
   return {
     title,
+    orig_title: str(body.orig_title, 200),
+    lyrics_extra: lyricsExtra,
     artist: str(body.artist, 200),
     original_key: key,
     tempo,
@@ -368,20 +396,71 @@ function cleanSong(body, { requireTitle = true } = {}) {
     memo: str(body.memo, 2000),
   };
 }
-const normTitle = (s) => s.toLowerCase().replace(/[\s\-_.,!?'"()]/g, '');
-const lyricsOnly = (chordpro) =>
-  chordpro
-    .split('\n')
-    .filter((l) => !/^\s*\{.*\}\s*$/.test(l) && !/^\s*#/.test(l))
-    .map((l) => l.replace(/\[[^\]]*\]/g, ''))
-    .join(' ');
+// ---------- 검색 ----------
+// 띄어쓰기·기호·대소문자를 모두 무시하고 비교한다. ("주님의 마음을" 은 "의마음" 으로도 찾아진다)
+const searchKey = (s) => String(s == null ? '' : s).normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+// 본문(ChordPro)에서 가사 줄만 뽑는다. 후렴 구간({soc}…{eoc} 또는 {comment: 후렴} 아래 한 덩어리)은 chorus 로 표시한다.
+function lyricLines(chordpro) {
+  const out = [];
+  let inChorus = false;
+  let commentChorus = false;
+  for (const raw of String(chordpro || '').split('\n')) {
+    const d = /^\s*\{\s*([a-zA-Z_]+)\s*(?::\s*(.*?))?\s*\}\s*$/.exec(raw);
+    if (d) {
+      const name = d[1].toLowerCase();
+      if (name === 'soc' || name === 'start_of_chorus') inChorus = true;
+      else if (name === 'eoc' || name === 'end_of_chorus') inChorus = false;
+      else if (['comment', 'c', 'comment_italic', 'ci'].includes(name)) commentChorus = /후렴|코러스|chorus/i.test(d[2] || '');
+      continue;
+    }
+    if (/^\s*#/.test(raw)) continue;
+    if (!raw.trim()) {
+      commentChorus = false;
+      continue;
+    }
+    const text = raw.replace(/\[[^\]]*\]/g, '').trim();
+    if (text) out.push({ text, chorus: inChorus || commentChorus });
+  }
+  return out;
+}
+const lyricsOnly = (chordpro) => lyricLines(chordpro).map((l) => l.text).join(' ');
+// 검색어 → { all: 공백 없이 이은 전체, tokens: 단어별 }
+function parseQuery(q) {
+  const tokens = String(q || '').split(/\s+/).map(searchKey).filter(Boolean);
+  return { all: tokens.join(''), tokens };
+}
+// 단어를 이은 전체가 들어 있거나, 모든 단어가 (순서와 상관없이) 들어 있으면 일치
+const hasQuery = (hay, pq) => !!pq.all && (hay.includes(pq.all) || pq.tokens.every((t) => hay.includes(t)));
+// 가사에서 일치한 부분: 한 줄 안에서 찾고, 없으면 이어진 두 줄에서 찾는다.
+function findSnippet(lines, pq) {
+  const keys = lines.map((l) => searchKey(l.text));
+  for (let i = 0; i < lines.length; i++) if (hasQuery(keys[i], pq)) return lines[i];
+  for (let i = 0; i + 1 < lines.length; i++) {
+    if (hasQuery(keys[i] + keys[i + 1], pq)) return { text: lines[i].text + ' / ' + lines[i + 1].text, chorus: lines[i].chorus && lines[i + 1].chorus };
+  }
+  for (let i = 0; i < lines.length; i++) if (pq.tokens.some((t) => keys[i].includes(t))) return lines[i];
+  return null;
+}
+// 곡 하나가 검색어와 맞는지. 제목·원제·아티스트·태그에서 맞으면 rank 0, 가사(본문·검색용 가사)에서만 맞으면 rank 1.
+function matchSong(s, pq) {
+  const head = [s.title, s.orig_title, s.artist, s.tags].map(searchKey).join('');
+  if (hasQuery(head, pq)) return { rank: 0 };
+  const body = lyricLines(s.chordpro);
+  const extra = (s.lyrics_extra || '').split('\n').map((t) => t.trim()).filter(Boolean).map((text) => ({ text, extra: true }));
+  const all = [...body, ...extra];
+  const hay = head + all.map((l) => searchKey(l.text)).join('');
+  if (!hasQuery(hay, pq)) return null;
+  const sn = findSnippet(all, pq);
+  const label = !sn ? '' : sn.extra ? '검색용 가사' : sn.chorus ? '후렴' : '가사';
+  return { rank: 1, snippet: sn ? { text: sn.text.slice(0, 80), label } : null };
+}
 
 // ---------- 추천 태그 목록 (주제·빠르기·절기 …) ----------
 // 곡의 태그는 자유롭게 쓰되, 아래 목록은 곡 편집·목록 필터에서 "추천 칩"으로 보여 준다.
 // 관리자가 고친 목록은 settings.tag_presets 에 JSON으로 저장되고, 없으면 이 기본값을 쓴다.
 const DEFAULT_PRESETS = [
   { group: '주제', items: ['찬양', '경배', '회개&보혈', '예수님', '성령님', '교회&하나님나라', '결단', '선포', '십자가&부활'] },
-  { group: '빠르기', items: ['빠른곡', '느린곡'] },
+  { group: '빠르기', items: ['빠른곡', '중간곡', '느린곡'] },
   { group: '절기', items: ['성탄', '고난주간', '부활절', '성령강림절', '추수감사절', '송구영신'] },
 ];
 const MAX_PRESET_GROUPS = 8;
@@ -827,10 +906,10 @@ export async function onRequest({ request, env }) {
 
       // 목록 + 검색(제목·아티스트·태그·가사)
       if (!id && method === 'GET') {
-        const q = (url.searchParams.get('q') || '').trim().toLowerCase();
+        const pq = parseQuery(url.searchParams.get('q') || '');
         const { results } = await db
           .prepare(
-            `SELECT id,title,artist,original_key,tempo,tags,chordpro,updated_at,
+            `SELECT id,title,orig_title,artist,original_key,tempo,tags,chordpro,lyrics_extra,updated_at,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
               (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds
              FROM songs ORDER BY title`
@@ -853,13 +932,30 @@ export async function onRequest({ request, env }) {
             .all();
           lastMap = Object.fromEntries(lu.map((r) => [r.song_id, r]));
         }
-        const songs = results
-          .filter((s) => !q || [s.title, s.artist, s.tags, lyricsOnly(s.chordpro)].join(' ').toLowerCase().includes(q))
-          .map((s) => {
-            const { chordpro, ...rest } = s;
-            const lu = lastMap[s.id];
-            return { ...rest, file_kinds: rest.file_kinds || '', has_chords: /\S/.test(chordpro), team_key: tkMap[s.id] || '', last_used: lu ? lu.last : '', use_count: lu ? lu.n : 0 };
-          });
+        const hits = [];
+        for (const s of results) {
+          if (!pq.all) {
+            hits.push({ s, m: null });
+            continue;
+          }
+          const m = matchSong(s, pq);
+          if (m) hits.push({ s, m });
+        }
+        // 검색 중에는 제목·원제·아티스트·태그에서 맞은 곡을 먼저, 가사에서만 맞은 곡은 뒤에 (각각 제목순)
+        if (pq.all) hits.sort((a, b) => a.m.rank - b.m.rank);
+        const songs = hits.map(({ s, m }) => {
+          const { chordpro, lyrics_extra, ...rest } = s;
+          const lu = lastMap[s.id];
+          return {
+            ...rest,
+            file_kinds: rest.file_kinds || '',
+            has_chords: /\S/.test(chordpro),
+            team_key: tkMap[s.id] || '',
+            last_used: lu ? lu.last : '',
+            use_count: lu ? lu.n : 0,
+            snippet: m && m.snippet ? m.snippet : null,
+          };
+        });
         return json({ songs });
       }
 
@@ -899,16 +995,16 @@ export async function onRequest({ request, env }) {
         const song = cleanSong(body);
         if (!body.force) {
           const { results } = await db.prepare('SELECT id,title FROM songs').all();
-          const dup = results.find((s) => normTitle(s.title) === normTitle(song.title));
+          const dup = results.find((s) => searchKey(s.title) === searchKey(song.title));
           if (dup) throw new HttpError(409, '같은 제목의 곡이 이미 있습니다.', { duplicate: dup });
         }
         const now = nowIso();
         const r = await db
           .prepare(
-            `INSERT INTO songs (title,artist,original_key,tempo,youtube_url,tags,chordpro,memo,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?)`
+            `INSERT INTO songs (title,orig_title,lyrics_extra,artist,original_key,tempo,youtube_url,tags,chordpro,memo,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
           )
-          .bind(song.title, song.artist, song.original_key, song.tempo, song.youtube_url, song.tags, song.chordpro, song.memo, now, now)
+          .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.youtube_url, song.tags, song.chordpro, song.memo, now, now)
           .run();
         return json({ id: r.meta.last_row_id }, 201);
       }
@@ -1003,8 +1099,8 @@ export async function onRequest({ request, env }) {
         }
         stmts.push(
           db
-            .prepare('UPDATE songs SET title=?,artist=?,original_key=?,tempo=?,youtube_url=?,tags=?,chordpro=?,memo=?,updated_at=? WHERE id=?')
-            .bind(song.title, song.artist, song.original_key, song.tempo, song.youtube_url, song.tags, song.chordpro, song.memo, now, id)
+            .prepare('UPDATE songs SET title=?,orig_title=?,lyrics_extra=?,artist=?,original_key=?,tempo=?,youtube_url=?,tags=?,chordpro=?,memo=?,updated_at=? WHERE id=?')
+            .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.youtube_url, song.tags, song.chordpro, song.memo, now, id)
         );
         await db.batch(stmts);
         return json({ id });
