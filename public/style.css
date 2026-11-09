@@ -30,7 +30,7 @@ a { color: var(--brand); }
 .brand-sub { font-size: 13px; opacity: .85; }
 @media (prefers-color-scheme: dark) { .top { background: #1d2229; border-bottom: 1px solid var(--line); } .brand { color: var(--text); } }
 
-main { max-width: 860px; margin: 0 auto; padding: 16px; }
+main { max-width: 860px; margin: 0 auto; padding: 16px; padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
 h1 { font-size: 22px; margin: 4px 0 2px; }
 h2 { font-size: 17px; margin: 0 0 10px; }
 
@@ -96,7 +96,7 @@ details { margin: 10px 0; }
 summary { cursor: pointer; color: var(--brand); font-size: 14px; }
 pre.help { background: var(--accent-bg); padding: 10px 12px; border-radius: 10px; overflow-x: auto; font-size: 14px; }
 
-.toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: #222; color: #fff; padding: 10px 16px; border-radius: 10px; z-index: 50; font-size: 14px; max-width: 90vw; }
+.toast { position: fixed; left: 50%; bottom: calc(76px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: #222; color: #fff; padding: 10px 16px; border-radius: 10px; z-index: 50; font-size: 14px; max-width: 90vw; }
 .footer { margin-top: 28px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; gap: 14px; flex-wrap: wrap; font-size: 14px; }
 .footer a, .footer button { background: none; border: 0; padding: 0; color: var(--muted); text-decoration: underline; cursor: pointer; font-size: 14px; }
 .login { max-width: 420px; margin: 8vh auto 0; }
@@ -118,3 +118,19 @@ pre.help { background: var(--accent-bg); padding: 10px 12px; border-radius: 10px
 .file-item { width: 92px; text-align: center; font-size: 12px; color: var(--muted); }
 .file-item .thumb { width: 92px; height: 120px; object-fit: cover; border: 1px solid var(--line); border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; font-size: 28px; color: var(--text); }
 .file-item button { margin-top: 4px; }
+
+/* 2차: 하단 메뉴 · 팀 · 콘티 · 관리자 */
+.nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+.nav a { flex: 1; text-align: center; padding: 13px 4px 12px; text-decoration: none; color: var(--muted); font-weight: 700; font-size: 15px; border-top: 3px solid transparent; margin-top: -1px; }
+.nav a.on { color: var(--brand); border-top-color: var(--brand); }
+.bigcode { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 28px; font-weight: 800; letter-spacing: 3px; padding: 6px 0 10px; user-select: all; }
+.bigcode.small { font-size: 18px; letter-spacing: 2px; padding: 0; }
+.num { display: inline-block; min-width: 1.6em; color: var(--muted); font-weight: 700; }
+.si .song-title { font-size: 16px; }
+.keyfixed { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 42px; }
+.pick-list { margin-top: 8px; max-height: 340px; overflow: auto; -webkit-overflow-scrolling: touch; }
+.pick { display: block; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; margin-bottom: 6px; cursor: pointer; }
+.pick:active { background: var(--accent-bg); }
+.pick .song-title { display: block; font-size: 16px; }
+label.check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 15px; color: var(--text); }
+label.check input { width: 20px; height: 20px; flex: none; }
