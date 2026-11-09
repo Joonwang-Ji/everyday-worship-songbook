@@ -48,12 +48,17 @@
     const hay = hayParts.map(searchKey).join('');
     return hay.includes(tokens.join('')) || tokens.every((t) => hay.includes(t));
   }
+  // 화면을 옮기면(route) 번호가 올라간다. 옛 화면이 보낸 요청의 응답은 버려서, 느린 옛 화면이 새 화면을 덮어쓰지 못하게 한다.
+  let routeGen = 0;
+  const forever = () => new Promise(() => {});
   async function api(path, { method = 'GET', body } = {}) {
+    const gen = routeGen;
     const headers = { 'Content-Type': 'application/json', ...authHeaders() };
     let res;
     try {
       res = await fetch('/api' + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
     } catch {
+      if (gen !== routeGen) return forever();
       throw Object.assign(new Error('인터넷 연결을 확인해 주세요.'), { status: 0 });
     }
     // 인터넷이 안 돼서 이 기기에 저장해 둔 내용으로 보여 주는 중인지 (서비스 워커가 표시를 붙여 준다)
@@ -63,6 +68,7 @@
       window.dispatchEvent(new Event('ews-net'));
     }
     const data = await res.json().catch(() => ({}));
+    if (gen !== routeGen) return forever();
     if (!res.ok) throw Object.assign(new Error(data.error || '오류가 발생했습니다.'), { status: res.status, data });
     return data;
   }
@@ -91,21 +97,28 @@
     else if (!me.team.isLeader) ls.del('ews_leader');
   }
 
-  // 화면 아래 메뉴: 곡 / 콘티 / 팀 (관리자 PIN이 열려 있으면 관리자)
+  // 화면 아래 메뉴: 오늘 / 곡 / 콘티 / 더보기 (팀·관리자·로그아웃은 더보기 안)
+  const NAV_ICON = {
+    home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>',
+    songs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l11-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></svg>',
+    list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>',
+    more: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
+  };
   function renderNav(hash) {
     const items = [
-      ['#/', '곡', hash === '/' || /^\/(song|new|edit|history)/.test(hash)],
-      ['#/setlists', '콘티', /^\/setlist/.test(hash)],
-      ['#/team', me.team ? '팀' : '팀 가입', hash === '/team'],
+      ['#/', '오늘', 'home', hash === '/' || hash === ''],
+      ['#/songs', '곡', 'songs', /^\/(songs|song|new|edit|history)/.test(hash)],
+      ['#/setlists', '콘티', 'list', /^\/setlist/.test(hash)],
+      ['#/more', '더보기', 'more', /^\/(more|team|admin)/.test(hash)],
     ];
-    if (me.isAdmin) items.push(['#/admin', '관리자', hash === '/admin']);
-    $nav.innerHTML = items.map(([href, label, on]) => `<a href="${href}" class="${on ? 'on' : ''}">${label}</a>`).join('');
+    $nav.innerHTML = items.map(([href, label, ic, on]) => `<a href="${href}" class="${on ? 'on' : ''}">${NAV_ICON[ic]}<span>${label}</span></a>`).join('');
     $nav.hidden = false;
   }
 
   // ---------- 라우터 ----------
   let teardown = null; // 연주 모드처럼 화면을 떠날 때 정리할 일(화면 꺼짐 방지 해제 등)
   async function route() {
+    routeGen++;
     if (teardown) {
       try { teardown(); } catch {}
       teardown = null;
@@ -113,6 +126,7 @@
     const [hash, qs] = (location.hash.replace(/^#/, '') || '/').split('?');
     const q = new URLSearchParams(qs || '');
     window.scrollTo(0, 0);
+    document.querySelectorAll('.sheet-wrap').forEach((n) => n.remove()); // 열려 있던 아래 창은 닫는다
     document.querySelector('main').classList.remove('wide');
     try {
       if (!ls.get('ews_token', '')) return viewLogin();
@@ -120,12 +134,14 @@
       $top.hidden = false;
       renderNav(hash);
       // 처음 들어오면 팀 가입 화면부터. ("팀 없이 곡만 보기"를 고르면 건너뜀)
-      if (!me.team && ls.get('ews_team_skip', '') !== '1' && hash !== '/team' && hash !== '/admin') {
+      if (!me.team && ls.get('ews_team_skip', '') !== '1' && hash !== '/team' && hash !== '/admin' && hash !== '/more') {
         location.hash = '#/team';
         return;
       }
       let m;
-      if (hash === '/' || hash === '') return await viewList();
+      if (hash === '/' || hash === '') return await viewHome();
+      if (hash === '/songs') return await viewList();
+      if (hash === '/more') return await viewMore();
       if ((m = /^\/song\/(\d+)$/.exec(hash))) return await viewSong(+m[1], q);
       if ((m = /^\/play\/song\/(\d+)$/.exec(hash))) return await viewPlay({ songId: +m[1] }, q);
       if ((m = /^\/play\/(\d+)$/.exec(hash))) return await viewPlay({ sl: +m[1] }, q);
@@ -217,17 +233,13 @@
   let listState = { q: '', sel: {}, sort: 'title' };
   async function viewList() {
     $app.innerHTML = `
-      <div class="row between"><h1>곡 목록</h1>${me.canEdit ? '<a class="btn primary" href="#/new">+ 새 곡</a>' : ''}</div>
+      <div class="row between"><h1>곡 목록</h1>${lockBtn('song', '+ 새 곡', '#/new', 'primary')}</div>
       <input type="search" id="q" placeholder="제목 · 원제 · 가사(후렴) · 아티스트 · 태그 검색" value="${esc(listState.q)}">
       <details class="filter" id="filter"><summary id="fsum">분류로 찾기</summary><div id="chips"></div></details>
       ${me.team ? `<div class="row sortrow"><span class="ctl-label">정렬</span><select id="sort" aria-label="정렬"><option value="title">제목순</option><option value="old">오래 안 부른 순</option><option value="recent">최근 부른 순</option></select></div>` : ''}
       <ul class="songs" id="list"></ul>
       <div class="card" id="ext" hidden></div>
-      <p class="muted center" id="empty" hidden></p>
-      <div class="footer">
-        ${me.adminRequired ? `<a href="#/admin">${me.isAdmin ? '관리자 화면' : '관리자'}</a>` : ''}
-        <button id="logout">로그아웃</button>
-      </div>`;
+      <p class="muted center" id="empty" hidden></p>`;
     const $q = document.getElementById('q');
     const $list = document.getElementById('list');
     const $chips = document.getElementById('chips');
@@ -312,9 +324,6 @@
     };
     if ($sort) $sort.onchange = () => { listState.sort = $sort.value; draw(); };
     document.getElementById('filter').open = selTags().length > 0;
-    document.getElementById('logout').onclick = () => {
-      clearSession(); route();
-    };
     await load();
   }
 
@@ -370,11 +379,18 @@
     const slId = /^\d+$/.test(q.get('sl') || '') ? q.get('sl') : '';
     const isLeader = !!(me.team && me.team.isLeader);
 
+    const playHref = '#/play/' + (slId ? slId + '?song=' + id : 'song/' + id + (q.toString() ? '?' + q.toString() : ''));
+    // ⋯ 메뉴: 편집(권한이 없으면 🔒 PIN) · 수정 이력
+    const menuRows = [
+      me.canEdit ? `<a class="menu-row" href="#/edit/${id}">곡 편집</a>` : me.adminRequired ? `<button type="button" class="menu-row" data-lock="song" data-go="#/edit/${id}">🔒 곡 편집 <span class="muted small">PIN 필요</span></button>` : '',
+      me.canEdit ? `<a class="menu-row" href="#/history/${id}">수정 이력</a>` : '',
+    ].filter(Boolean);
+
     $app.innerHTML = `
-      <div class="row between"><a href="${slId ? '#/setlist/' + slId : '#/'}" class="small">← ${slId ? '콘티' : '목록'}</a>${me.canEdit ? `<span class="row" style="gap:6px"><a class="btn small" href="#/history/${id}">수정 이력</a><a class="btn small" href="#/edit/${id}">편집</a></span>` : ''}</div>
+      <div class="row between"><a href="${slId ? '#/setlist/' + slId : '#/songs'}" class="small">← ${slId ? '콘티' : '목록'}</a>${menuRows.length ? '<button class="btn small" id="smore" type="button" aria-label="더보기 메뉴">⋯</button>' : ''}</div>
       <h1>${esc(song.title)}</h1>
       ${song.orig_title ? `<div class="orig-line">원제 ${esc(song.orig_title)}</div>` : ''}
-      <div class="row" style="margin:6px 0 8px"><a class="btn small primary" href="#/play/${slId ? slId + '?song=' + id : 'song/' + id + (q.toString() ? '?' + q.toString() : '')}">▶ 연주 모드</a></div>
+      <div class="row actions"><a class="btn primary big grow" href="${playHref}">▶ 연주 모드</a>${hasText ? '<button class="btn big" id="keychip" type="button" aria-label="키와 표시 설정"></button>' : ''}</div>
       <div class="song-meta" style="margin-bottom:8px">
         ${song.artist ? `<span>${esc(song.artist)}</span>` : ''}
         ${hasKey ? `<span>원키 <span class="keybadge">${esc(origKey)}</span>${gk.guessed ? ' (추정)' : ''}</span>` : ''}
@@ -386,33 +402,50 @@
       ${usageHTML(song.usage)}
       ${hasText && files.length ? '<div class="tabs" id="tabs"><button class="tab" data-tab="chord">코드 악보</button><button class="tab" data-tab="img">이미지 악보</button></div>' : ''}
       ${!hasText && !files.length ? `<p class="muted">등록된 악보가 아직 없습니다.${me.canEdit ? ' 편집에서 코드 악보를 입력하거나 이미지·PDF를 올려 주세요.' : ''}</p>` : ''}
-      <div id="pane-chord">
-      <div class="controls">
-        <div class="row">
-          <span class="ctl-label">키</span>
-          <span class="keybox">
-            <button class="btn small" id="down" aria-label="반음 내리기">−</button>
-            ${hasKey ? `<select id="keysel" aria-label="목표 키">${keyList.map((k) => `<option>${k}</option>`).join('')}</select>` : '<span id="shiftlbl" class="keybadge">0</span>'}
-            <button class="btn small" id="up" aria-label="반음 올리기">+</button>
-          </span>
-          <button class="btn small" id="reset">원래 키</button>
-          ${isLeader && hasKey ? '<button class="btn small" id="teamkey">팀 기본 키로 저장</button>' : ''}
-        </div>
-        <div class="row">
-          <span class="ctl-label">카포</span>
-          <select id="capo">${[0, 1, 2, 3, 4, 5, 6, 7].map((n) => `<option value="${n}">${n === 0 ? '없음' : n}</option>`).join('')}</select>
-          <span class="ctl-label">표기</span>
-          <select id="acc"><option value="auto">자동</option><option value="sharp">♯</option><option value="flat">♭</option></select>
-          <button class="btn small" id="fdown">가−</button><button class="btn small" id="fup">가+</button>
-          <button class="btn small" id="chtoggle"></button>
-        </div>
-        <div class="capo-note" id="note"></div>
-      </div>
-      <div class="score" id="score"></div>
-      </div>
+      <div id="pane-chord"><div class="score" id="score"></div></div>
       <div id="pane-img" hidden></div>
       ${song.memo ? `<h2>메모</h2><div class="memo">${esc(song.memo)}</div>` : ''}
-      <p class="muted small" style="margin-top:20px">키 변경은 이 기기에만 저장됩니다.</p>`;
+      <div class="sheet-wrap" id="ksheet" hidden>
+        <div class="sheet-card">
+          <h2 style="margin-top:0">키 · 표시 설정</h2>
+          <div class="controls inline">
+            <div class="row">
+              <span class="ctl-label">키</span>
+              <span class="keybox">
+                <button class="btn small" id="down" aria-label="반음 내리기">−</button>
+                ${hasKey ? `<select id="keysel" aria-label="목표 키">${keyList.map((k) => `<option>${k}</option>`).join('')}</select>` : '<span id="shiftlbl" class="keybadge">0</span>'}
+                <button class="btn small" id="up" aria-label="반음 올리기">+</button>
+              </span>
+              <button class="btn small" id="reset">원래 키</button>
+              ${isLeader && hasKey ? '<button class="btn small" id="teamkey">팀 기본 키로 저장</button>' : ''}
+            </div>
+            <div class="row">
+              <span class="ctl-label">카포</span>
+              <select id="capo">${[0, 1, 2, 3, 4, 5, 6, 7].map((n) => `<option value="${n}">${n === 0 ? '없음' : n}</option>`).join('')}</select>
+              <span class="ctl-label">표기</span>
+              <select id="acc"><option value="auto">자동</option><option value="sharp">♯</option><option value="flat">♭</option></select>
+            </div>
+            <div class="row">
+              <span class="ctl-label">글자</span>
+              <button class="btn small" id="fdown">가−</button><button class="btn small" id="fup">가+</button>
+              <button class="btn small" id="chtoggle"></button>
+            </div>
+            <div class="capo-note" id="note"></div>
+          </div>
+          <p class="hint">키 변경은 이 기기에만 저장됩니다.</p>
+          <button class="btn primary" id="kclose" type="button" style="width:100%">닫기</button>
+        </div>
+      </div>`;
+    const $ks = document.getElementById('ksheet');
+    const $kc = document.getElementById('keychip');
+    if ($kc) $kc.onclick = () => { $ks.hidden = false; };
+    document.getElementById('kclose').onclick = () => { $ks.hidden = true; };
+    $ks.onclick = (ev) => { if (ev.target === $ks) $ks.hidden = true; };
+    const $sm = document.getElementById('smore');
+    if ($sm) $sm.onclick = () => {
+      const sh = showSheet(`<div class="menu-list">${menuRows.join('')}</div><button type="button" class="btn" id="mcancel" style="width:100%;margin-top:8px">닫기</button>`);
+      sh.q('#mcancel').onclick = () => sh.close();
+    };
 
     const $score = document.getElementById('score');
     const $note = document.getElementById('note');
@@ -435,6 +468,7 @@
         document.getElementById('shiftlbl').textContent = (st.shift > 0 ? '+' : '') + st.shift;
         $note.textContent = '원래 키 정보가 없어 반음 단위로만 표시합니다. 편집에서 키를 입력해 보세요.';
       }
+      if ($kc) $kc.innerHTML = '키 <b>' + esc(hasKey ? p.soundKey : (st.shift > 0 ? '+' : '') + st.shift) + '</b>' + (st.capo ? ' · 카포 ' + st.capo : '') + ' ▾';
       if (persist) ls.set('ews_song_' + id, JSON.stringify(st));
     }
     const wrap = (n) => ((n % 12) + 12) % 12;
@@ -483,6 +517,7 @@
     function showTab(t, remember) {
       $pc.hidden = t !== 'chord';
       $pi.hidden = t !== 'img';
+      if ($kc) $kc.hidden = t !== 'chord';
       document.querySelectorAll('#tabs .tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
       if (remember && hasText && files.length) ls.set('ews_tab_' + id, t);
     }
@@ -508,7 +543,7 @@
     if (!me.canEdit) {
       $app.innerHTML = `<div class="card"><p>악보를 편집할 권한이 없습니다.</p>
         <p class="muted small">관리자이거나, 관리자가 악보 편집 권한을 켜 준 팀의 팀장만 악보를 등록·수정할 수 있습니다.</p>
-        ${me.adminRequired ? '<a class="btn primary" href="#/admin">관리자 PIN 입력</a> ' : '<p class="error">관리자 PIN(ADMIN_PIN)이 설정되어 있지 않아 아무도 편집할 수 없습니다. 설치 안내를 확인해 주세요.</p>'}<a class="btn" href="#/team">팀 화면</a> <a class="btn" href="#/">목록</a></div>`;
+        ${me.adminRequired ? lockBtn('song', 'PIN 입력', location.hash || '#/songs', 'primary') + ' ' : '<p class="error">관리자 PIN(ADMIN_PIN)이 설정되어 있지 않아 아무도 편집할 수 없습니다. 설치 안내를 확인해 주세요.</p>'}<a class="btn" href="#/songs">목록</a></div>`;
       return;
     }
     document.querySelector('main').classList.add('wide');
@@ -520,7 +555,7 @@
     const keyOptions = ['', ...KEYS_MAJOR, ...KEYS_MINOR];
 
     $app.innerHTML = `
-      <div class="row between"><a href="${id ? '#/song/' + id : '#/'}" class="small">← ${id ? '곡 보기' : '목록'}</a><h2 style="margin:0">${id ? '악보 편집' : '새 곡 등록'}</h2></div>
+      <div class="row between"><a href="${id ? '#/song/' + id : '#/songs'}" class="small">← ${id ? '곡 보기' : '목록'}</a><h2 style="margin:0">${id ? '악보 편집' : '새 곡 등록'}</h2></div>
       <div class="edit-wrap">
         <div>
           <div class="card">
@@ -564,7 +599,7 @@
           <p class="error" id="err"></p>
           <div class="row">
             <button class="btn primary" id="save">저장</button>
-            <a class="btn" href="${id ? '#/song/' + id : '#/'}">취소</a>
+            <a class="btn" href="${id ? '#/song/' + id : '#/songs'}">취소</a>
             ${id ? '<button class="btn danger" id="del" style="margin-left:auto">삭제</button>' : ''}
           </div>
         </div>
@@ -709,7 +744,7 @@
       try {
         await api('/songs/' + id, { method: 'DELETE' });
         toast('삭제했습니다.');
-        location.hash = '#/';
+        location.hash = '#/songs';
       } catch (e) {
         $('err').textContent = e.message;
       }
@@ -836,6 +871,184 @@
   }
   const noteBox = (html) => `<div class="card">${html}</div>`;
 
+  // ---------- 권한 열기: 필요한 순간에 그 자리에서 PIN 묻기 (6차 전 개편) ----------
+  // kind: 'leader' = 콘티 편집(팀장 PIN) · 'song' = 악보 편집(관리자 PIN, 또는 악보 권한이 있는 팀장 PIN)
+  // 권한이 있으면 보통 버튼, 없지만 열 수 있으면 🔒 버튼(누르면 PIN 창), 열 방법이 없으면 보이지 않는다.
+  function lockBtn(kind, label, go, cls) {
+    const allowed = kind === 'leader' ? !!(me.team && me.team.isLeader) : !!me.canEdit;
+    const c = cls || '';
+    if (allowed) return `<a class="btn ${c}" href="${go}">${label}</a>`;
+    const lockable = kind === 'leader' ? !!me.team : !!me.adminRequired;
+    if (!lockable) return '';
+    return `<button type="button" class="btn locked ${c.replace('primary', '').trim()}" data-lock="${kind}" data-go="${esc(go)}">🔒 ${label}</button>`;
+  }
+  // 아래에서 올라오는 창. 바깥을 누르거나 Esc로 닫는다.
+  function showSheet(html, onClose) {
+    const wrap = document.createElement('div');
+    wrap.className = 'sheet-wrap';
+    wrap.innerHTML = `<div class="sheet-card">${html}</div>`;
+    const onEsc = (e) => { if (e.key === 'Escape') close(); };
+    function close() {
+      if (!wrap.isConnected) return;
+      wrap.remove();
+      document.removeEventListener('keydown', onEsc);
+      if (onClose) onClose();
+    }
+    wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+    document.addEventListener('keydown', onEsc);
+    document.body.appendChild(wrap);
+    return { wrap, close, q: (sel) => wrap.querySelector(sel) };
+  }
+  function askPin(kind) {
+    return new Promise((resolve) => {
+      let who = kind === 'leader' ? 'leader' : me.adminRequired ? 'admin' : 'leader';
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; resolve(v); } };
+      let sh = null;
+      const draw = () => {
+        const html = `
+          <h2 style="margin-top:0">${kind === 'leader' ? '콘티 편집은 팀장 PIN이 필요해요' : '악보 편집은 PIN이 필요해요'}</h2>
+          ${kind === 'song' && me.adminRequired && me.team ? `<div class="row" style="margin-bottom:8px"><button type="button" class="seg ${who === 'admin' ? 'on' : ''}" data-who="admin">관리자 PIN</button><button type="button" class="seg ${who === 'leader' ? 'on' : ''}" data-who="leader">팀장 PIN</button></div>` : ''}
+          <form id="pinform">
+            <input id="pinin" type="password" autocomplete="off" aria-label="${who === 'admin' ? '관리자 PIN' : '팀장 PIN'}" placeholder="${who === 'admin' ? '관리자 PIN' : '팀장 PIN'}">
+            <p class="error" id="pinerr"></p>
+            <div class="row" style="margin-top:8px"><button class="btn primary" style="flex:1">확인</button><button type="button" class="btn" id="pincancel">취소</button></div>
+          </form>
+          <p class="hint">한 번 입력하면 이 기기에 30일간 기억돼요. 다른 사람이 쓰는 기기라면 더보기에서 “편집 권한 닫기”를 눌러 주세요.</p>`;
+        if (!sh) sh = showSheet(html, () => finish(false));
+        else sh.wrap.firstChild.innerHTML = html;
+        const input = sh.q('#pinin');
+        input.focus();
+        sh.q('#pincancel').onclick = () => sh.close();
+        sh.wrap.querySelectorAll('[data-who]').forEach((b) => (b.onclick = () => { who = b.dataset.who; draw(); }));
+        sh.q('#pinform').onsubmit = async (ev) => {
+          ev.preventDefault();
+          const err = sh.q('#pinerr');
+          err.textContent = '';
+          const pin = input.value;
+          try {
+            if (who === 'admin') {
+              const r = await api('/admin', { method: 'POST', body: { pin } });
+              ls.set('ews_admin', r.adminToken);
+            } else {
+              const r = await api('/team/leader-login', { method: 'POST', body: { pin } });
+              ls.set('ews_leader', r.leaderToken);
+            }
+            await loadMe();
+            const ok = kind === 'leader' ? !!(me.team && me.team.isLeader) : !!me.canEdit;
+            if (!ok) { err.textContent = '로그인은 됐지만 이 PIN으로는 악보를 편집할 수 없어요. 팀장은 관리자가 악보 편집 권한을 켜 줘야 합니다.'; return; }
+            toast(who === 'admin' ? '관리자로 로그인했습니다.' : '팀장으로 로그인했습니다.');
+            finish(true);
+            sh.close();
+          } catch (e) {
+            err.textContent = e.message;
+          }
+        };
+      };
+      draw();
+    });
+  }
+  document.addEventListener('click', async (ev) => {
+    const b = ev.target.closest && ev.target.closest('[data-lock]');
+    if (!b) return;
+    ev.preventDefault();
+    const go = b.dataset.go || '';
+    if (await askPin(b.dataset.lock)) {
+      if (go && go !== location.hash) location.hash = go;
+      else route();
+    }
+  });
+
+  // ---------- 오늘 (처음 화면): 이번 주 콘티와 바로 연주 ----------
+  async function viewHome() {
+    const search = `<form class="card home-search" id="hs"><input type="search" id="hq" placeholder="곡 검색 (제목 · 가사 · 원제)" enterkeyhint="search" aria-label="곡 검색"></form>`;
+    const bindSearch = () => {
+      el('hs').onsubmit = (ev) => {
+        ev.preventDefault();
+        listState.q = el('hq').value.trim();
+        location.hash = '#/songs';
+      };
+    };
+    if (!me.team) {
+      $app.innerHTML = `
+        <div class="card hero">
+          <div class="hero-label">우리 팀 콘티</div>
+          <h2 class="hero-title">팀에 가입하면 여기에 이번 주 콘티가 나와요</h2>
+          <p class="muted" style="margin:0 0 12px">팀장에게 받은 가입코드로 입장하면 콘티를 보고 바로 연주할 수 있어요.</p>
+          <a class="btn primary big" href="#/team">팀 가입하기</a>
+        </div>
+        ${search}
+        <p><a class="btn" href="#/songs">곡 목록 보기</a></p>`;
+      bindSearch();
+      return;
+    }
+    const { setlists } = await api('/setlists');
+    const today = todayKst();
+    const byDate = (a, b) => (a.date || '').localeCompare(b.date || '');
+    const upcoming = setlists.filter((l) => l.date && l.date >= today).sort(byDate);
+    const past = setlists.filter((l) => !l.date || l.date < today).sort((a, b) => byDate(b, a));
+    const featured = upcoming[0] || past[0] || null;
+    let hero;
+    if (!featured) {
+      hero = `<div class="card hero">
+        <div class="hero-label">${esc(me.team.name)}</div>
+        <h2 class="hero-title">아직 콘티가 없어요</h2>
+        <p class="muted" style="margin:0 0 12px">콘티를 만들면 이번 주 곡이 여기에 나타나고, 한 번에 연주 모드로 들어갈 수 있어요.</p>
+        ${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary big')}
+      </div>`;
+    } else {
+      const { setlist: s } = await api('/setlists/' + featured.id);
+      const label = featured.date === today ? '오늘 콘티' : upcoming[0] ? '다가오는 콘티' : '가장 최근 콘티';
+      const shown = s.items.slice(0, 8);
+      hero = `<div class="card hero">
+        <div class="hero-label">${label}${s.date ? ' · ' + esc(fmtDate(s.date)) : ''}</div>
+        <h2 class="hero-title">${esc(s.title)}</h2>
+        ${shown.length ? `<ol class="mini">${shown.map((it, i) => `<li><span class="num">${i + 1}</span><span class="grow">${esc(it.title)}</span>${(it.key || it.original_key) ? `<span class="keybadge">${esc(it.key || it.original_key)}</span>` : ''}</li>`).join('')}</ol>${s.items.length > shown.length ? `<p class="muted small" style="margin:4px 0 0">외 ${s.items.length - shown.length}곡</p>` : ''}` : '<p class="muted">이 콘티에는 아직 곡이 없어요.</p>'}
+        <div class="row" style="margin-top:12px">${shown.length ? `<a class="btn primary big grow" href="#/play/${s.id}">▶ 연주 모드</a>` : ''}<a class="btn big" href="#/setlist/${s.id}">콘티 보기</a></div>
+      </div>`;
+    }
+    const others = upcoming.slice(1, 3);
+    $app.innerHTML = `
+      ${hero}
+      ${others.length ? `<h2>이어지는 콘티</h2><ul class="songs">${others.map((l) => `<li class="song-item"><a href="#/setlist/${l.id}"><div class="row between"><div class="song-title">${esc(l.title)}</div>${l.date ? `<span class="keybadge">${esc(fmtDate(l.date))}</span>` : ''}</div><div class="song-meta"><span>${l.item_count}곡</span></div></a></li>`).join('')}</ul>` : ''}
+      ${search}
+      <div class="row"><a class="btn" href="#/setlists">콘티 전체</a><a class="btn" href="#/songs">곡 목록</a></div>`;
+    bindSearch();
+  }
+
+  // ---------- 더보기: 내 권한 · 우리 팀 · 앱 관리 · 로그아웃 ----------
+  async function viewMore() {
+    const t = me.team;
+    const leader = !!(t && t.isLeader);
+    const perm = (name, ok, hint, kind) =>
+      `<div class="perm"><div class="grow"><b>${name}</b><div class="small muted">${hint}</div></div>${ok ? '<span class="pill ok">가능</span>' : lockBtn(kind, '열기', '', 'small') || '<span class="pill">불가</span>'}</div>`;
+    $app.innerHTML = `
+      <h1>더보기</h1>
+      <div class="card">
+        <h2>내 편집 권한</h2>
+        ${t ? perm('콘티 편집', leader, leader ? '팀장 PIN으로 열려 있어요' : '팀장 PIN을 입력하면 열려요', 'leader') : ''}
+        ${perm('악보 편집', !!me.canEdit, me.canEdit ? '이 기기에서 열려 있어요' : me.adminRequired ? '관리자 PIN을 입력하면 열려요' : '관리자 PIN이 설정되지 않았어요', 'song')}
+        ${me.isAdmin || leader ? '<p style="margin:10px 0 0"><button class="btn small" id="closeperm" type="button">이 기기에서 편집 권한 닫기</button></p>' : ''}
+      </div>
+      <ul class="songs menu">
+        <li class="song-item"><a href="#/team"><div class="song-title">${t ? esc(t.name) : '팀 가입'}</div><div class="song-meta">${t ? '가입코드 · 팀장 PIN · 팀 나가기' : '팀장에게 받은 가입코드로 입장하기'}</div></a></li>
+        ${me.adminRequired ? `<li class="song-item"><a href="#/admin"><div class="song-title">앱 관리</div><div class="song-meta">${me.isAdmin ? '초대코드 · 팀 목록 · 추천 태그' : '관리자 PIN 필요'}</div></a></li>` : ''}
+      </ul>
+      <div class="footer"><button id="logout" type="button">로그아웃</button></div>
+      <p class="muted small">교회 내부용 악보집입니다. 저작권 보호를 위해 외부 공유를 삼가 주세요.</p>`;
+    const cp = el('closeperm');
+    if (cp) cp.onclick = () => {
+      ls.del('ews_admin');
+      ls.del('ews_leader');
+      toast('이 기기의 편집 권한을 닫았습니다.');
+      route();
+    };
+    el('logout').onclick = () => {
+      clearSession();
+      route();
+    };
+  }
+
   // ---------- 팀 ----------
   async function viewTeam() {
     // 팀이 없으면: 가입코드로 입장 / 새 팀 만들기 / 팀 없이 보기
@@ -906,8 +1119,9 @@
     const { team } = await api('/team');
     const leader = !!team.isLeader;
     $app.innerHTML = `
+      <div class="row between"><a href="#/more" class="small">← 더보기</a></div>
       <h1>${esc(team.name)}</h1>
-      <p class="muted">${leader ? '팀장으로 로그인되어 있습니다.' : '팀원으로 입장했습니다.'}</p>
+      <p class="muted">${leader ? '팀장으로 열려 있습니다.' : '팀원으로 입장했습니다.'}</p>
       ${
         leader
           ? `<div class="card">
@@ -916,25 +1130,17 @@
               <div class="row"><button class="btn small" id="cpy">복사</button><button class="btn small danger" id="reissue">재발급</button></div>
               <p class="hint">팀원에게 알려 주세요. 재발급하면 이전 코드는 쓸 수 없고, 기존 팀원은 새 코드로 다시 입장해야 합니다.</p>
             </div>
-            <div class="card">
-              <h2>악보 편집 권한</h2>
-              <p style="margin:0">${team.canEditSongs ? '이 팀 팀장은 악보를 등록·수정할 수 있습니다.' : '이 팀 팀장은 악보를 보기만 할 수 있습니다. (콘티 편집은 가능) 악보 편집이 필요하면 관리자에게 요청해 주세요.'}</p>
-            </div>
-            <form class="card" id="pf">
-              <h2>팀장 PIN 변경</h2>
-              <label for="pc" style="margin-top:0">현재 PIN</label><input id="pc" type="password" autocomplete="current-password">
-              <label for="pn">새 PIN (4자 이상)</label><input id="pn" type="password" autocomplete="new-password">
-              <p class="error" id="perr"></p>
-              <p><button class="btn">PIN 변경</button></p>
-            </form>
-            <p><button class="btn" id="lout">팀장 로그아웃</button></p>`
-          : `<form class="card" id="lf">
-              <h2>팀장 로그인</h2>
-              <label for="lp" style="margin-top:0">팀장 PIN</label><input id="lp" type="password" autocomplete="off">
-              <p class="error" id="lerr"></p>
-              <p><button class="btn primary">팀장으로 로그인</button></p>
-              <p class="hint">콘티를 만들고 고치려면 팀장 PIN이 필요합니다. (이 기기에 30일간 보관됩니다)</p>
-            </form>`
+            <p class="muted small">${team.canEditSongs ? '이 팀 팀장은 악보도 등록·수정할 수 있습니다.' : '이 팀 팀장은 콘티만 편집할 수 있습니다. 악보 편집이 필요하면 관리자에게 요청해 주세요.'}</p>
+            <details class="card fold"><summary>팀장 PIN 변경</summary>
+              <form id="pf">
+                <label for="pc" style="margin-top:0">현재 PIN</label><input id="pc" type="password" autocomplete="current-password">
+                <label for="pn">새 PIN (4자 이상)</label><input id="pn" type="password" autocomplete="new-password">
+                <p class="error" id="perr"></p>
+                <p><button class="btn">PIN 변경</button></p>
+              </form>
+            </details>
+            <p><button class="btn" id="lout">팀장 권한 닫기</button></p>`
+          : `<div class="card"><h2>콘티 편집</h2><p class="muted small" style="margin-top:0">콘티를 만들고 고치려면 팀장 PIN이 필요해요.</p>${lockBtn('leader', '팀장 PIN 입력', '', '')}</div>`
       }
       <div class="footer"><button id="leave">이 기기에서 팀 나가기</button></div>`;
     if (leader) {
@@ -964,21 +1170,8 @@
       };
       el('lout').onclick = () => {
         ls.del('ews_leader');
-        toast('팀장 로그아웃했습니다.');
+        toast('팀장 권한을 닫았습니다.');
         route();
-      };
-    } else {
-      el('lf').onsubmit = async (ev) => {
-        ev.preventDefault();
-        el('lerr').textContent = '';
-        try {
-          const r = await api('/team/leader-login', { method: 'POST', body: { pin: el('lp').value } });
-          ls.set('ews_leader', r.leaderToken);
-          toast('팀장으로 로그인했습니다.');
-          route();
-        } catch (e) {
-          el('lerr').textContent = e.message;
-        }
       };
     }
     el('leave').onclick = () => {
@@ -997,7 +1190,7 @@
     }
     const { setlists, canEdit } = await api('/setlists');
     $app.innerHTML = `
-      <div class="row between"><h1>콘티 · ${esc(me.team.name)}</h1>${canEdit ? '<a class="btn primary" href="#/setlist/new">+ 새 콘티</a>' : ''}</div>
+      <div class="row between"><h1>콘티 · ${esc(me.team.name)}</h1>${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary')}</div>
       ${
         setlists.length
           ? `<ul class="songs">${setlists
@@ -1010,7 +1203,7 @@
               .join('')}</ul>`
           : `<p class="muted center">아직 콘티가 없습니다.${canEdit ? ' “+ 새 콘티”로 만들어 보세요.' : ''}</p>`
       }
-      ${canEdit ? '' : '<p class="muted small">콘티를 만들고 고치려면 <a href="#/team">팀 화면</a>에서 팀장 PIN을 입력하세요.</p>'}`;
+      `;
   }
 
   // ---------- 콘티 보기 ----------
@@ -1036,11 +1229,11 @@
       </a></li>`;
     });
     $app.innerHTML = `
-      <div class="row between"><a href="#/setlists" class="small">← 콘티 목록</a>${canEdit ? `<a class="btn small" href="#/setlist/${id}/edit">편집</a>` : ''}</div>
+      <div class="row between"><a href="#/setlists" class="small">← 콘티 목록</a>${lockBtn('leader', '편집', '#/setlist/' + id + '/edit', 'small')}</div>
       <h1>${esc(s.title)}</h1>
       <div class="song-meta" style="margin-bottom:10px">${s.date ? `<span class="keybadge">${esc(fmtDate(s.date))}</span>` : ''}<span>${s.items.length}곡</span></div>
       ${s.memo ? `<div class="memo" style="margin-bottom:12px">${esc(s.memo)}</div>` : ''}
-      ${rows.length ? `<div class="row" style="margin-bottom:12px"><a class="btn primary" href="#/play/${id}">▶ 연주 모드</a><button class="btn" id="offline" type="button">⬇ 오프라인 준비</button></div>` : ''}
+      ${rows.length ? `<div class="row" style="margin-bottom:12px"><a class="btn primary big" href="#/play/${id}">▶ 연주 모드</a><button class="btn" id="offline" type="button">⬇ 오프라인 준비</button></div>` : ''}
       ${rows.length ? `<ul class="songs">${rows.join('')}</ul>` : '<p class="muted">아직 곡이 없습니다.</p>'}
       <p class="muted small">곡을 누르면 이 콘티의 키로 악보가 열립니다. 연주 모드에서는 좌우로 밀어 다음 곡으로 넘어가요.</p>`;
     const $off = document.getElementById('offline');
@@ -1153,8 +1346,6 @@
 
     let cur = null;
     let nav = 0;
-    // 이미지가 들어갈 칸의 높이(px). 이미지를 이 높이 안에 통째로 맞춘다.
-    const setBodyH = () => $play.style.setProperty('--bodyh', Math.max(100, $pb.clientHeight - 8) + 'px');
     function applyLook() {
       $play.classList.toggle('dark', P.theme === 'dark');
       $play.classList.toggle('light', P.theme === 'light');
@@ -1176,16 +1367,21 @@
         if (it.key && origKey && it.key !== origKey) extra = `악보는 원키 ${origKey} 기준`;
       }
       g('ptitle').textContent = (multi ? `${idx + 1}. ` : '') + song.title;
+      // 다음 곡 미리보기: 제목 · 키 · 메모 (길면 말줄임). 누르면 다음 곡으로.
+      const nx = items[idx + 1];
+      const nextHtml = !multi ? '' : nx
+        ? `<button class="play-next" id="pnext" type="button">다음 ▶ ${idx + 2}. ${esc(nx.title || '')}${nx.key ? ' · <b>' + esc(nx.key) + '</b>' : ''}${nx.memo ? ' · ' + esc(nx.memo) : ''}</button>`
+        : '<span class="play-next">마지막 곡</span>';
       g('pinfo').innerHTML = [
         keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '',
         it.form ? `<span class="pi"><b>송폼</b> ${esc(it.form)}</span>` : '',
         it.memo ? `<span class="pi"><b>메모</b> ${esc(it.memo)}</span>` : '',
         extra ? `<span class="pi muted">${esc(extra)}</span>` : '',
         hasText && files.length ? `<button class="pbtn mini" id="pswap" type="button">${isImg ? '코드 악보로' : '이미지 악보로'}</button>` : '',
+        nextHtml,
       ].join('');
       $pb.classList.toggle('img', isImg);
       g('pel').hidden = g('per').hidden = !isImg; // 이미지 악보일 때만 화면 양옆을 눌러 넘길 수 있다
-      setBodyH();
       if (!isImg) {
         $pb.innerHTML = `<div class="score">${Chord.renderHTML(parsed, { originalKey: origKey, shift: cur.shift, capo: cur.capo, acc: P.acc, showChords: P.chords })}</div>`;
         $pb.scrollTop = top;
@@ -1288,7 +1484,8 @@
 
     // ----- 위쪽 버튼, 설정·곡 목록 창 -----
     g('pinfo').onclick = (ev) => {
-      if (!cur || ev.target.id !== 'pswap') return;
+      if (ev.target.closest && ev.target.closest('#pnext')) { if (idx + 1 < items.length) show(idx + 1, 0); return; }
+      if (!cur || !ev.target.closest || !ev.target.closest('#pswap')) return;
       cur.tab = cur.tab === 'chord' ? 'img' : 'chord';
       cur.page = 0;
       ls.set('ews_tab_' + cur.song.id, cur.tab);
@@ -1359,8 +1556,21 @@
     const onOnline = () => { servedFromCache = false; onNet(); }; // 인터넷이 돌아오면 배지를 끈다 (다음 요청에서 다시 확인)
     document.addEventListener('keydown', onKey);
     document.addEventListener('visibilitychange', onVis);
-    const onResize = () => { setBodyH(); };
+    // 기기를 돌리면 화면 크기가 늦게 확정되는 기기(아이폰 등)가 있어서, 돌린 직후와 잠시 뒤에 두 번 화면을 다시 계산시킨다.
+    let rt1 = 0, rt2 = 0;
+    const relayout = () => {
+      window.scrollTo(0, 0);
+      $play.style.display = 'none';
+      void $play.offsetHeight;
+      $play.style.display = '';
+    };
+    const onResize = () => {
+      clearTimeout(rt1); clearTimeout(rt2);
+      rt1 = setTimeout(relayout, 80);
+      rt2 = setTimeout(relayout, 450);
+    };
     window.addEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onNet);
     window.addEventListener('ews-net', onNet);
@@ -1368,7 +1578,9 @@
       releaseWake();
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('visibilitychange', onVis);
+      clearTimeout(rt1); clearTimeout(rt2);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onNet);
       window.removeEventListener('ews-net', onNet);
@@ -1404,7 +1616,7 @@
   // ---------- 콘티 편집 (팀장) ----------
   async function viewSetlistEdit(id) {
     if (!me.team || !me.team.isLeader) {
-      $app.innerHTML = noteBox('<p>콘티는 팀장만 만들고 고칠 수 있습니다.</p><a class="btn primary" href="#/team">팀 화면에서 팀장 로그인</a> <a class="btn" href="#/setlists">콘티 목록</a>');
+      $app.innerHTML = noteBox('<p>콘티는 팀장만 만들고 고칠 수 있습니다.</p>' + lockBtn('leader', '팀장 PIN 입력', location.hash || '#/setlists', 'primary') + ' <a class="btn" href="#/setlists">콘티 목록</a>');
       return;
     }
     const [songRes, listRes, tagRes] = await Promise.all([api('/songs'), id ? api('/setlists/' + id) : null, api('/tags')]);
@@ -1601,12 +1813,13 @@
     }
     if (!me.isAdmin) {
       $app.innerHTML = `
+        <div class="row between"><a href="#/more" class="small">← 더보기</a></div>
         <h1>관리자</h1>
         <form class="card" id="f">
           <label for="pin" style="margin-top:0">관리자 PIN</label>
           <input id="pin" type="password" autocomplete="off" autofocus>
           <p class="error" id="err"></p>
-          <div class="row"><button class="btn primary">확인</button><a class="btn" href="#/">취소</a></div>
+          <div class="row"><button class="btn primary">확인</button><a class="btn" href="#/more">취소</a></div>
         </form>
         <p class="muted small">악보 등록·수정, 팀 관리에 필요합니다. (이 기기에 30일간 보관됩니다)</p>`;
       el('f').onsubmit = async (ev) => {
@@ -1626,7 +1839,8 @@
     const [inv, tr, tg] = await Promise.all([api('/admin/invite'), api('/admin/teams'), api('/tags')]);
     const teams = tr.teams;
     $app.innerHTML = `
-      <h1>관리자</h1>
+      <div class="row between"><a href="#/more" class="small">← 더보기</a></div>
+      <h1>앱 관리</h1>
       <div class="card">
         <h2>팀 만들기 초대코드</h2>
         ${inv.code ? `<div class="bigcode" id="invcode">${esc(inv.code)}</div>` : '<p class="muted">초대코드가 없습니다. 재발급하면 팀 만들기가 열립니다.</p>'}
@@ -1653,15 +1867,15 @@
             .join('') || '<p class="muted">아직 팀이 없습니다.</p>'
         }
       </div>
-      <form class="card" id="nf">
-        <h2>팀 직접 만들기</h2>
+      <details class="card fold"><summary>팀 직접 만들기</summary>
+      <form id="nf">
         <div class="grid2">
           <div><label for="nn" style="margin-top:0">팀 이름</label><input id="nn" type="text" maxlength="40"></div>
           <div><label for="np" style="margin-top:0">팀장 PIN (4자 이상)</label><input id="np" type="password" autocomplete="new-password"></div>
         </div>
         <p class="error" id="nerr"></p>
         <p><button class="btn">팀 만들기</button></p>
-      </form>
+      </form></details>
       <h2>추천 태그 (주제 · 빠르기 · 절기)</h2>
       <div class="card">
         <p class="hint" style="margin-top:0">곡 편집 화면과 곡 목록 필터에 칩으로 나오는 목록입니다. 곡에는 이 목록에 없는 태그도 자유롭게 쓸 수 있어요. 고친 뒤 <b>추천 목록 저장</b>을 눌러야 반영됩니다.</p>
@@ -1669,12 +1883,11 @@
         <p class="error" id="perr"></p>
         <div class="row"><button class="btn small" id="pnew" type="button">+ 분류 추가</button><button class="btn primary" id="psave" type="button">추천 목록 저장</button></div>
       </div>
-      <h2>곡에 쓰인 태그 정리</h2>
-      <div class="card">
+      <details class="card fold"><summary>곡에 쓰인 태그 정리</summary>
         <p class="hint" style="margin-top:0">이름을 바꾸면 모든 곡의 태그가 함께 바뀝니다. 이미 있는 태그 이름으로 바꾸면 하나로 합쳐져요.</p>
         <div id="usedtags"></div>
-      </div>
-      <div class="footer"><button id="aout">관리자 로그아웃</button></div>`;
+      </details>
+      <div class="footer"><button id="aout">관리자 권한 닫기</button></div>`;
 
     const refresh = () => route();
     const act = async (fn) => {
