@@ -351,3 +351,24 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 .ps-block select { width: auto; min-width: 7.5em; flex: none; min-height: 44px; }
 .ps-prev { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
 .sheet-card .te-pal-row.wrap { margin: 6px 0; }
+
+/* ---------- 8차: 악보 형식 배지 · 주제 줄 · 공유 창 · 순서 바꾸기 ---------- */
+.fmt { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; font-weight: 700; line-height: 1.5; padding: 0 7px; border-radius: 6px; border: 1.5px solid var(--brand); color: var(--brand); background: transparent; white-space: nowrap; }
+.fmt.img { border-color: #8a5a00; color: #8a5a00; }
+.fmt.pdf { border-color: #8f2d56; color: #8f2d56; }
+.fmt.none { border-style: dashed; border-color: var(--line); color: var(--muted); font-weight: 400; }
+@media (prefers-color-scheme: dark) { .fmt.img { border-color: #e0b35c; color: #e0b35c; } .fmt.pdf { border-color: #e58bb1; color: #e58bb1; } }
+.song-tags { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 3px; font-size: 12px; color: var(--muted); opacity: .85; }
+.song-tags .tg { white-space: nowrap; }
+.chip small { opacity: .75; font-size: 11px; margin-left: 2px; }
+.chip.on small { opacity: .9; }
+.chip.edit .x.mv { font-size: 11px; opacity: .7; padding: 0 3px; }
+.pgroup .row { gap: 6px; }
+.share-list { display: flex; flex-direction: column; gap: 8px; }
+.share-item { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; width: 100%; min-height: 56px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); font-size: 16px; cursor: pointer; }
+.share-item span { font-size: 13px; color: var(--muted); }
+.share-item:active { background: var(--accent-bg); }
+.share-item:disabled { opacity: .6; }
+.te-row.flash { animation: teflash 1.6s ease-out; }
+@keyframes teflash { 0%, 40% { background: #fff3b0; } 100% { background: transparent; } }
+@media (prefers-color-scheme: dark) { @keyframes teflash { 0%, 40% { background: #5a4d12; } 100% { background: transparent; } } }

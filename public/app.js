@@ -140,7 +140,7 @@
       }
       let m;
       if (hash === '/' || hash === '') return await viewHome();
-      if (hash === '/songs') return await viewList();
+      if (hash === '/songs') return await viewList(q);
       if (hash === '/more') return await viewMore();
       if ((m = /^\/song\/(\d+)$/.exec(hash))) return await viewSong(+m[1], q);
       if ((m = /^\/play\/song\/(\d+)$/.exec(hash))) return await viewPlay({ songId: +m[1] }, q);
@@ -197,14 +197,8 @@
 
   // ---------- 4차 공용: 추천 태그(주제·빠르기·절기), 외부 검색 링크, 날짜 표시 ----------
   // 곡 태그는 자유롭게 쓰되, 관리자가 정해 둔 추천 목록은 칩으로 보여 준다.
-  const OTHER_KEY = '__other';
-  // 추천 목록의 분류별 태그 + 추천에는 없지만 곡에 쓰인 태그("기타"). 쓰이지 않는 추천 태그는 필터에서 뺀다.
-  function groupTags(info) {
-    const inPreset = new Set(info.presets.flatMap((g) => g.items));
-    const groups = info.presets.map((g) => ({ key: g.group, label: g.group, items: g.items.filter((t) => (info.usage[t] || 0) > 0) }));
-    groups.push({ key: OTHER_KEY, label: '기타', items: Object.keys(info.usage).filter((t) => !inPreset.has(t)).sort() });
-    return groups.filter((g) => g.items.length);
-  }
+  const OTHER_KEY = SongFilter.OTHER_KEY;
+  const groupTags = SongFilter.groupTags; // 추천 목록의 분류별 태그 + 곡에 쓰인 "기타" (songfilter.js)
   const extLinksHTML = (q) => {
     const e = encodeURIComponent;
     return [
@@ -229,14 +223,20 @@
   }
 
   // ---------- 곡 목록 ----------
-  // sel: 분류별로 고른 태그 { 분류이름: 태그 } — 분류 안에서는 하나, 분류끼리는 "그리고"로 좁혀 간다.
-  let listState = { q: '', sel: {}, sort: 'title' };
-  async function viewList() {
+  // 필터(주제·키·악보 형식)와 정렬은 주소에도 저장된다: #/songs?tag=회개%26보혈&key=G,E&fmt=chord&sort=key
+  // 같은 세션에서는 목록을 떠났다 돌아와도 그대로 유지된다. (listState)
+  let listState = { q: '', f: SongFilter.newState(), sort: 'title' };
+  async function viewList(q) {
+    if (q && SongFilter.hasFilterParams(q)) {
+      const r = SongFilter.fromQuery(q);
+      listState = { q: r.q, f: r.st, sort: r.sort };
+    }
+    const teamSorts = me.team ? '<option value="old">오래 안 부른 순</option><option value="recent">최근 부른 순</option>' : '';
     $app.innerHTML = `
       <div class="row between"><h1>곡 목록</h1>${lockBtn('song', '+ 새 곡', '#/new', 'primary')}</div>
       <input type="search" id="q" placeholder="제목 · 원제 · 가사(후렴) · 아티스트 · 태그 검색" value="${esc(listState.q)}">
-      <details class="filter" id="filter"><summary id="fsum">분류로 찾기</summary><div id="chips"></div></details>
-      ${me.team ? `<div class="row sortrow"><span class="ctl-label">정렬</span><select id="sort" aria-label="정렬"><option value="title">제목순</option><option value="old">오래 안 부른 순</option><option value="recent">최근 부른 순</option></select></div>` : ''}
+      <details class="filter" id="filter"><summary id="fsum">분류·키로 찾기</summary><div id="chips"></div><p class="row" style="margin:8px 0 0"><button type="button" class="btn small" id="fclear">선택 모두 지우기</button></p></details>
+      <div class="row sortrow"><span class="ctl-label">정렬</span><select id="sort" aria-label="정렬"><option value="title">제목순</option><option value="key">키순 (C→B, 단조는 뒤)</option>${teamSorts}</select></div>
       <ul class="songs" id="list"></ul>
       <div class="card" id="ext" hidden></div>
       <p class="muted center" id="empty" hidden></p>`;
@@ -248,35 +248,30 @@
     const $sort = document.getElementById('sort');
     let songs = [];
     let groups = [];
-    if ($sort) $sort.value = listState.sort;
+    let kchips = [];
+    if (!me.team && (listState.sort === 'old' || listState.sort === 'recent')) listState.sort = 'title';
+    $sort.value = listState.sort;
+    const gen = routeGen;
 
-    const selTags = () => Object.values(listState.sel);
+    // 주소 표시줄에 지금 상태를 적어 둔다 (hashchange 를 일으키지 않는 replaceState)
+    function syncUrl() {
+      if (gen !== routeGen) return;
+      const qs = SongFilter.toQuery(listState.f, { q: listState.q, sort: listState.sort });
+      try { history.replaceState(null, '', '#/songs' + (qs ? '?' + qs : '')); } catch {}
+    }
     function drawChips() {
-      // 고른 태그가 더는 없는 태그면 선택에서 뺀다
-      for (const k of Object.keys(listState.sel)) if (!groups.some((g) => g.key === k && g.items.includes(listState.sel[k]))) delete listState.sel[k];
-      $chips.innerHTML = groups
-        .map(
-          (g) => `<div class="chipgroup"><span class="ctl-label">${esc(g.label)}</span><div class="chips">${g.items
-            .map((t) => `<button type="button" class="chip ${listState.sel[g.key] === t ? 'on' : ''}" data-g="${esc(g.key)}" data-t="${esc(t)}">${esc(t)}</button>`)
-            .join('')}</div></div>`
-        )
-        .join('');
-      const n = selTags().length;
-      document.getElementById('fsum').textContent = n ? `분류로 찾기 · ${selTags().join(' + ')}` : '분류로 찾기';
-      document.getElementById('filter').hidden = !groups.length;
+      SongFilter.prune(listState.f, groups, kchips);
+      $chips.innerHTML = SongFilter.chipsHTML(listState.f, groups, kchips, esc);
+      const sum = SongFilter.summary(listState.f);
+      document.getElementById('fsum').textContent = sum ? `분류·키로 찾기 · ${sum}` : '분류·키로 찾기';
+      document.getElementById('fclear').hidden = !SongFilter.isActive(listState.f);
     }
     function draw() {
       drawChips();
-      const want = selTags();
-      let shown = songs.filter((s) => {
-        const t = (s.tags || '').split(',');
-        return want.every((w) => t.includes(w));
-      });
-      if (me.team && listState.sort !== 'title') {
-        // 우리 팀 콘티 기준. 한 번도 안 쓴 곡은 "오래 안 부른" 쪽으로 본다.
-        const key = (s) => s.last_used || '';
-        shown = [...shown].sort((a, b) => (listState.sort === 'recent' ? key(b).localeCompare(key(a)) : key(a).localeCompare(key(b))) || a.title.localeCompare(b.title, 'ko'));
-      }
+      syncUrl();
+      const filtered = songs.filter((s) => SongFilter.matches(s, listState.f));
+      // 제목순일 때는 서버가 준 순서를 그대로 쓴다(검색 중이면 제목류 일치가 먼저).
+      const shown = listState.sort === 'title' ? filtered : SongFilter.sortSongs(filtered, listState.sort);
       const anyUsed = songs.some((s) => s.last_used); // 팀 콘티가 아직 없으면 "안 불러 봄" 표시는 생략
       $list.innerHTML = shown
         .map((s) => {
@@ -284,13 +279,14 @@
           return `<li class="song-item"><a href="#/song/${s.id}">
             <div class="song-title">${esc(s.title)}${s.orig_title ? `<span class="orig"> · ${esc(s.orig_title)}</span>` : ''}</div>
             ${s.snippet ? `<div class="snip"><span class="tag">${esc(s.snippet.label)}</span> ${esc(s.snippet.text)}</div>` : ''}
-            <div class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${s.has_chords ? '<span class="tag">코드</span>' : ''}${s.file_count ? `<span class="tag">${(s.file_kinds || '').includes('image') ? '이미지' : 'PDF'}${s.file_count > 1 ? ' ' + s.file_count : ''}</span>` : ''}${s.artist ? `<span>${esc(s.artist)}</span>` : ''}${s.tempo ? `<span>♩${s.tempo}</span>` : ''}${used}${(s.tags ? s.tags.split(',') : []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}</div>
+            <div class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${SongFilter.badgesHTML(s, esc)}${s.artist ? `<span>${esc(s.artist)}</span>` : ''}${s.tempo ? `<span>♩${s.tempo}</span>` : ''}${used}</div>
+            ${SongFilter.tagsLineHTML(s.tags, esc)}
           </a></li>`;
         })
         .join('');
       $empty.hidden = shown.length > 0;
       if (!shown.length) {
-        $empty.textContent = listState.q || want.length ? '찾는 곡이 없습니다.' : me.canEdit ? '아직 등록된 곡이 없습니다. “+ 새 곡”으로 첫 곡을 등록해 보세요.' : '아직 등록된 곡이 없습니다.';
+        $empty.textContent = listState.q || SongFilter.isActive(listState.f) ? '찾는 곡이 없습니다.' : me.canEdit ? '아직 등록된 곡이 없습니다. “+ 새 곡”으로 첫 곡을 등록해 보세요.' : '아직 등록된 곡이 없습니다.';
       }
       // 검색어가 있으면 외부에서도 찾아볼 수 있게 링크를 보여 준다 (악보 자체를 가져오는 기능은 없고, 검색 페이지로만 연결)
       if (listState.q) {
@@ -307,6 +303,7 @@
       const [r, info] = await Promise.all([api('/songs?q=' + encodeURIComponent(listState.q)), api('/tags')]);
       songs = r.songs;
       groups = groupTags(info);
+      kchips = SongFilter.keyChips(songs);
       draw();
     }
     let timer;
@@ -315,15 +312,14 @@
       timer = setTimeout(() => { listState.q = $q.value.trim(); load().catch((e) => toast(e.message)); }, 250);
     };
     $chips.onclick = (ev) => {
-      const b = ev.target.closest && ev.target.closest('button[data-t]');
+      const b = ev.target.closest && ev.target.closest('button.chip');
       if (!b) return;
-      const { g, t } = b.dataset;
-      if (listState.sel[g] === t) delete listState.sel[g];
-      else listState.sel[g] = t;
+      SongFilter.toggle(listState.f, groups, b.dataset);
       draw();
     };
-    if ($sort) $sort.onchange = () => { listState.sort = $sort.value; draw(); };
-    document.getElementById('filter').open = selTags().length > 0;
+    document.getElementById('fclear').onclick = () => { listState.f = SongFilter.newState(); draw(); };
+    $sort.onchange = () => { listState.sort = $sort.value; draw(); };
+    // 처음엔 접어 둔다(작은 화면에서 곡 목록이 아래로 밀리지 않게). 고른 조건은 접힌 제목 줄에 그대로 보인다.
     await load();
   }
 
@@ -397,8 +393,8 @@
         ${song.team_key ? `<span>우리 팀 <span class="keybadge" id="tkbadge">${esc(song.team_key)}</span></span>` : '<span id="tkwrap" hidden>우리 팀 <span class="keybadge" id="tkbadge"></span></span>'}
         ${song.tempo ? `<span>♩${song.tempo}</span>` : ''}
         ${yt ? `<a href="${esc(yt)}" target="_blank" rel="noopener noreferrer">▶ 유튜브</a>` : ''}
-        ${(song.tags ? song.tags.split(',') : []).map((t) => `<span class="tag">${esc(t)}</span>`).join('')}
       </div>
+      ${SongFilter.tagsLineHTML(song.tags, esc)}
       ${usageHTML(song.usage)}
       ${hasText && files.length ? '<div class="tabs" id="tabs"><button class="tab" data-tab="chord">코드 악보</button><button class="tab" data-tab="img">이미지 악보</button></div>' : ''}
       ${!hasText && !files.length ? `<p class="muted">등록된 악보가 아직 없습니다.${me.canEdit ? ' 편집에서 코드 악보를 입력하거나 이미지·PDF를 올려 주세요.' : ''}</p>` : ''}
@@ -576,37 +572,13 @@
           </div>
           <div class="card">
             <div id="draftbar" class="draftbar" hidden></div>
-            <div class="row between" style="margin-bottom:8px">
-              <span class="lbl-like">악보 본문</span>
-              <div class="te-mode" id="te-mode" role="group" aria-label="편집 방식">
-                <button type="button" data-mode="tab">탭 편집</button><button type="button" data-mode="text">글자로 보기</button>
-              </div>
-            </div>
+            <div class="row between" style="margin-bottom:8px"><span class="lbl-like">악보 본문</span></div>
             <div class="row" style="margin:0 0 8px"><button type="button" class="btn small" id="pastebtn">📋 가사 붙여넣기로 시작</button></div>
             <div id="tabpane" class="te">
               <div id="te-lines" class="te-lines"></div>
               <div class="te-pal" id="te-pal"></div>
             </div>
-            <div id="textpane">
-            <div class="ctools" id="ctools">
-              <div class="ctools-row" id="ct-chords"></div>
-              <div class="ctools-row" id="ct-quals"></div>
-              <div class="ctools-row" id="ct-bass" hidden></div>
-              <div class="ctools-row" id="ct-secs"></div>
-              <p class="hint" id="ct-hint" style="margin:2px 0 0"></p>
-            </div>
-            <textarea id="cp" class="code" spellcheck="false" placeholder="${esc(SAMPLE)}">${esc(song.chordpro)}</textarea>
-            <details>
-              <summary>입력 방법 보기</summary>
-              <pre class="help">코드는 글자 바로 앞에 [코드] 로 넣습니다.
-[G]주님은 [C]나의 [D]목자
-
-{title: 제목}   {key: G}
-{comment: 1절}  ← 절/후렴 구분 표시
-{soc} … {eoc}   ← 후렴 구간(왼쪽 줄 표시)
-[D/F#]  [Am7]  [Csus4]  [?](불확실한 코드)</pre>
-            </details>
-            </div>
+            <textarea id="cp" hidden aria-hidden="true">${esc(song.chordpro)}</textarea>
             <div id="cpcheck" class="cpcheck" hidden></div>
           </div>
           <div class="card">
@@ -642,76 +614,7 @@
     $('key').addEventListener('change', preview);
     preview();
 
-    // ----- 코드·구간 버튼줄 (7차 A단계): 괄호·지시어를 직접 치지 않고 누르기만 하면 글자가 들어간다 -----
-    const ta = $('cp');
-    let sel = { a: ta.value.length, b: ta.value.length };
-    const bassRow = $('ct-bass');
-    function rememberSel() {
-      sel = { a: ta.selectionStart, b: ta.selectionEnd };
-      showBassRow();
-    }
-    ['select', 'keyup', 'click', 'input', 'blur', 'touchend', 'focus'].forEach((ev) => ta.addEventListener(ev, rememberSel));
-    function drawTools() {
-      if (!ta.isConnected) return;
-      const gk = Chord.guessKey(Chord.parseChordPro(ta.value), $('key').value);
-      const dia = ChordEdit.diatonic(gk.key);
-      const roots = dia || ['C', 'D', 'E', 'F', 'G', 'A', 'B'].map((c) => ({ label: '', chord: c }));
-      $('ct-chords').innerHTML =
-        roots.map((d) => `<button type="button" class="chip ctb" data-chord="${esc(d.chord)}"><b>${esc(d.chord)}</b>${d.label ? `<small>${esc(d.label)}</small>` : ''}</button>`).join('') +
-        '<button type="button" class="chip ctb" data-chord="?" title="불확실한 코드">?</button>';
-      $('ct-hint').textContent = dia
-        ? `키 ${gk.key}${gk.guessed ? ' (첫 코드로 추정)' : ''}의 기본 코드예요. 글자 사이에 커서를 두고 누르면 그 자리에 들어갑니다.`
-        : '원래 키를 고르면 그 키에 맞는 코드가 나와요. 지금은 기본 7개 음입니다.';
-      const bn = ChordEdit.bassNotes(gk.key);
-      bassRow.dataset.notes = bn ? bn.join(',') : '';
-      showBassRow();
-    }
-    $('ct-quals').innerHTML =
-      '<span class="ctl-label">모양</span>' + ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-q="${esc(q)}">${esc(lab)}</button>`).join('');
-    $('ct-secs').innerHTML =
-      '<span class="ctl-label">구간</span>' + ChordEdit.SECTION_NAMES.map((n) => `<button type="button" class="chip ctb sm" data-sec="${esc(n)}">${esc(n)}</button>`).join('');
-    function showBassRow() {
-      const notes = (bassRow.dataset.notes || '').split(',').filter(Boolean);
-      const c = ChordEdit.chordAt(ta.value, sel.a);
-      bassRow.hidden = !(c && notes.length);
-      if (bassRow.hidden) return;
-      bassRow.innerHTML = '<span class="ctl-label">베이스</span>' + notes.map((n) => `<button type="button" class="chip ctb sm" data-bass="${esc(n)}">/${esc(n)}</button>`).join('') + '<button type="button" class="chip ctb sm" data-bass="">없음</button>';
-    }
-    // text[from,to)를 insert로 바꾼다. 가능하면 브라우저 기본 입력 방식을 써서 "되돌리기(실행 취소)"가 그대로 동작하게 한다.
-    function applyEdit(from, to, insert, cursor) {
-      ta.focus({ preventScroll: true });
-      ta.setSelectionRange(from, to);
-      let done = false;
-      try { done = document.execCommand('insertText', false, insert); } catch { done = false; }
-      if (!done) {
-        ta.setRangeText(insert, from, to, 'end');
-        ta.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-      ta.setSelectionRange(cursor, cursor);
-      rememberSel();
-    }
-    $('ctools').addEventListener('mousedown', (ev) => { if (ev.target.closest('button')) ev.preventDefault(); }); // 글자 입력칸에서 커서가 빠지지 않게
-    $('ctools').addEventListener('click', (ev) => {
-      const b = ev.target.closest('button');
-      if (!b) return;
-      const d = b.dataset;
-      const text = ta.value;
-      if (d.chord !== undefined) {
-        const ins = '[' + d.chord + ']';
-        applyEdit(sel.a, sel.a, ins, sel.a + ins.length); // 선택한 글자는 지우지 않고 그 앞에 넣는다
-      } else if (d.q !== undefined || d.bass !== undefined) {
-        const c = ChordEdit.chordAt(text, sel.a);
-        const nc = c && ChordEdit.changeChord(c.inner, d.q !== undefined ? { quality: d.q } : { bass: d.bass });
-        if (!nc) { toast('먼저 코드를 넣거나, 바꿀 코드 [ ] 안쪽에 커서를 두세요.'); return; }
-        applyEdit(c.start + 1, c.end - 1, nc, c.start + nc.length + 2);
-      } else if (d.sec !== undefined) {
-        const r = ChordEdit.sectionEdit(text, sel.a, sel.b, d.sec);
-        applyEdit(r.from, r.to, r.insert, r.cursor);
-      }
-    });
-    $('key').addEventListener('change', drawTools);
-    ta.addEventListener('input', () => { clearTimeout(drawTools.t); drawTools.t = setTimeout(drawTools, 300); });
-    drawTools();
+    const ta = $('cp'); // 숨은 글자 칸: 악보 본문(ChordPro)의 진짜 내용. 탭 편집기가 읽고 다시 써 넣는다.
 
     // ----- 저장 전 점검(실시간 표시) -----
     function runCheck() {
@@ -730,15 +633,12 @@
     $('cpcheck').onclick = (ev) => {
       const b = ev.target.closest('button[data-line]');
       if (!b) return;
-      const lines = ta.value.split('\n');
-      const n = Math.min(+b.dataset.line, lines.length);
-      let pos = 0;
-      for (let i = 0; i < n - 1; i++) pos += lines[i].length + 1;
-      ta.focus({ preventScroll: true });
-      ta.setSelectionRange(pos, pos + lines[n - 1].length);
-      const lh = parseFloat(getComputedStyle(ta).lineHeight) || 22;
-      ta.scrollTop = Math.max(0, (n - 3) * lh);
-      ta.scrollIntoView({ block: 'nearest' });
+      const rows = $('te-lines').querySelectorAll('.te-row');
+      const row = rows[Math.min(+b.dataset.line, rows.length) - 1];
+      if (!row) return;
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      row.classList.add('flash');
+      setTimeout(() => row.classList.remove('flash'), 1600);
     };
     let checkTimer;
     const scheduleCheck = () => { clearTimeout(checkTimer); checkTimer = setTimeout(runCheck, 500); };
@@ -751,7 +651,7 @@
     let tm = TabEdit.parse(ta.value);
     let tsel = null; // {li, pos, ci}  ci>=0 이면 코드가 선택된 것, -1이면 빈 자리
     let undoS = [], redoS = [];
-    let mode = ls.get('ews_edit_mode', 'tab') === 'text' ? 'text' : 'tab';
+    ls.del('ews_edit_mode'); // 예전의 "글자로 보기" 선택값은 더 쓰지 않는다
     const keyNow = () => Chord.guessKey(Chord.parseChordPro(ta.value), $('key').value);
     const fireInput = () => ta.dispatchEvent(new Event('input', { bubbles: true }));
     function setBody(text, nextSel, noUndo) {
@@ -765,20 +665,8 @@
     const apply = (res, sel) => { if (res) setBody(TabEdit.serialize(res.model || res), sel); };
     function tabRefresh() { tm = TabEdit.parse(ta.value); tsel = null; teRender(); }
 
-    function setMode(m) {
-      mode = m;
-      ls.set('ews_edit_mode', m);
-      $('tabpane').hidden = m !== 'tab';
-      $('textpane').hidden = m !== 'text';
-      $('pastebtn').hidden = false;
-      $('te-mode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
-      if (m === 'tab') { undoS = []; redoS = []; tabRefresh(); }
-      else drawTools();
-    }
-    $('te-mode').onclick = (ev) => { const b = ev.target.closest('button[data-mode]'); if (b && b.dataset.mode !== mode) setMode(b.dataset.mode); };
-
     function teRender() {
-      if (mode !== 'tab' || !ta.isConnected) return;
+      if (!ta.isConnected) return;
       const box = $('te-lines');
       let html = '';
       if (!ta.value.trim()) {
@@ -811,7 +699,7 @@
           } else if (l.kind === 'blank') {
             body = `<div class="te-gap"></div>`;
           } else {
-            body = `<div class="te-raw">${esc(l.raw)}<small> · 이 줄은 글자로 보기에서 고칠 수 있어요</small></div>`;
+            body = `<div class="te-raw">${esc(l.raw)}<small> · 줄 메뉴(⋯)에서 고칠 수 있어요</small></div>`;
           }
           html += `<div class="te-row${ch}${l.kind === 'blank' ? ' blank' : ''}">${gut}${body}</div>`;
           if (l.kind === 'eoc') inCh = false;
@@ -964,6 +852,19 @@
       });
     }
 
+    // 앱이 모르는 모양의 줄(주석·특수 지시어 등)을 글자 그대로 고치는 창
+    function rawSheet(li) {
+      const l = tm.lines[li];
+      if (!l) return;
+      const sh = showSheet(`<h2 style="margin-top:0">${li + 1}번째 줄 글자 고치기</h2>
+        <input id="rw-in" type="text" autocapitalize="off" autocomplete="off" spellcheck="false" value="${esc(l.raw)}">
+        <p class="hint">한 줄만 고칠 수 있어요. 비우고 저장하면 빈 줄이 됩니다.</p>
+        <div class="row"><button type="button" class="btn primary" id="rw-ok">저장</button><button type="button" class="btn" id="rw-no">닫기</button></div>`);
+      const inp = sh.q('#rw-in');
+      sh.q('#rw-no').onclick = () => sh.close();
+      sh.q('#rw-ok').onclick = () => { const v = inp.value; sh.close(); apply(TabEdit.replaceLine(tm, li, v)); };
+    }
+
     // 줄 메뉴(왼쪽 ⋯)
     function lineSheet(li) {
       const l = tm.lines[li];
@@ -991,8 +892,8 @@
         h += `<p class="hint" style="margin:0 0 4px">여기 아래에 구간 이름 넣기</p>${secChips(true)}
           <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 빈 줄 삭제</button></div>`;
       } else {
-        h += `<p class="hint">모르는 모양의 줄이라 그대로 두었어요. 고치려면 “글자로 보기”에서 바꿔 주세요.</p>
-          <div class="menu-col"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 줄 삭제</button></div>`;
+        h += `<p class="hint">앱이 모르는 모양의 줄이라 그대로 두었어요. 글자를 직접 고칠 수 있어요.</p>
+          <div class="menu-col"><button type="button" class="btn" data-op="raw">줄 글자 직접 고치기</button><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 줄 삭제</button></div>`;
       }
       h += `<div class="row" style="margin-top:12px"><button type="button" class="btn" data-op="close">닫기</button></div>`;
       const sh = showSheet(h);
@@ -1016,6 +917,7 @@
         if (op === 'close') return;
         if (op === 'edit') lyricSheet(li, false);
         else if (op === 'add') newLinesSheet(li);
+        else if (op === 'raw') rawSheet(li);
         else if (op === 'del') apply(TabEdit.deleteLine(tm, li));
         else if (op === 'clear') apply(TabEdit.clearChords(tm, li));
         else if (op === 'gap') apply(TabEdit.insertLines(tm, li, ['']));
@@ -1093,21 +995,15 @@
           const built = TabEdit.buildFromBlocks(blocks);
           const cur = ta.value.replace(/\s+$/, '');
           sh.close();
-          if (mode === 'text') {
-            ta.value = cur ? cur + '\n\n' + built : built;
-            fireInput();
-            toast('가사를 넣었습니다. “탭 편집”에서 코드를 얹어 보세요.');
-          } else {
-            setBody(cur ? cur + '\n\n' + built : built);
-            toast('가사를 넣었습니다. 글자를 탭해서 코드를 얹어 보세요.');
-          }
+          setBody(cur ? cur + '\n\n' + built : built);
+          toast('가사를 넣었습니다. 글자를 탭해서 코드를 얹어 보세요.');
         };
       };
     }
     $('pastebtn').onclick = pasteSheet;
     // 키(원래 키)를 바꾸면 코드 칩도 그 키에 맞춰 다시 그린다
-    $('key').addEventListener('change', () => { if (mode === 'tab') tePalette(); });
-    setMode(mode);
+    $('key').addEventListener('change', tePalette);
+    tabRefresh();
 
     // ----- 태그: 추천 칩(주제·빠르기·절기 …) 누르면 넣고 빼기 -----
     const tagList = () => $('tags').value.split(/[,，]/).map((t) => t.trim()).filter(Boolean);
@@ -1123,8 +1019,13 @@
       if (!b) return;
       const t = b.dataset.t;
       const list = tagList();
-      $('tags').value = (list.includes(t) ? list.filter((x) => x !== t) : [...list, t]).join(', ');
+      const next = list.includes(t) ? list.filter((x) => x !== t) : [...list, t];
+      // 입력칸도 추천 목록 순서로 정리한다 (추천에 없는 태그는 끝에 가나다순). 서버도 저장할 때 같은 순서로 맞춘다.
+      const rank = new Map(tagInfo.presets.flatMap((g) => g.items).map((x, i) => [x, i]));
+      next.sort((a, b) => (rank.has(a) ? rank.get(a) : 1e9) - (rank.has(b) ? rank.get(b) : 1e9) || a.localeCompare(b, 'ko'));
+      $('tags').value = next.join(', ');
       drawTagChips();
+      $('tags').dispatchEvent(new Event('input', { bubbles: true }));
     };
     $('tags').oninput = drawTagChips;
     drawTagChips();
@@ -1221,8 +1122,8 @@
       $('dr-use').onclick = () => {
         for (const [k, i] of Object.entries(FIELDS)) if (typeof d.f[k] === 'string') $(i).value = d.f[k];
         bar.hidden = true;
-        preview(); drawTagChips(); drawExt(); drawTools(); runCheck();
-        if (mode === 'tab') { undoS = []; redoS = []; tabRefresh(); }
+        preview(); drawTagChips(); drawExt(); runCheck();
+        undoS = []; redoS = []; tabRefresh();
         toast('저장하지 않았던 작업을 불러왔습니다. 저장을 눌러야 반영돼요.');
       };
       $('dr-drop').onclick = () => { ls.del(draftKey); bar.hidden = true; };
@@ -1751,7 +1652,7 @@
         <div class="row between"><div class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</div>${key ? `<span class="keybadge">${esc(key)}</span>` : ''}</div>
         <div class="song-meta">
           ${it.form ? `<span>송폼 ${esc(it.form)}</span>` : ''}
-          ${imageOnly ? '<span class="tag">이미지 악보</span>' : it.has_chords ? '<span class="tag">코드 악보</span>' : ''}
+          ${imageOnly ? '<span class="fmt img">🖼 이미지 악보</span>' : it.has_chords ? '<span class="fmt chord">🎼 코드 악보</span>' : ''}
           ${it.memo ? `<span>${esc(it.memo)}</span>` : ''}
         </div>
         ${imgKeyNote ? `<div class="hint" style="margin:2px 0 0">이미지 악보는 원래 키(${esc(it.original_key)}) 기준 · 이 콘티에서는 ${esc(it.key)}로 부름</div>` : ''}
@@ -1762,23 +1663,37 @@
       <h1>${esc(s.title)}</h1>
       <div class="song-meta" style="margin-bottom:10px">${s.date ? `<span class="keybadge">${esc(fmtDate(s.date))}</span>` : ''}<span>${s.items.length}곡</span></div>
       ${s.memo ? `<div class="memo" style="margin-bottom:12px">${esc(s.memo)}</div>` : ''}
-      ${rows.length ? `<div class="row" style="margin-bottom:8px"><a class="btn primary big" href="#/play/${id}">▶ 연주 모드</a><button class="btn" id="offline" type="button">⬇ 오프라인 준비</button></div>` : ''}
-      ${rows.length ? `<div class="exp-row"><button class="btn" id="x-text" type="button">💬 카톡용 텍스트 복사</button><button class="btn" id="x-pdf" type="button">📄 PDF 만들기</button><button class="btn" id="x-png" type="button">🖼 표지 이미지</button></div>` : ''}
+      ${rows.length ? `<div class="row actions"><a class="btn primary big grow" href="#/play/${id}">▶ 연주 모드</a><button class="btn big" id="share" type="button">공유·저장</button></div>` : ''}
       ${rows.length ? `<ul class="songs">${rows.join('')}</ul>` : '<p class="muted">아직 곡이 없습니다.</p>'}
-      <p class="muted small">곡을 누르면 이 콘티의 키로 악보가 열립니다. 연주 모드에서는 좌우로 밀어 다음 곡으로 넘어가요.</p>`;
-    const $off = document.getElementById('offline');
-    if ($off) $off.onclick = async () => {
-      $off.disabled = true;
-      try { await prepareOffline(s.items); } finally { $off.disabled = false; }
-    };
+      <p class="muted small">곡을 누르면 이 콘티의 키로 악보가 열립니다.</p>`;
 
-    // ----- 내보내기 (6차) -----
+    // ----- 공유·저장 창: 카톡용 텍스트 · 표지 이미지 · PDF · 오프라인 준비 -----
+    const $share = document.getElementById('share');
+    if (!$share) return;
+    $share.onclick = () => {
+      const sh = showSheet(`<h2 style="margin-top:0">공유·저장</h2>
+        <div class="share-list">
+          <button class="share-item" id="x-text" type="button"><b>💬 카톡용 텍스트 복사</b><span>곡 순서·키·송폼·메모를 글자로 복사해요</span></button>
+          <button class="share-item" id="x-png" type="button"><b>🖼 표지 이미지</b><span>콘티 한 장짜리 그림(PNG)으로 저장·공유해요</span></button>
+          <button class="share-item" id="x-pdf" type="button"><b>📄 PDF 만들기</b><span>표지 + 곡별 악보를 PDF 한 파일로 만들어요</span></button>
+          <button class="share-item" id="x-off" type="button"><b>⬇ 오프라인 준비</b><span>인터넷이 없는 곳에서도 이 콘티를 열 수 있게 저장해요</span></button>
+        </div>
+        <button class="btn" id="xclose0" type="button" style="width:100%;margin-top:10px">닫기</button>`);
+      sh.q('#xclose0').onclick = () => sh.close();
+      const $off = sh.q('#x-off');
+      $off.onclick = async () => {
+        $off.disabled = true;
+        try { await prepareOffline(s.items); } finally { $off.disabled = false; }
+      };
+
+    
     const baseName = [s.date, (s.title || '콘티').trim()].filter(Boolean).join(' ').replace(/[\\/:*?"<>|]/g, '').slice(0, 60) || '콘티';
-    const $xt = document.getElementById('x-text');
+    const $xt = sh.q('#x-text');
     if ($xt) $xt.onclick = async () => {
       const text = SongForm.kakaoText(s);
       try {
         await navigator.clipboard.writeText(text);
+        sh.close();
         toast('복사했습니다. 카카오톡에 붙여넣기 하세요.');
       } catch {
         // 복사가 막힌 환경: 글자를 보여 주고 직접 복사하게 한다
@@ -1790,7 +1705,7 @@
       }
     };
     const guarded = async (btn, label, fn) => {
-      const orig = btn.textContent;
+      const orig = btn.innerHTML;
       btn.disabled = true;
       try {
         await loadExporter();
@@ -1799,14 +1714,16 @@
         toast(e.message || `${label}을 만들지 못했습니다.`);
       } finally {
         btn.disabled = false;
-        btn.textContent = orig;
+        btn.innerHTML = orig;
       }
     };
-    const $xp = document.getElementById('x-png');
+    const $xp = sh.q('#x-png');
     if ($xp) $xp.onclick = () => guarded($xp, '이미지', async () => {
-      showFileResult(await Exporter.coverPng(s), baseName + '.png', 'png');
+      const blob = await Exporter.coverPng(s);
+      sh.close();
+      showFileResult(blob, baseName + '.png', 'png');
     });
-    const $xd = document.getElementById('x-pdf');
+    const $xd = sh.q('#x-pdf');
     if ($xd) $xd.onclick = () => guarded($xd, 'PDF', async (setLabel) => {
       const r = await Exporter.buildPdf(s, {
         getSong: async (sid) => (await api('/songs/' + sid)).song,
@@ -1817,8 +1734,10 @@
         },
         onProgress: (d, t, label) => setLabel(`만드는 중… ${Math.min(d + 1, t)}/${t} ${label}`),
       });
+      sh.close();
       showFileResult(r.blob, baseName + '.pdf', 'pdf', r.warnings);
     });
+    };
   }
 
   // 내보내기 도구는 필요할 때만 불러온다 (PDF 도구 + export.js)
@@ -2249,7 +2168,8 @@
     const [songRes, listRes, tagRes] = await Promise.all([api('/songs'), id ? api('/setlists/' + id) : null, api('/tags')]);
     const songs = songRes.songs;
     const pickGroups = groupTags(tagRes);
-    const pickSel = {}; // 곡 추가할 때 분류(주제 등)로 좁히기
+    const pickF = SongFilter.newState(); // 곡 추가할 때 주제·키·악보 형식으로 좁히기 (곡 목록과 같은 규칙)
+    const pickKeys = SongFilter.keyChips(songs);
     const byId = Object.fromEntries(songs.map((s) => [s.id, s]));
     const data = id
       ? {
@@ -2278,7 +2198,7 @@
       <div class="card">
         <h2>곡 추가</h2>
         <input type="search" id="sq" placeholder="제목 · 아티스트 · 태그로 찾기">
-        ${pickGroups.length ? '<details class="filter" id="pfilter"><summary id="pfsum">분류로 찾기</summary><div id="pchips"></div></details>' : ''}
+        <details class="filter" id="pfilter"><summary id="pfsum">분류·키로 찾기</summary><div id="pchips"></div></details>
         <div id="res" class="pick-list"></div>
       </div>
       <p class="error" id="err"></p>
@@ -2470,30 +2390,23 @@
       .catch(() => {});
 
     function drawPickChips() {
-      if (!el('pchips')) return;
-      el('pchips').innerHTML = pickGroups
-        .map((g) => `<div class="chipgroup"><span class="ctl-label">${esc(g.label)}</span><div class="chips">${g.items.map((t) => `<button type="button" class="chip ${pickSel[g.key] === t ? 'on' : ''}" data-g="${esc(g.key)}" data-t="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>`)
-        .join('');
-      const sel = Object.values(pickSel);
-      el('pfsum').textContent = sel.length ? `분류로 찾기 · ${sel.join(' + ')}` : '분류로 찾기';
+      el('pchips').innerHTML = SongFilter.chipsHTML(pickF, pickGroups, pickKeys, esc);
+      const sum = SongFilter.summary(pickF);
+      el('pfsum').textContent = sum ? `분류·키로 찾기 · ${sum}` : '분류·키로 찾기';
     }
-    if (el('pchips')) {
-      el('pchips').onclick = (ev) => {
-        const b = ev.target.closest && ev.target.closest('button[data-t]');
-        if (!b) return;
-        if (pickSel[b.dataset.g] === b.dataset.t) delete pickSel[b.dataset.g];
-        else pickSel[b.dataset.g] = b.dataset.t;
-        drawPickChips();
-        drawResults();
-      };
+    el('pchips').onclick = (ev) => {
+      const b = ev.target.closest && ev.target.closest('button.chip');
+      if (!b) return;
+      SongFilter.toggle(pickF, pickGroups, b.dataset);
       drawPickChips();
-    }
+      drawResults();
+    };
+    drawPickChips();
     function drawResults() {
       const q = el('sq').value.trim();
-      const want = Object.values(pickSel);
       const found = songs
         .filter((s) => localMatch([s.title, s.orig_title, s.artist, s.tags], q))
-        .filter((s) => want.every((w) => (s.tags || '').split(',').includes(w)))
+        .filter((s) => SongFilter.matches(s, pickF))
         .slice(0, 30);
       const used = {};
       data.items.forEach((it) => (used[it.song_id] = (used[it.song_id] || 0) + 1));
@@ -2502,7 +2415,7 @@
           .map(
             (s) => `<button class="pick" type="button" data-add="${s.id}">
               <span class="song-title">${esc(s.title)}${s.orig_title ? `<span class="orig"> · ${esc(s.orig_title)}</span>` : ''}</span>
-              <span class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${s.team_key ? `<span>우리 팀 ${esc(s.team_key)}</span>` : ''}${s.last_used ? `<span class="tag used">최근 ${mmdd(s.last_used)}</span>` : ''}${s.has_chords ? '<span class="tag">코드</span>' : ''}${s.file_count ? '<span class="tag">이미지·PDF</span>' : ''}${used[s.id] ? `<span class="tag">✓ 추가됨${used[s.id] > 1 ? ' ×' + used[s.id] : ''}</span>` : ''}</span>
+              <span class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${s.team_key ? `<span>우리 팀 ${esc(s.team_key)}</span>` : ''}${s.last_used ? `<span class="tag used">최근 ${mmdd(s.last_used)}</span>` : ''}${SongFilter.badgesHTML(s, esc)}${used[s.id] ? `<span class="tag">✓ 추가됨${used[s.id] > 1 ? ' ×' + used[s.id] : ''}</span>` : ''}</span>
             </button>`
           )
           .join('') || '<p class="muted">찾는 곡이 없습니다.</p>';
@@ -2630,7 +2543,7 @@
       </form></details>
       <h2>추천 태그 (주제 · 빠르기 · 절기)</h2>
       <div class="card">
-        <p class="hint" style="margin-top:0">곡 편집 화면과 곡 목록 필터에 칩으로 나오는 목록입니다. 곡에는 이 목록에 없는 태그도 자유롭게 쓸 수 있어요. 고친 뒤 <b>추천 목록 저장</b>을 눌러야 반영됩니다.</p>
+        <p class="hint" style="margin-top:0">곡 편집 화면과 곡 목록 필터에 칩으로 나오는 목록입니다. 곡에는 이 목록에 없는 태그도 자유롭게 쓸 수 있어요. ◀ ▶ ▲ ▼ 로 순서를 바꾸면 곡에 표시되는 태그 순서도 이 순서를 따릅니다. 고친 뒤 <b>추천 목록 저장</b>을 눌러야 반영됩니다.</p>
         <div id="presets"></div>
         <p class="error" id="perr"></p>
         <div class="row"><button class="btn small" id="pnew" type="button">+ 분류 추가</button><button class="btn primary" id="psave" type="button">추천 목록 저장</button></div>
@@ -2711,8 +2624,8 @@
         presets
           .map(
             (g, gi) => `<div class="pgroup" data-gi="${gi}">
-              <div class="row"><input class="gname" type="text" maxlength="12" value="${esc(g.group)}" aria-label="분류 이름"><button class="btn small danger" type="button" data-a="gdel">분류 삭제</button></div>
-              <div class="chips">${g.items.map((t, ti) => `<span class="chip on edit">${esc(t)}<button type="button" class="x" data-a="tdel" data-ti="${ti}" aria-label="${esc(t)} 빼기">✕</button></span>`).join('') || '<span class="muted small">비어 있음</span>'}</div>
+              <div class="row"><input class="gname" type="text" maxlength="12" value="${esc(g.group)}" aria-label="분류 이름"><button class="btn small" type="button" data-a="gup" aria-label="분류 위로" ${gi === 0 ? 'disabled' : ''}>▲</button><button class="btn small" type="button" data-a="gdn" aria-label="분류 아래로" ${gi === presets.length - 1 ? 'disabled' : ''}>▼</button><button class="btn small danger" type="button" data-a="gdel">분류 삭제</button></div>
+              <div class="chips">${g.items.map((t, ti) => `<span class="chip on edit">${ti > 0 ? `<button type="button" class="x mv" data-a="tl" data-ti="${ti}" aria-label="${esc(t)} 앞으로">◀</button>` : ''}${esc(t)}${ti < g.items.length - 1 ? `<button type="button" class="x mv" data-a="tr" data-ti="${ti}" aria-label="${esc(t)} 뒤로">▶</button>` : ''}<button type="button" class="x" data-a="tdel" data-ti="${ti}" aria-label="${esc(t)} 빼기">✕</button></span>`).join('') || '<span class="muted small">비어 있음</span>'}</div>
               <div class="row"><input class="gadd" type="text" maxlength="20" placeholder="태그 추가 (예: 경배)"><button class="btn small" type="button" data-a="tadd">추가</button></div>
             </div>`
           )
@@ -2731,7 +2644,12 @@
       const box = ev.target.closest && ev.target.closest('.pgroup');
       if (!b || !box) return;
       const gi = +box.dataset.gi;
+      const move = (arr, i, j) => { if (j < 0 || j >= arr.length) return; [arr[i], arr[j]] = [arr[j], arr[i]]; drawPresets(); };
       if (b.dataset.a === 'tdel') { presets[gi].items.splice(+b.dataset.ti, 1); drawPresets(); }
+      else if (b.dataset.a === 'tl') move(presets[gi].items, +b.dataset.ti, +b.dataset.ti - 1);
+      else if (b.dataset.a === 'tr') move(presets[gi].items, +b.dataset.ti, +b.dataset.ti + 1);
+      else if (b.dataset.a === 'gup') move(presets, gi, gi - 1);
+      else if (b.dataset.a === 'gdn') move(presets, gi, gi + 1);
       else if (b.dataset.a === 'tadd') addTag(box);
       else if (b.dataset.a === 'gdel') {
         if (!confirm(`"${presets[gi].group}" 분류를 목록에서 뺄까요?\n(곡에 붙은 태그는 그대로 남아요)`)) return;

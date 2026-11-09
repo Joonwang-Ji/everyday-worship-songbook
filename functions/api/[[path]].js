@@ -494,6 +494,23 @@ async function getPresets(db) {
   return DEFAULT_PRESETS;
 }
 const splitTags = (s) => (s ? s.split(',').map((t) => t.trim()).filter(Boolean) : []);
+// 곡의 태그를 추천 목록 순서(분류 순서 → 분류 안 순서)로 정렬한다. 추천에 없는 태그는 끝에 가나다순.
+// 저장된 글자는 그대로 두고 읽을 때·저장할 때 정렬하므로, 관리자가 순서를 바꾸면 모든 곡의 표시 순서가 따라 바뀐다.
+function makeTagOrder(presets) {
+  const rank = new Map();
+  let n = 0;
+  for (const g of presets) for (const t of g.items) if (!rank.has(t)) rank.set(t, n++);
+  return (tagStr) => {
+    const list = [...new Set(splitTags(tagStr))];
+    list.sort((a, b) => {
+      const ra = rank.has(a) ? rank.get(a) : Infinity;
+      const rb = rank.has(b) ? rank.get(b) : Infinity;
+      if (ra !== rb) return ra - rb;
+      return a.localeCompare(b, 'ko');
+    });
+    return list.join(',');
+  };
+}
 // 태그 이름 바꾸기·합치기·지우기: 모든 곡의 태그에 반영한다. to 가 비어 있으면 지운다.
 async function renameTagInSongs(db, from, to) {
   const { results } = await db.prepare(`SELECT id,tags FROM songs WHERE tags <> ''`).all();
@@ -949,6 +966,8 @@ export async function onRequest({ request, env }) {
             .all();
           lastMap = Object.fromEntries(lu.map((r) => [r.song_id, r]));
         }
+        const orderTags = makeTagOrder(await getPresets(db));
+        for (const s of results) s.tags = orderTags(s.tags);
         const hits = [];
         for (const s of results) {
           if (!pq.all) {
@@ -1010,6 +1029,7 @@ export async function onRequest({ request, env }) {
         requireEdit(env, ctx);
         const body = await readBody();
         const song = cleanSong(body);
+        song.tags = makeTagOrder(await getPresets(db))(song.tags);
         if (!body.force) {
           const { results } = await db.prepare('SELECT id,title FROM songs').all();
           const dup = results.find((s) => searchKey(s.title) === searchKey(song.title));
@@ -1072,6 +1092,7 @@ export async function onRequest({ request, env }) {
         const song = await db.prepare('SELECT * FROM songs WHERE id=?').bind(id).first();
         if (!song) throw new HttpError(404, '곡을 찾을 수 없습니다.');
         song.files = await songFiles(env, id);
+        song.tags = makeTagOrder(await getPresets(db))(song.tags);
         song.team_key = '';
         song.usage = null;
         if (ctx.team) {
@@ -1105,6 +1126,7 @@ export async function onRequest({ request, env }) {
         const old = await db.prepare('SELECT chordpro FROM songs WHERE id=?').bind(id).first();
         if (!old) throw new HttpError(404, '곡을 찾을 수 없습니다.');
         const song = cleanSong(await readBody());
+        song.tags = makeTagOrder(await getPresets(db))(song.tags);
         const now = nowIso();
         const stmts = [];
         if (old.chordpro !== song.chordpro) {
