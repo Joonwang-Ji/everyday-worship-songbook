@@ -261,6 +261,90 @@
   }
   const isInChorus = (model, li) => !!chorusAround(model, li);
 
+  // ---------- 반복 구간 코드 복사 (9차) ----------
+  // 2절이 1절과 같은 진행이거나 후렴이 되풀이될 때, 이미 코드를 단 줄·구간의 코드를 다른 줄·구간으로 복사한다.
+  // 가사 글자가 완전히 같으면 코드 자리도 그대로, 글자 수가 다르면 줄 길이에 비례해 옮기고 가까운 낱말 시작으로 맞춘다.
+  const lyricKey = (s) => String(s == null ? '' : s).normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const isWordStart = (t, p) => p === 0 ? t[0] !== ' ' : p >= t.length ? false : t[p - 1] === ' ' && t[p] !== ' ';
+  // src 줄의 코드들을 dstText 위의 자리로 옮긴 목록 [{pos,c}]
+  function mapChords(src, dstText) {
+    const a = src.text, b = String(dstText);
+    if (a === b) return src.chords.map((c) => ({ pos: c.pos, c: c.c }));
+    if (!a.length) return src.chords.map((c) => ({ pos: Math.min(c.pos, b.length), c: c.c }));
+    return src.chords.map((c) => {
+      let np = Math.round((c.pos * b.length) / a.length);
+      np = Math.max(0, Math.min(b.length, np));
+      if (np < b.length && !isWordStart(b, np)) {
+        for (let d = 1; d <= 2; d++) {
+          if (np - d >= 0 && isWordStart(b, np - d)) { np -= d; break; }
+          if (np + d < b.length && isWordStart(b, np + d)) { np += d; break; }
+        }
+      }
+      return { pos: np, c: c.c };
+    });
+  }
+  // li 줄과 가사가 같고 코드가 달린 다른 줄의 번호(가까운 줄 우선, 같은 거리면 위쪽). 없으면 -1.
+  function findSameLyric(model, li) {
+    const l = model.lines[li];
+    if (!l || l.kind !== 'lyric') return -1;
+    const k = lyricKey(l.text);
+    if (!k) return -1;
+    let best = -1, bd = Infinity;
+    model.lines.forEach((o, i) => {
+      if (i === li || o.kind !== 'lyric' || !o.chords.length || lyricKey(o.text) !== k) return;
+      const d = Math.abs(i - li) * 2 + (i > li ? 1 : 0);
+      if (d < bd) { bd = d; best = i; }
+    });
+    return best;
+  }
+  // 한 줄 복사: srcLi의 코드를 dstLi로. 도착 줄에 이미 코드가 있으면 overwrite일 때만 덮어쓴다. 복사할 게 없으면 null.
+  function copyLineChords(model, dstLi, srcLi, opt) {
+    const s = model.lines[srcLi], d = model.lines[dstLi];
+    if (!s || !d || s.kind !== 'lyric' || d.kind !== 'lyric' || !s.chords.length || srcLi === dstLi) return null;
+    if (d.chords.length && !(opt && opt.overwrite)) return null;
+    const m = clone(model);
+    m.lines[dstLi].chords = mapChords(s, d.text);
+    commitLine(m.lines[dstLi]);
+    return { model: m };
+  }
+  // 가사 덩어리(빈 줄·이름표·{soc}로 끊김) 목록. label = 바로 위 구간 이름표, chordLines = 코드가 달린 줄 수.
+  function bodyBlocks(model) {
+    const isBody = (i) => model.lines[i] && (model.lines[i].kind === 'lyric' || model.lines[i].kind === 'other');
+    const out = [];
+    for (let i = 0; i < model.lines.length; i++) {
+      if (!isBody(i)) continue;
+      let a = i, b = i;
+      while (isBody(b + 1)) b++;
+      let j = a - 1;
+      if (model.lines[j] && model.lines[j].kind === 'soc') j--;
+      const lab = model.lines[j] && model.lines[j].kind === 'comment' ? model.lines[j].label : '';
+      const ls = [];
+      for (let k = a; k <= b; k++) if (model.lines[k].kind === 'lyric') ls.push(model.lines[k]);
+      out.push({ a, b, label: lab, lines: ls.length, chordLines: ls.filter((l) => l.chords.length).length, first: ls.length ? ls[0].text.trim() : '' });
+      i = b;
+    }
+    return out;
+  }
+  // 구간 복사: src 덩어리의 k번째 줄 코드 → dst 덩어리의 k번째 줄. 코드가 이미 있는 줄은 overwrite일 때만 덮어쓴다.
+  // 반환 {model, filled, skipped, extra}  (extra = dst에 짝이 없어 비어 있는 줄 수, skipped = 이미 코드가 있어 건너뛴 줄 수)
+  function copyBlock(model, src, dst, opt) {
+    if (!src || !dst || src.a === dst.a) return { model, filled: 0, skipped: 0, extra: 0 };
+    const m = clone(model);
+    let filled = 0, skipped = 0, extra = 0;
+    const n = dst.b - dst.a + 1;
+    for (let k = 0; k < n; k++) {
+      const d = m.lines[dst.a + k];
+      if (!d || d.kind !== 'lyric') continue;
+      const s = k <= src.b - src.a ? m.lines[src.a + k] : null;
+      if (!s || s.kind !== 'lyric' || !s.chords.length) { if (!s) extra++; continue; }
+      if (d.chords.length && !(opt && opt.overwrite)) { skipped++; continue; }
+      d.chords = mapChords(s, d.text);
+      commitLine(d);
+      filled++;
+    }
+    return { model: m, filled, skipped, extra };
+  }
+
   // ---------- 가사 붙여넣기 → 구간 나누기 ----------
   const LABEL_RE = /^[\[\(【<＜\-–—\s]*(인트로|intro|1\s*절|2\s*절|3\s*절|4\s*절|5\s*절|프리\s*코러스|프리|pre\s*-?\s*chorus|후렴|코러스|chorus|브릿지|브리지|bridge|간주|interlude|엔딩|ending|outro|verse\s*\d?|v\d)\s*\d?[\]\)】>＞\-–—\s:：]*$/i;
   function canonLabel(s) {
@@ -334,6 +418,7 @@
     addChord, appendChord, replaceChord, deleteChord, moveChord, reshape,
     insertLines, replaceLine, deleteLine, clearChords, setLyricText, instrumentalRaw,
     insertSection, chorusAround, blockRange, toggleChorus, isInChorus,
+    lyricKey, findSameLyric, copyLineChords, bodyBlocks, copyBlock,
     splitLyrics, buildFromBlocks, canonLabel,
   };
 });

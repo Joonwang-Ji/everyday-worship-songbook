@@ -21,22 +21,91 @@
     toastTimer = setTimeout(() => ($toast.hidden = true), 2600);
   }
 
+  // ---------- 가입한 팀들 (9차: 팀 전환) ----------
+  // 이 기기에 가입한 팀을 모두 기억해 두고(ews_teams), 그중 하나를 "지금 보는 팀"(ews_team_active)으로 쓴다.
+  // 팀마다 팀원 열쇠(team)와 팀장 열쇠(leader)가 따로 저장된다. stale=true는 가입코드가 바뀌는 등으로 열쇠가 더 이상 안 통하는 팀.
+  function teamsGet() {
+    try {
+      const a = JSON.parse(ls.get('ews_teams', '[]'));
+      return Array.isArray(a) ? a.filter((x) => x && typeof x.team === 'string' && x.team) : [];
+    } catch { return []; }
+  }
+  const teamsSet = (a) => ls.set('ews_teams', JSON.stringify(a));
+  const activeIdGet = () => parseInt(ls.get('ews_team_active', ''), 10);
+  function activeTeam() {
+    const id = activeIdGet();
+    return teamsGet().find((x) => x.id === id && !x.stale) || null;
+  }
+  // 지금 보는 팀이 없는데 쓸 수 있는 팀이 있으면 첫 번째 팀을 고른다.
+  function ensureActive() {
+    if (activeTeam()) return;
+    const f = teamsGet().find((x) => !x.stale);
+    if (f) ls.set('ews_team_active', String(f.id));
+    else ls.del('ews_team_active');
+  }
+  // 팀에 가입했거나 만들었을 때: 목록에 넣고(같은 팀이면 열쇠만 갱신) 그 팀을 지금 보는 팀으로.
+  function addTeam(team, teamToken, leaderToken) {
+    const a = teamsGet();
+    const old = a.find((x) => x.id === team.id);
+    const rest = a.filter((x) => x.id !== team.id);
+    rest.push({ id: team.id, name: team.name, team: teamToken, leader: leaderToken != null ? leaderToken : old && !old.stale ? old.leader || '' : '' });
+    teamsSet(rest);
+    ls.set('ews_team_active', String(team.id));
+  }
+  function updateActive(fn) {
+    const id = activeIdGet();
+    const a = teamsGet();
+    const t = a.find((x) => x.id === id);
+    if (!t) return;
+    fn(t);
+    teamsSet(a);
+  }
+  const setActiveLeader = (tok) => updateActive((t) => { t.leader = tok || ''; });
+  const setActiveTeamToken = (tok) => updateActive((t) => { t.team = tok; t.stale = false; });
+  function clearAllLeaders() {
+    teamsSet(teamsGet().map((t) => ({ ...t, leader: '' })));
+  }
+  // 이 기기에서 이 팀을 지운다. 그 팀 때문에 저장해 둔 오프라인 자료도 함께 지운다.
+  function removeTeam(id) {
+    teamsSet(teamsGet().filter((x) => x.id !== id));
+    purgeTeamCache(id);
+    ensureActive();
+  }
+  // 예전(9차 이전)에는 팀 열쇠를 하나만 저장했다. 한 번만 새 방식으로 옮긴다 (팀 번호·이름은 /me가 알려 주면 채움).
+  function migrateLegacy() {
+    const old = ls.get('ews_team', '');
+    if (old && !teamsGet().length) {
+      teamsSet([{ id: 0, name: '', team: old, leader: ls.get('ews_leader', '') }]);
+      ls.set('ews_team_active', '0');
+    }
+    ls.del('ews_team');
+    ls.del('ews_leader');
+  }
+  // 오프라인용 저장본은 주소 기준이라, 요청에 팀 번호(_t)를 붙여 팀마다 따로 저장되게 한다. 팀을 나가면 그 팀 것만 지운다.
+  function purgeTeamCache(id) {
+    try {
+      if (!window.caches) return;
+      caches.keys().then((ks) => ks.filter((k) => k.startsWith('ews-data')).forEach((k) => caches.open(k).then((c) => c.keys().then((rs) => rs.forEach((r) => { try { if (new URL(r.url).searchParams.get('_t') === String(id)) c.delete(r); } catch {} })))));
+    } catch {}
+  }
+
   // ---------- API ----------
-  // 이 기기에 저장된 열쇠들(접속암호·관리자·팀·팀장)을 요청마다 함께 보낸다.
+  // 이 기기에 저장된 열쇠들(접속암호·관리자·지금 보는 팀의 팀원/팀장)을 요청마다 함께 보낸다.
   function authHeaders() {
     const h = {};
     const t = ls.get('ews_token', '');
     if (t) h.Authorization = 'Bearer ' + t;
     const a = ls.get('ews_admin', '');
     if (a) h['X-Admin-Token'] = a;
-    const tm = ls.get('ews_team', '');
-    if (tm) h['X-Team-Token'] = tm;
-    const ld = ls.get('ews_leader', '');
-    if (ld) h['X-Leader-Token'] = ld;
+    const tm = activeTeam();
+    if (tm) {
+      h['X-Team-Token'] = tm.team;
+      if (tm.leader) h['X-Leader-Token'] = tm.leader;
+    }
     return h;
   }
   function clearSession() {
-    ['ews_token', 'ews_admin', 'ews_team', 'ews_leader', 'ews_team_skip'].forEach((k) => ls.del(k));
+    ['ews_token', 'ews_admin', 'ews_teams', 'ews_team_active', 'ews_team', 'ews_leader', 'ews_team_skip'].forEach((k) => ls.del(k));
     // 오프라인용으로 저장해 둔 악보·콘티도 이 기기에서 지운다 (다른 사람이 같은 기기를 쓸 때를 위해)
     try { if (window.caches) caches.keys().then((ks) => ks.filter((k) => k.startsWith('ews-data') || k.startsWith('ews-img')).forEach((k) => caches.delete(k))); } catch {}
   }
@@ -54,6 +123,9 @@
   async function api(path, { method = 'GET', body } = {}) {
     const gen = routeGen;
     const headers = { 'Content-Type': 'application/json', ...authHeaders() };
+    // 읽기 요청에는 지금 보는 팀 번호를 붙인다. 서버는 무시하고, 서비스 워커의 저장본이 팀마다 따로 만들어진다.
+    const at = method === 'GET' ? activeTeam() : null;
+    if (at && at.id > 0) path += (path.includes('?') ? '&' : '?') + '_t=' + at.id;
     let res;
     try {
       res = await fetch('/api' + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
@@ -90,11 +162,33 @@
   }
 
   async function loadMe() {
-    me = await api('/me');
-    // 만료/무효가 된 열쇠는 이 기기에서 지운다
-    if (!me.isAdmin && ls.get('ews_admin', '')) ls.del('ews_admin');
-    if (!me.team) { ls.del('ews_team'); ls.del('ews_leader'); }
-    else if (!me.team.isLeader) ls.del('ews_leader');
+    migrateLegacy();
+    ensureActive();
+    // 지금 보는 팀의 열쇠가 더 이상 안 통하면(가입코드 재발급·팀 삭제 등) "다시 입장 필요"로 표시하고 다른 팀으로 넘어간다.
+    for (let guard = 0; guard < 12; guard++) {
+      me = await api('/me');
+      // 만료/무효가 된 열쇠는 이 기기에서 지운다
+      if (!me.isAdmin && ls.get('ews_admin', '')) ls.del('ews_admin');
+      const a = activeTeam();
+      if (me.team) {
+        const t = me.team;
+        const all = teamsGet();
+        const cur = all.find((x) => a && x.team === a.team); // 지금 쓰고 있는 줄
+        if (cur) {
+          cur.id = t.id; // 옛 방식에서 옮긴 줄은 번호·이름을 여기서 채운다
+          cur.name = t.name;
+          cur.stale = false;
+          if (!t.isLeader) cur.leader = '';
+        }
+        // 같은 팀 번호가 두 줄이면 지금 쓰는 줄만 남긴다
+        teamsSet(all.filter((x) => x === cur || x.id !== t.id));
+        ls.set('ews_team_active', String(t.id));
+        return;
+      }
+      if (!a) return;
+      teamsSet(teamsGet().map((x) => (x.team === a.team ? { ...x, stale: true, leader: '' } : x)));
+      ensureActive();
+    }
   }
 
   // 화면 아래 메뉴: 오늘 / 곡 / 콘티 / 더보기 (팀·관리자·로그아웃은 더보기 안)
@@ -149,7 +243,7 @@
       if ((m = /^\/history\/(\d+)$/.exec(hash))) return await viewHistory(+m[1]);
       if ((m = /^\/edit\/(\d+)$/.exec(hash))) return await viewEdit(+m[1]);
       if (hash === '/admin') return await viewAdmin();
-      if (hash === '/team') return await viewTeam();
+      if (hash === '/team') return await viewTeam(q);
       if (hash === '/setlists') return await viewSetlists();
       if (hash === '/setlist/new') return await viewSetlistEdit(null);
       if ((m = /^\/setlist\/(\d+)$/.exec(hash))) return await viewSetlist(+m[1]);
@@ -871,10 +965,17 @@
       if (!l) return;
       const secChips = (skipChorus) => `<div class="te-pal-row wrap">${TabEdit.SECTION_NAMES.filter((n) => !(skipChorus && n === '후렴')).map((n) => `<button type="button" class="chip ctb sm" data-sec="${esc(n)}">${esc(n)}</button>`).join('')}</div>`;
       const inCh = TabEdit.isInChorus(tm, li);
+      // 반복 구간 코드 복사: 같은 가사 줄이 있으면 줄 복사, 코드가 달린 다른 구간이 있으면 구간 복사를 보여 준다
+      const sameLi = TabEdit.findSameLyric(tm, li);
+      const allBlocks = TabEdit.bodyBlocks(tm);
+      const myBlock = allBlocks.find((b) => li >= b.a && li <= b.b);
+      const canCopyBlock = !!myBlock && allBlocks.some((b) => b !== myBlock && b.chordLines > 0);
       let h = `<h2 style="margin-top:0">${li + 1}번째 줄</h2>`;
       if (l.kind === 'lyric') {
         h += `<div class="menu-col">
           <button type="button" class="btn" data-op="edit">가사 고치기</button>
+          ${sameLi >= 0 ? `<button type="button" class="btn" data-op="copy-same">↺ 같은 가사 줄(${sameLi + 1}번째)의 코드 복사</button>` : ''}
+          ${canCopyBlock ? '<button type="button" class="btn" data-op="copy-block">↺ 다른 구간의 코드를 이 구간에 복사</button>' : ''}
           <button type="button" class="btn" data-op="chorus">${inCh ? '후렴 표시 끄기' : '이 덩어리를 후렴으로 표시'}</button>
           <button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button>
           <button type="button" class="btn" data-op="instr-up">＋ 위에 코드만 있는 줄 (간주·인트로)</button>
@@ -918,6 +1019,10 @@
         if (op === 'edit') lyricSheet(li, false);
         else if (op === 'add') newLinesSheet(li);
         else if (op === 'raw') rawSheet(li);
+        else if (op === 'copy-same') {
+          const r = TabEdit.copyLineChords(tm, li, sameLi, { overwrite: true });
+          if (r) { apply(r); toast('코드를 복사했어요.'); }
+        } else if (op === 'copy-block') blockCopySheet(li);
         else if (op === 'del') apply(TabEdit.deleteLine(tm, li));
         else if (op === 'clear') apply(TabEdit.clearChords(tm, li));
         else if (op === 'gap') apply(TabEdit.insertLines(tm, li, ['']));
@@ -929,6 +1034,35 @@
           toast('아래 코드 중 하나를 누르면 바뀌어요. “＋ 코드 이어 붙이기”로 뒤에 더 붙일 수 있어요.');
         }
       });
+    }
+    // 구간 코드 복사: 이 줄이 들어 있는 구간(덩어리)에, 코드가 달린 다른 구간의 코드를 줄 순서대로 복사한다
+    function blockCopySheet(li) {
+      const bl = TabEdit.bodyBlocks(tm);
+      const dst = bl.find((b) => li >= b.a && li <= b.b);
+      if (!dst) return;
+      const name = (b) => b.label || '구간 ' + (bl.indexOf(b) + 1);
+      // 줄 수가 같은 구간을 위로 (보통 1절 ↔ 2절)
+      const srcs = bl.filter((b) => b !== dst && b.chordLines > 0).sort((x, y) => Math.abs(x.lines - dst.lines) - Math.abs(y.lines - dst.lines) || x.a - y.a);
+      if (!srcs.length) { toast('코드가 달린 다른 구간이 아직 없어요.'); return; }
+      const sh = showSheet(`<h2 style="margin-top:0">코드 복사</h2>
+        <p class="hint" style="margin:0 0 8px"><b>${esc(name(dst))}</b>(${dst.lines}줄)에 어느 구간의 코드를 복사할까요? 줄 순서대로 대응하고, 글자 수가 다른 줄은 낱말 시작에 맞춰 얹어요.</p>
+        ${srcs.map((b) => `<div class="team-row"><button type="button" class="team-pick" data-src="${b.a}"><span class="grow">${esc(name(b))} · ${b.lines}줄<br><small class="muted">${esc(b.first.slice(0, 18))}${b.first.length > 18 ? '…' : ''}</small></span></button></div>`).join('')}
+        <label class="chk-row"><input type="checkbox" id="bc-ow"> 이미 코드가 있는 줄도 덮어쓰기</label>
+        <p class="hint">복사한 뒤 어긋난 곳은 코드를 눌러 ◀ ▶로 한 글자씩 옮기면 돼요. 되돌리기(↶)로 취소할 수도 있어요.</p>
+        <div class="row" style="margin-top:8px"><button type="button" class="btn" id="bc-no">닫기</button></div>`);
+      sh.q('#bc-no').onclick = () => sh.close();
+      sh.wrap.querySelectorAll('[data-src]').forEach(
+        (b) =>
+          (b.onclick = () => {
+            const src = bl.find((x) => x.a === +b.dataset.src);
+            const ow = sh.q('#bc-ow').checked;
+            sh.close();
+            const r = TabEdit.copyBlock(tm, src, dst, { overwrite: ow });
+            if (!r.filled) { toast(r.skipped ? '이미 코드가 있는 줄이라 건너뛰었어요. “덮어쓰기”를 켜면 바꿔 줘요.' : '복사할 코드가 없었어요.'); return; }
+            apply(r);
+            toast(`${r.filled}줄에 코드를 복사했어요.${r.skipped ? ` (${r.skipped}줄은 이미 코드가 있어 건너뜀)` : ''}${r.extra ? ` (${r.extra}줄은 짝이 없어 비워 둠)` : ''}`);
+          })
+      );
     }
     // 가사 고치기(한 줄)
     function lyricSheet(li) {
@@ -1362,7 +1496,7 @@
               ls.set('ews_admin', r.adminToken);
             } else {
               const r = await api('/team/leader-login', { method: 'POST', body: { pin } });
-              ls.set('ews_leader', r.leaderToken);
+              setActiveLeader(r.leaderToken);
             }
             await loadMe();
             const ok = kind === 'leader' ? !!(me.team && me.team.isLeader) : !!me.canEdit;
@@ -1389,6 +1523,66 @@
     }
   });
 
+  // ---------- 팀 전환 칩 (오늘·콘티 화면 위) ----------
+  // 팀에 가입했거나, 다시 입장해야 하는 팀이 남아 있을 때 보인다. 누르면 아래 창에서 팀을 바꾸거나 추가한다.
+  function teamChip() {
+    const saved = teamsGet();
+    if (!me.team && !saved.length) return '';
+    const stale = saved.some((x) => x.stale);
+    return `<div class="teambar"><button type="button" class="team-chip" data-teamsw aria-label="팀 전환">${me.team ? esc(me.team.name) : '팀 선택'} ▾${stale ? '<span class="dot" aria-hidden="true"></span>' : ''}</button></div>`;
+  }
+  function openTeamSheet() {
+    const saved = teamsGet();
+    const cur = me.team ? me.team.id : null;
+    const rows = saved
+      .map((t) => {
+        const on = t.id === cur && !t.stale;
+        const tag = t.stale ? '<span class="pill">다시 입장 필요</span>' : on ? '<span class="pill ok">보는 중</span>' : t.leader ? '<span class="pill">팀장</span>' : '';
+        return `<div class="team-row"><button type="button" class="team-pick ${on ? 'on' : ''}" data-pick="${t.id}"><span class="grow">${esc(t.name || '팀')}</span>${tag}</button>${t.stale ? `<button type="button" class="btn small" data-rm="${t.id}">지우기</button>` : ''}</div>`;
+      })
+      .join('');
+    const sh = showSheet(
+      `<h2 style="margin-top:0">팀 전환</h2>${rows || '<p class="muted">가입한 팀이 없어요.</p>'}<p style="margin:12px 0 0"><button type="button" class="btn" id="tadd" style="width:100%">+ 다른 팀 추가</button></p><p class="hint">팀을 바꾸면 그 팀의 콘티·최근 사용·팀 기본 키가 보여요. 팀장 PIN은 팀마다 따로 입력해요.</p>`
+    );
+    sh.wrap.querySelectorAll('[data-pick]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          const id = +b.dataset.pick;
+          const t = teamsGet().find((x) => x.id === id);
+          if (!t) return;
+          sh.close();
+          if (t.stale) {
+            location.hash = '#/team?add=1&re=' + encodeURIComponent(t.name || '');
+            return;
+          }
+          ls.set('ews_team_active', String(id));
+          ls.del('ews_team_skip');
+          toast(`"${t.name}" 팀으로 바꿨습니다.`);
+          route();
+        })
+    );
+    sh.wrap.querySelectorAll('[data-rm]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          const t = teamsGet().find((x) => x.id === +b.dataset.rm);
+          if (!t || !confirm(`"${t.name || '팀'}"을(를) 이 기기의 팀 목록에서 지울까요?`)) return;
+          removeTeam(t.id);
+          sh.close();
+          route();
+        })
+    );
+    sh.q('#tadd').onclick = () => {
+      sh.close();
+      location.hash = '#/team?add=1';
+    };
+  }
+  document.addEventListener('click', (ev) => {
+    const b = ev.target.closest && ev.target.closest('[data-teamsw]');
+    if (!b) return;
+    ev.preventDefault();
+    openTeamSheet();
+  });
+
   // ---------- 오늘 (처음 화면): 이번 주 콘티와 바로 연주 ----------
   async function viewHome() {
     const search = `<form class="card home-search" id="hs"><input type="search" id="hq" placeholder="곡 검색 (제목 · 가사 · 원제)" enterkeyhint="search" aria-label="곡 검색"></form>`;
@@ -1401,6 +1595,7 @@
     };
     if (!me.team) {
       $app.innerHTML = `
+        ${teamChip()}
         <div class="card hero">
           <div class="hero-label">우리 팀 콘티</div>
           <h2 class="hero-title">팀에 가입하면 여기에 이번 주 콘티가 나와요</h2>
@@ -1439,6 +1634,7 @@
     }
     const others = upcoming.slice(1, 3);
     $app.innerHTML = `
+      ${teamChip()}
       ${hero}
       ${others.length ? `<h2>이어지는 콘티</h2><ul class="songs">${others.map((l) => `<li class="song-item"><a href="#/setlist/${l.id}"><div class="row between"><div class="song-title">${esc(l.title)}</div>${l.date ? `<span class="keybadge">${esc(fmtDate(l.date))}</span>` : ''}</div><div class="song-meta"><span>${l.item_count}곡</span></div></a></li>`).join('')}</ul>` : ''}
       ${search}
@@ -1462,6 +1658,7 @@
       </div>
       <ul class="songs menu">
         <li class="song-item"><a href="#/team"><div class="song-title">${t ? esc(t.name) : '팀 가입'}</div><div class="song-meta">${t ? '가입코드 · 팀장 PIN · 팀 나가기' : '팀장에게 받은 가입코드로 입장하기'}</div></a></li>
+        ${teamsGet().length ? `<li class="song-item"><a href="#" data-teamsw><div class="song-title">팀 전환 · 팀 추가</div><div class="song-meta">가입한 팀 ${teamsGet().length}개${teamsGet().some((x) => x.stale) ? ' · 다시 입장이 필요한 팀이 있어요' : ''}</div></a></li>` : ''}
         ${me.adminRequired ? `<li class="song-item"><a href="#/admin"><div class="song-title">앱 관리</div><div class="song-meta">${me.isAdmin ? '초대코드 · 팀 목록 · 추천 태그' : '관리자 PIN 필요'}</div></a></li>` : ''}
       </ul>
       <div class="footer"><button id="logout" type="button">로그아웃</button></div>
@@ -1469,7 +1666,7 @@
     const cp = el('closeperm');
     if (cp) cp.onclick = () => {
       ls.del('ews_admin');
-      ls.del('ews_leader');
+      clearAllLeaders(); // 가입한 모든 팀의 팀장 열쇠를 닫는다
       toast('이 기기의 편집 권한을 닫았습니다.');
       route();
     };
@@ -1480,12 +1677,23 @@
   }
 
   // ---------- 팀 ----------
-  async function viewTeam() {
-    // 팀이 없으면: 가입코드로 입장 / 새 팀 만들기 / 팀 없이 보기
-    if (!me.team) {
+  const goHash = (h) => { if (location.hash === h) route(); else location.hash = h; };
+  async function viewTeam(q) {
+    // 팀이 없거나(또는 "다른 팀 추가"로 들어왔으면): 가입코드로 입장 / 새 팀 만들기 / 팀 없이 보기
+    const adding = !!(q && q.get('add') === '1');
+    if (!me.team || adding) {
+      const reName = (q && q.get('re')) || '';
+      const staleTeams = teamsGet().filter((x) => x.stale);
+      const note = reName
+        ? `<p class="muted"><b>${esc(reName)}</b> 팀은 가입코드가 바뀌어 다시 입장해야 해요. 팀장에게 새 가입코드를 받아 입력해 주세요.</p>`
+        : staleTeams.length && !me.team
+          ? `<p class="muted"><b>${esc(staleTeams.map((x) => x.name || '팀').join(', '))}</b> 팀은 가입코드가 바뀌어 다시 입장해야 해요. 새 가입코드를 입력하면 돼요.</p>`
+          : '';
       $app.innerHTML = `
-        <h1>팀 가입</h1>
-        <p class="muted">콘티는 팀 단위로 공유됩니다. 팀장에게 받은 <b>가입코드</b>로 입장하세요.</p>
+        ${me.team ? '<div class="row between"><a href="#/more" class="small">← 더보기</a></div>' : ''}
+        <h1>${me.team ? '다른 팀 추가' : '팀 가입'}</h1>
+        ${note}
+        <p class="muted">콘티는 팀 단위로 공유됩니다. 팀장에게 받은 <b>가입코드</b>로 입장하세요.${me.team ? ' 여러 팀에 가입해 두고 팀 이름 칩으로 바꿔 볼 수 있어요.' : ''}</p>
         <form class="card" id="jf">
           <label for="jc" style="margin-top:0">팀 가입코드</label>
           <input id="jc" type="text" autocapitalize="characters" autocomplete="off" autofocus placeholder="예: AB12CD34">
@@ -1507,18 +1715,16 @@
               : '<p class="muted small">팀 만들기는 관리자가 초대코드를 열어 줘야 사용할 수 있습니다.</p>'
           }
         </details>
-        <p><button class="btn" id="skip">팀 없이 곡만 볼게요</button></p>
-        <p class="muted small">팀 없이도 곡 목록과 악보는 볼 수 있습니다. 콘티는 팀에 가입해야 볼 수 있어요.</p>`;
+        ${me.team ? '' : '<p><button class="btn" id="skip">팀 없이 곡만 볼게요</button></p><p class="muted small">팀 없이도 곡 목록과 악보는 볼 수 있습니다. 콘티는 팀에 가입해야 볼 수 있어요.</p>'}`;
       el('jf').onsubmit = async (ev) => {
         ev.preventDefault();
         el('jerr').textContent = '';
         try {
           const r = await api('/teams/join', { method: 'POST', body: { code: el('jc').value } });
-          ls.set('ews_team', r.teamToken);
-          ls.del('ews_leader');
+          addTeam(r.team, r.teamToken); // 같은 팀이면 열쇠만 새로 바뀌고, 이 팀이 지금 보는 팀이 된다
           ls.del('ews_team_skip');
           toast(`"${r.team.name}" 팀에 입장했습니다.`);
-          location.hash = '#/setlists';
+          goHash('#/setlists');
         } catch (e) {
           el('jerr').textContent = e.message;
         }
@@ -1530,26 +1736,27 @@
           el('cerr').textContent = '';
           try {
             const r = await api('/teams', { method: 'POST', body: { invite: el('ci').value, name: el('cn').value, pin: el('cp').value } });
-            ls.set('ews_team', r.teamToken);
-            ls.set('ews_leader', r.leaderToken);
+            addTeam(r.team, r.teamToken, r.leaderToken);
             ls.del('ews_team_skip');
             toast(`"${r.team.name}" 팀을 만들었습니다. 가입코드를 팀원에게 알려 주세요.`);
-            route();
+            goHash('#/team');
           } catch (e) {
             el('cerr').textContent = e.message;
           }
         };
-      el('skip').onclick = () => {
-        ls.set('ews_team_skip', '1');
-        location.hash = '#/';
-      };
+      const sk = el('skip');
+      if (sk)
+        sk.onclick = () => {
+          ls.set('ews_team_skip', '1');
+          location.hash = '#/';
+        };
       return;
     }
 
     const { team } = await api('/team');
     const leader = !!team.isLeader;
     $app.innerHTML = `
-      <div class="row between"><a href="#/more" class="small">← 더보기</a></div>
+      <div class="row between"><a href="#/more" class="small">← 더보기</a><button type="button" class="btn small" data-teamsw>팀 전환 · 추가</button></div>
       <h1>${esc(team.name)}</h1>
       <p class="muted">${leader ? '팀장으로 열려 있습니다.' : '팀원으로 입장했습니다.'}</p>
       ${
@@ -1579,7 +1786,7 @@
         if (!confirm('가입코드를 다시 발급할까요?\n기존 팀원은 새 코드로 다시 입장해야 합니다.')) return;
         try {
           const r = await api('/team/join-code', { method: 'POST' });
-          ls.set('ews_team', r.teamToken);
+          setActiveTeamToken(r.teamToken);
           toast('새 가입코드를 발급했습니다.');
           route();
         } catch (e) {
@@ -1591,7 +1798,7 @@
         el('perr').textContent = '';
         try {
           const r = await api('/team/leader-pin', { method: 'POST', body: { current: el('pc').value, pin: el('pn').value } });
-          ls.set('ews_leader', r.leaderToken);
+          setActiveLeader(r.leaderToken);
           toast('PIN을 바꿨습니다. 다른 기기에서는 새 PIN으로 다시 로그인해야 합니다.');
           route();
         } catch (e) {
@@ -1599,15 +1806,14 @@
         }
       };
       el('lout').onclick = () => {
-        ls.del('ews_leader');
+        setActiveLeader('');
         toast('팀장 권한을 닫았습니다.');
         route();
       };
     }
     el('leave').onclick = () => {
-      if (!confirm('이 기기에서 팀을 나갈까요?\n(다시 들어오려면 가입코드가 필요합니다)')) return;
-      ls.del('ews_team');
-      ls.del('ews_leader');
+      if (!confirm(`이 기기에서 "${team.name}" 팀을 나갈까요?\n(다시 들어오려면 가입코드가 필요합니다)`)) return;
+      removeTeam(team.id); // 이 팀만 지운다. 가입한 다른 팀은 그대로
       route();
     };
   }
@@ -1620,7 +1826,8 @@
     }
     const { setlists, canEdit } = await api('/setlists');
     $app.innerHTML = `
-      <div class="row between"><h1>콘티 · ${esc(me.team.name)}</h1>${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary')}</div>
+      ${teamChip()}
+      <div class="row between"><h1>콘티</h1>${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary')}</div>
       ${
         setlists.length
           ? `<ul class="songs">${setlists
