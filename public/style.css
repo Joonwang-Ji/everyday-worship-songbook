@@ -134,3 +134,33 @@ pre.help { background: var(--accent-bg); padding: 10px 12px; border-radius: 10px
 .pick .song-title { display: block; font-size: 16px; }
 label.check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 15px; color: var(--text); }
 label.check input { width: 20px; height: 20px; flex: none; }
+
+/* 4차: 분류 칩 · 최근 사용 · 수정 이력 · 태그 관리 */
+.filter { margin: 6px 0 4px; }
+.filter > summary { cursor: pointer; padding: 6px 0; font-size: 14px; color: var(--muted); font-weight: 700; }
+.chipgroup { display: flex; gap: 8px; align-items: flex-start; margin: 2px 0; }
+.chipgroup .ctl-label { flex: none; min-width: 3.4em; padding-top: 7px; }
+.chipgroup .chips { margin: 4px 0; }
+.sortrow { margin: 4px 0 2px; }
+.tag.used { background: transparent; border: 1px solid var(--line); }
+.tag.unused { background: transparent; border: 1px dashed var(--line); }
+.usage { margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+.usage details { margin-top: 4px; }
+.usage summary { cursor: pointer; color: var(--muted); }
+a.verrow { display: block; text-decoration: none; color: inherit; margin-bottom: 8px; }
+a.verrow:active { background: var(--accent-bg); }
+.difflist { max-height: 340px; overflow: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 8px; font-family: ui-monospace, "SF Mono", Menlo, "D2Coding", monospace; font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
+.dl { padding: 0 8px 0 24px; position: relative; white-space: pre-wrap; word-break: break-all; }
+.dl .dm { position: absolute; left: 8px; font-weight: 800; }
+.dl.add { background: rgba(46, 160, 67, .18); }
+.dl.del { background: rgba(218, 54, 51, .18); }
+.legend { font-size: 12px; padding: 0 6px; border-radius: 4px; }
+.legend.add { background: rgba(46, 160, 67, .18); }
+.legend.del { background: rgba(218, 54, 51, .18); }
+.pgroup { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+.pgroup .gname { max-width: 180px; font-weight: 700; }
+.pgroup .gadd { max-width: 220px; }
+.chip.edit { display: inline-flex; align-items: center; gap: 4px; cursor: default; padding-right: 6px; }
+.chip.edit .x { background: transparent; border: 0; color: inherit; font-size: 13px; cursor: pointer; padding: 0 4px; }
+.utag { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.utag:last-child { border-bottom: 0; }

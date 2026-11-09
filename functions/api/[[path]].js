@@ -376,6 +376,67 @@ const lyricsOnly = (chordpro) =>
     .map((l) => l.replace(/\[[^\]]*\]/g, ''))
     .join(' ');
 
+// ---------- 추천 태그 목록 (주제·빠르기·절기 …) ----------
+// 곡의 태그는 자유롭게 쓰되, 아래 목록은 곡 편집·목록 필터에서 "추천 칩"으로 보여 준다.
+// 관리자가 고친 목록은 settings.tag_presets 에 JSON으로 저장되고, 없으면 이 기본값을 쓴다.
+const DEFAULT_PRESETS = [
+  { group: '주제', items: ['찬양', '경배', '회개&보혈', '예수님', '성령님', '교회&하나님나라', '결단', '선포', '십자가&부활'] },
+  { group: '빠르기', items: ['빠른곡', '느린곡'] },
+  { group: '절기', items: ['성탄', '고난주간', '부활절', '성령강림절', '추수감사절', '송구영신'] },
+];
+const MAX_PRESET_GROUPS = 8;
+const MAX_PRESET_ITEMS = 60;
+const cleanTagName = (v) => (typeof v === 'string' ? v.replace(/[,，]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 20) : '');
+function cleanPresets(raw) {
+  if (!Array.isArray(raw)) throw new HttpError(400, '추천 태그 목록 형식이 올바르지 않습니다.');
+  if (raw.length > MAX_PRESET_GROUPS) throw new HttpError(400, `분류는 ${MAX_PRESET_GROUPS}개까지 만들 수 있습니다.`);
+  const seenGroup = new Set();
+  const out = [];
+  for (const g of raw) {
+    const group = cleanTagName(g && g.group).slice(0, 12);
+    if (!group) throw new HttpError(400, '분류 이름을 입력해 주세요.');
+    if (seenGroup.has(group)) throw new HttpError(400, `분류 이름이 겹칩니다: ${group}`);
+    seenGroup.add(group);
+    const items = [...new Set((Array.isArray(g.items) ? g.items : []).map(cleanTagName).filter(Boolean))];
+    if (items.length > MAX_PRESET_ITEMS) throw new HttpError(400, `"${group}"에는 태그를 ${MAX_PRESET_ITEMS}개까지 넣을 수 있습니다.`);
+    out.push({ group, items });
+  }
+  return out;
+}
+async function getPresets(db) {
+  const row = await db.prepare(`SELECT v FROM settings WHERE k='tag_presets'`).first();
+  if (row) {
+    try {
+      return cleanPresets(JSON.parse(row.v));
+    } catch {
+      /* 저장값이 깨졌으면 기본값 */
+    }
+  }
+  return DEFAULT_PRESETS;
+}
+const splitTags = (s) => (s ? s.split(',').map((t) => t.trim()).filter(Boolean) : []);
+// 태그 이름 바꾸기·합치기·지우기: 모든 곡의 태그에 반영한다. to 가 비어 있으면 지운다.
+async function renameTagInSongs(db, from, to) {
+  const { results } = await db.prepare(`SELECT id,tags FROM songs WHERE tags <> ''`).all();
+  const stmts = [];
+  for (const r of results) {
+    const list = splitTags(r.tags);
+    if (!list.includes(from)) continue;
+    const next = [...new Set(list.map((t) => (t === from ? to : t)).filter(Boolean))].join(',');
+    stmts.push(db.prepare('UPDATE songs SET tags=? WHERE id=?').bind(next, r.id));
+  }
+  for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50));
+  return stmts.length;
+}
+// 한국 시간 기준 오늘 (YYYY-MM-DD)
+const todayKst = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+const MAX_VERSIONS_PER_SONG = 50;
+// 곡마다 이력은 최근 50개까지만 보관(저장 공간 절약)
+const pruneVersions = (db, songId) =>
+  db
+    .prepare('DELETE FROM song_versions WHERE song_id=? AND id NOT IN (SELECT id FROM song_versions WHERE song_id=? ORDER BY id DESC LIMIT ?)')
+    .bind(songId, songId, MAX_VERSIONS_PER_SONG);
+
 // ---------- 콘티 입력 정리 ----------
 const MAX_SETLIST_ITEMS = 60;
 const VIEWS = ['auto', 'chord', 'image'];
@@ -479,6 +540,14 @@ export async function onRequest({ request, env }) {
       });
     }
 
+    // 추천 태그 목록 + 태그별 곡 수 (곡 편집·목록 필터·관리자 화면에서 사용)
+    if (parts[0] === 'tags' && !parts[1] && method === 'GET') {
+      const { results } = await db.prepare(`SELECT tags FROM songs WHERE tags <> ''`).all();
+      const usage = {};
+      for (const r of results) for (const t of splitTags(r.tags)) usage[t] = (usage[t] || 0) + 1;
+      return json({ presets: await getPresets(db), usage });
+    }
+
     // ===== 관리자 =====
     if (parts[0] === 'admin') {
       // 관리자 PIN 입력
@@ -507,6 +576,27 @@ export async function onRequest({ request, env }) {
           await db.prepare(`INSERT INTO settings (k,v) VALUES ('invite_code',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).bind(code).run();
           return json({ code, source: 'app' });
         }
+      }
+
+      // 추천 태그 목록 저장 (관리자만)
+      if (parts[1] === 'tags' && !parts[2] && method === 'PUT') {
+        const presets = cleanPresets((await readBody()).presets);
+        await db.prepare(`INSERT INTO settings (k,v) VALUES ('tag_presets',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).bind(JSON.stringify(presets)).run();
+        return json({ presets });
+      }
+      // 태그 이름 바꾸기 / 합치기 / 모든 곡에서 지우기(to 를 비우면 지움). 추천 목록에도 같이 반영한다.
+      if (parts[1] === 'tags' && parts[2] === 'rename' && method === 'POST') {
+        const body = await readBody();
+        const from = cleanTagName(body.from);
+        const to = cleanTagName(body.to);
+        if (!from) throw new HttpError(400, '바꿀 태그를 골라 주세요.');
+        const changed = await renameTagInSongs(db, from, to);
+        const presets = (await getPresets(db)).map((g) => ({
+          group: g.group,
+          items: [...new Set(g.items.map((t) => (t === from ? to : t)).filter(Boolean))],
+        }));
+        await db.prepare(`INSERT INTO settings (k,v) VALUES ('tag_presets',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).bind(JSON.stringify(presets)).run();
+        return json({ changed, presets });
       }
 
       if (parts[1] === 'teams') {
@@ -747,15 +837,28 @@ export async function onRequest({ request, env }) {
           )
           .all();
         let tkMap = {};
+        let lastMap = {};
         if (ctx.team) {
           const { results: tk } = await db.prepare('SELECT song_id,key FROM team_song_keys WHERE team_id=?').bind(ctx.team.id).all();
           tkMap = Object.fromEntries(tk.map((r) => [r.song_id, r.key]));
+          // 우리 팀 콘티에서 가장 최근에 쓴 날짜 (오늘까지의 콘티만. 앞으로 잡힌 콘티는 "예정"이라 제외)
+          const { results: lu } = await db
+            .prepare(
+              `SELECT i.song_id AS song_id, MAX(l.date) AS last, COUNT(DISTINCT l.id) AS n
+               FROM setlist_items i JOIN setlists l ON l.id = i.setlist_id
+               WHERE l.team_id=? AND l.date IS NOT NULL AND l.date <= ?
+               GROUP BY i.song_id`
+            )
+            .bind(ctx.team.id, todayKst())
+            .all();
+          lastMap = Object.fromEntries(lu.map((r) => [r.song_id, r]));
         }
         const songs = results
           .filter((s) => !q || [s.title, s.artist, s.tags, lyricsOnly(s.chordpro)].join(' ').toLowerCase().includes(q))
           .map((s) => {
             const { chordpro, ...rest } = s;
-            return { ...rest, file_kinds: rest.file_kinds || '', has_chords: /\S/.test(chordpro), team_key: tkMap[s.id] || '' };
+            const lu = lastMap[s.id];
+            return { ...rest, file_kinds: rest.file_kinds || '', has_chords: /\S/.test(chordpro), team_key: tkMap[s.id] || '', last_used: lu ? lu.last : '', use_count: lu ? lu.n : 0 };
           });
         return json({ songs });
       }
@@ -810,14 +913,76 @@ export async function onRequest({ request, env }) {
         return json({ id: r.meta.last_row_id }, 201);
       }
 
+      // ----- 수정 이력 (편집 권한이 있는 사람만) -----
+      // song_versions 한 줄 = "이 본문을 created_at 에 edited_by 가 다른 내용으로 바꿨다"는 뜻(바뀌기 전 본문 보관)
+      if (id && parts[2] === 'versions') {
+        requireEdit(env, ctx);
+        const cur = await db.prepare('SELECT title,chordpro,updated_at FROM songs WHERE id=?').bind(id).first();
+        if (!cur) throw new HttpError(404, '곡을 찾을 수 없습니다.');
+        const who = (v) => (v.edited_by_team ? v.team_name || '(삭제된 팀)' : '관리자');
+        const base = `SELECT v.id,v.chordpro,v.edited_by_team,v.created_at,t.name AS team_name
+                      FROM song_versions v LEFT JOIN teams t ON t.id = v.edited_by_team`;
+
+        if (!parts[3] && method === 'GET') {
+          const { results } = await db.prepare(base + ' WHERE v.song_id=? ORDER BY v.id DESC').bind(id).all();
+          return json({
+            title: cur.title,
+            current: { updated_at: cur.updated_at, chars: cur.chordpro.length },
+            versions: results.map((v) => ({ id: v.id, created_at: v.created_at, edited_by: who(v), chars: v.chordpro.length, first_line: (v.chordpro.split('\n').find((l) => l.trim()) || '').slice(0, 60) })),
+          });
+        }
+        const vid = parseInt(parts[3], 10);
+        if (!Number.isInteger(vid)) throw new HttpError(404, '이력을 찾을 수 없습니다.');
+        const ver = await db.prepare(base + ' WHERE v.id=? AND v.song_id=?').bind(vid, id).first();
+        if (!ver) throw new HttpError(404, '이력을 찾을 수 없습니다.');
+
+        if (!parts[4] && method === 'GET') {
+          return json({ version: { id: ver.id, created_at: ver.created_at, edited_by: who(ver), chordpro: ver.chordpro }, current: { chordpro: cur.chordpro, updated_at: cur.updated_at } });
+        }
+        // 되돌리기: 지금 본문도 이력에 남겨 두므로, 잘못 되돌려도 다시 되돌릴 수 있다.
+        if (parts[4] === 'restore' && method === 'POST') {
+          const now = nowIso();
+          const editor = ctx.admin || !ctx.team ? null : ctx.team.id;
+          const stmts = [];
+          if (cur.chordpro !== ver.chordpro) {
+            stmts.push(db.prepare('INSERT INTO song_versions (song_id,chordpro,edited_by_team,created_at) VALUES (?,?,?,?)').bind(id, cur.chordpro, editor, now));
+          }
+          stmts.push(db.prepare('UPDATE songs SET chordpro=?,updated_at=? WHERE id=?').bind(ver.chordpro, now, id));
+          stmts.push(pruneVersions(db, id));
+          await db.batch(stmts);
+          return json({ ok: true });
+        }
+        throw new HttpError(404, '요청한 주소를 찾을 수 없습니다.');
+      }
+
       if (id && method === 'GET') {
         const song = await db.prepare('SELECT * FROM songs WHERE id=?').bind(id).first();
         if (!song) throw new HttpError(404, '곡을 찾을 수 없습니다.');
         song.files = await songFiles(env, id);
         song.team_key = '';
+        song.usage = null;
         if (ctx.team) {
           const tk = await db.prepare('SELECT key FROM team_song_keys WHERE team_id=? AND song_id=?').bind(ctx.team.id, id).first();
           song.team_key = tk ? tk.key : '';
+          // 우리 팀 콘티 사용 이력: 오늘까지 쓴 최근 5번, 전체 횟수, 다음 예정일
+          const today = todayKst();
+          const { results: used } = await db
+            .prepare(
+              `SELECT l.id,l.date,l.title FROM setlists l
+               WHERE l.team_id=? AND l.date IS NOT NULL AND l.date <= ? AND EXISTS (SELECT 1 FROM setlist_items i WHERE i.setlist_id = l.id AND i.song_id=?)
+               ORDER BY l.date DESC, l.id DESC`
+            )
+            .bind(ctx.team.id, today, id)
+            .all();
+          const next = await db
+            .prepare(
+              `SELECT l.id,l.date,l.title FROM setlists l
+               WHERE l.team_id=? AND l.date > ? AND EXISTS (SELECT 1 FROM setlist_items i WHERE i.setlist_id = l.id AND i.song_id=?)
+               ORDER BY l.date ASC LIMIT 1`
+            )
+            .bind(ctx.team.id, today, id)
+            .first();
+          song.usage = { count: used.length, recent: used.slice(0, 5), next: next || null };
         }
         return json({ song });
       }
@@ -830,10 +995,11 @@ export async function onRequest({ request, env }) {
         const now = nowIso();
         const stmts = [];
         if (old.chordpro !== song.chordpro) {
-          // 바뀌기 전 본문을 수정 이력에 보관 (되돌리기 화면은 3차에서 추가). 팀장이 고쳤다면 그 팀 번호도 남긴다.
+          // 바뀌기 전 본문을 수정 이력에 보관 (이력 보기·되돌리기는 4차에서 추가). 팀장이 고쳤다면 그 팀 번호도 남긴다.
           stmts.push(
             db.prepare('INSERT INTO song_versions (song_id,chordpro,edited_by_team,created_at) VALUES (?,?,?,?)').bind(id, old.chordpro, ctx.admin || !ctx.team ? null : ctx.team.id, now)
           );
+          stmts.push(pruneVersions(db, id));
         }
         stmts.push(
           db
