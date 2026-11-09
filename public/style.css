@@ -1,0 +1,103 @@
+:root {
+  --bg: #f6f5f1; --card: #ffffff; --text: #1d2430; --muted: #6b7280; --line: #dedbd2;
+  --brand: #1f3a5f; --brand-text: #ffffff; --chord: #b4472a; --accent-bg: #eef2f8;
+  --danger: #b42318; --radius: 12px;
+  --song-size: 18px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c; --card: #1d2229; --text: #e8eaee; --muted: #9aa3b0; --line: #343b46;
+    --brand: #7fa6e0; --brand-text: #0f1722; --chord: #f0a37e; --accent-bg: #222b38;
+    --danger: #ff8a80;
+  }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", "Malgun Gothic", sans-serif;
+  line-height: 1.5; padding-bottom: env(safe-area-inset-bottom);
+}
+a { color: var(--brand); }
+.muted { color: var(--muted); }
+.center { text-align: center; }
+.small { font-size: 13px; }
+[hidden] { display: none !important; }
+
+.top { background: var(--brand); padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top)); position: sticky; top: 0; z-index: 10; }
+.brand { text-decoration: none; color: var(--brand-text); display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.brand-name { font-weight: 800; font-size: 17px; letter-spacing: .2px; }
+.brand-sub { font-size: 13px; opacity: .85; }
+@media (prefers-color-scheme: dark) { .top { background: #1d2229; border-bottom: 1px solid var(--line); } .brand { color: var(--text); } }
+
+main { max-width: 860px; margin: 0 auto; padding: 16px; }
+h1 { font-size: 22px; margin: 4px 0 2px; }
+h2 { font-size: 17px; margin: 0 0 10px; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 14px; }
+input, select, textarea, button { font: inherit; color: inherit; }
+input[type=text], input[type=password], input[type=number], input[type=url], input[type=search], select, textarea {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 4px; }
+textarea.code { font-family: ui-monospace, "SF Mono", Menlo, "D2Coding", monospace; font-size: 15px; min-height: 320px; line-height: 1.5; tab-size: 4; }
+
+.btn { border: 1px solid var(--line); background: var(--card); padding: 9px 14px; border-radius: 10px; cursor: pointer; text-decoration: none; display: inline-block; font-size: 15px; }
+.btn.primary { background: var(--brand); color: var(--brand-text); border-color: var(--brand); font-weight: 700; }
+.btn.danger { color: var(--danger); border-color: var(--danger); }
+.btn.small { padding: 5px 10px; font-size: 14px; }
+.btn:disabled { opacity: .5; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.row.between { justify-content: space-between; }
+.grow { flex: 1; min-width: 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+
+.error { color: var(--danger); font-size: 14px; margin: 8px 0 0; }
+
+/* 곡 목록 */
+.songs { list-style: none; margin: 0; padding: 0; }
+.song-item a { display: block; text-decoration: none; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 8px; }
+.song-item a:active { background: var(--accent-bg); }
+.song-title { font-weight: 700; font-size: 17px; }
+.song-meta { font-size: 13px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+.keybadge { background: var(--accent-bg); color: var(--brand); border-radius: 6px; padding: 0 7px; font-weight: 700; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 10px 0; }
+.chip { border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 3px 12px; font-size: 14px; cursor: pointer; }
+.chip.on { background: var(--brand); color: var(--brand-text); border-color: var(--brand); }
+.tag { font-size: 12px; background: var(--accent-bg); border-radius: 6px; padding: 0 6px; color: var(--muted); }
+
+/* 곡 보기 */
+.controls { position: sticky; top: calc(46px + env(safe-area-inset-top)); z-index: 5; background: var(--bg); padding: 8px 0; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.controls .row { margin-bottom: 6px; }
+.controls select { width: auto; padding: 6px 8px; }
+.keybox { display: inline-flex; align-items: center; gap: 4px; }
+.keybox .btn { min-width: 40px; text-align: center; }
+.ctl-label { font-size: 13px; color: var(--muted); }
+.capo-note { font-size: 13px; color: var(--muted); }
+
+.score { font-size: var(--song-size); padding: 6px 2px 40px; overflow-wrap: anywhere; }
+.ln { margin: 2px 0; }
+.ln.plain { white-space: pre-wrap; line-height: 1.6; }
+.sg { display: inline-flex; flex-direction: column; vertical-align: bottom; }
+.ch { font-weight: 800; color: var(--chord); font-size: .88em; line-height: 1.35; min-height: 1.35em; padding-right: .45em; white-space: pre; }
+.ly { white-space: pre; line-height: 1.5; min-height: 1.5em; }
+.cm { display: inline-block; margin: 14px 0 4px; padding: 1px 10px; font-size: .78em; font-weight: 700; background: var(--accent-bg); color: var(--brand); border-radius: 6px; }
+.chorus { border-left: 3px solid var(--brand); padding-left: 10px; margin: 2px 0; }
+.gap { height: .7em; }
+.memo { background: var(--accent-bg); border-radius: 10px; padding: 10px 12px; white-space: pre-wrap; font-size: 15px; }
+
+/* 편집 */
+.edit-wrap { display: grid; grid-template-columns: 1fr; gap: 14px; }
+@media (min-width: 900px) { main.wide { max-width: 1200px; } .edit-wrap { grid-template-columns: 1fr 1fr; } }
+.preview { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; min-height: 120px; }
+details { margin: 10px 0; }
+summary { cursor: pointer; color: var(--brand); font-size: 14px; }
+pre.help { background: var(--accent-bg); padding: 10px 12px; border-radius: 10px; overflow-x: auto; font-size: 14px; }
+
+.toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); background: #222; color: #fff; padding: 10px 16px; border-radius: 10px; z-index: 50; font-size: 14px; max-width: 90vw; }
+.footer { margin-top: 28px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; gap: 14px; flex-wrap: wrap; font-size: 14px; }
+.footer a, .footer button { background: none; border: 0; padding: 0; color: var(--muted); text-decoration: underline; cursor: pointer; font-size: 14px; }
+.login { max-width: 420px; margin: 8vh auto 0; }
+.login h1 { text-align: center; }
