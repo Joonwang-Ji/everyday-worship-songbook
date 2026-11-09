@@ -385,3 +385,22 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 /* 9차: 구간 코드 복사 창 */
 .chk-row { display: flex; align-items: center; gap: 8px; min-height: 44px; margin: 6px 0; font-size: 15px; }
 .chk-row input { width: 20px; height: 20px; }
+
+/* 9-B: 줄 메뉴 정리 */
+.mgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mtile { display: flex; align-items: center; gap: 8px; text-align: left; justify-content: flex-start; line-height: 1.25; padding: 10px; }
+.mtile .mi { font-size: 18px; flex: none; width: 24px; text-align: center; }
+.mtile small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
+.mlabel { margin: 12px 0 6px; font-size: 12px; font-weight: 700; color: var(--muted); }
+.mdet { margin-top: 10px; }
+.mdet summary { cursor: pointer; font-size: 14px; padding: 8px 2px; color: var(--brand); font-weight: 700; }
+
+/* 9-B: 코드 악보 2단 보기 */
+.score .chorus, .score .ln { break-inside: avoid; }
+.score .cm { break-after: avoid; }
+.score.cols2 { column-count: 2; column-gap: 40px; column-rule: 1px solid var(--line); }
+#app.wide { max-width: none; }
+main.wide, #app.wide { max-width: 1280px; }
+.play-body.cols { overflow: hidden; }
+.play-body.cols .score { column-count: 2; column-gap: 36px; column-fill: auto; padding: 0; }
+.play-body.cols .score .cm:first-child { margin-top: 0; }

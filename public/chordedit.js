@@ -77,7 +77,7 @@
   }
 
   // ---------- 구간 버튼 ----------
-  const SECTION_NAMES = ['인트로', '1절', '2절', '3절', '프리코러스', '후렴', '브릿지', '간주', '엔딩'];
+  const SECTION_NAMES = ['인트로', '1절', '2절', '3절', '4절', '5절', '프리코러스', '후렴', '브릿지', '간주', '엔딩'];
   function prevLineBlank(text, from) {
     if (from <= 0) return true;
     const before = text.slice(0, from - 1);

@@ -34,9 +34,9 @@
   function badgesHTML(s, esc) {
     const f = formatOf(s);
     const out = [];
-    if (f.chord) out.push('<span class="fmt chord" title="코드 악보(키를 바꿀 수 있어요)">🎼 코드</span>');
-    if (f.image) out.push(`<span class="fmt img" title="이미지 악보">🖼 이미지${!f.both && f.n > 1 ? ' ' + f.n : ''}</span>`);
-    if (f.pdf) out.push(`<span class="fmt pdf" title="PDF 악보">📄 PDF${!f.both && f.n > 1 ? ' ' + f.n : ''}</span>`);
+    if (f.chord) out.push('<span class="fmt chord" title="코드 악보(키를 바꿀 수 있어요)" aria-label="코드 악보">🎼</span>');
+    if (f.image) out.push(`<span class="fmt img" title="이미지 악보" aria-label="이미지 악보">🖼${!f.both && f.n > 1 ? ' ' + f.n : ''}</span>`);
+    if (f.pdf) out.push(`<span class="fmt pdf" title="PDF 악보" aria-label="PDF 악보">📄${!f.both && f.n > 1 ? ' ' + f.n : ''}</span>`);
     if (!out.length) out.push('<span class="fmt none">악보 없음</span>');
     return out.join('');
   }

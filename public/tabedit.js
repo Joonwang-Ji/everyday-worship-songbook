@@ -8,7 +8,7 @@
   else root.TabEdit = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
   const DIRECTIVE = /^\s*\{\s*([a-zA-Z_]+)\s*(?::\s*(.*?))?\s*\}\s*$/;
-  const SECTION_NAMES = ['인트로', '1절', '2절', '3절', '프리코러스', '후렴', '브릿지', '간주', '엔딩'];
+  const SECTION_NAMES = ['인트로', '1절', '2절', '3절', '4절', '5절', '프리코러스', '후렴', '브릿지', '간주', '엔딩'];
 
   // "[G]주님은 [C]나의" → {text:'주님은 나의', chords:[{pos:0,c:'G'},{pos:4,c:'C'}]}. 괄호가 깨졌으면 null.
   function parseLyric(raw) {
@@ -266,11 +266,23 @@
   // 가사 글자가 완전히 같으면 코드 자리도 그대로, 글자 수가 다르면 줄 길이에 비례해 옮기고 가까운 낱말 시작으로 맞춘다.
   const lyricKey = (s) => String(s == null ? '' : s).normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
   const isWordStart = (t, p) => p === 0 ? t[0] !== ' ' : p >= t.length ? false : t[p - 1] === ' ' && t[p] !== ' ';
+  const wordSpans = (t) => { const r = []; const re = /\S+/g; let m; while ((m = re.exec(t))) r.push([m.index, m.index + m[0].length]); return r; };
   // src 줄의 코드들을 dstText 위의 자리로 옮긴 목록 [{pos,c}]
   function mapChords(src, dstText) {
     const a = src.text, b = String(dstText);
     if (a === b) return src.chords.map((c) => ({ pos: c.pos, c: c.c }));
     if (!a.length) return src.chords.map((c) => ({ pos: Math.min(c.pos, b.length), c: c.c }));
+    // 낱말 개수가 같으면 "몇 번째 낱말의 몇 번째 글자"로 그대로 옮긴다. (비례 계산보다 훨씬 일정하다)
+    const wa = wordSpans(a), wb = wordSpans(b);
+    if (wa.length && wa.length === wb.length) {
+      return src.chords.map((c) => {
+        if (c.pos >= a.length) return { pos: b.length, c: c.c };
+        let k = wa.findIndex((w) => c.pos < w[1]);
+        if (k < 0) return { pos: b.length, c: c.c };
+        const off = Math.max(0, c.pos - wa[k][0]);
+        return { pos: wb[k][0] + Math.min(off, wb[k][1] - wb[k][0] - 1), c: c.c };
+      });
+    }
     return src.chords.map((c) => {
       let np = Math.round((c.pos * b.length) / a.length);
       np = Math.max(0, Math.min(b.length, np));
@@ -394,7 +406,7 @@
       if (b.label) continue;
       if (count.get(normBlock(b.lines)) > 1) { b.label = '후렴'; continue; }
       do { verse++; } while (named.has(verse + '절'));
-      b.label = verse <= 6 ? verse + '절' : '';
+      b.label = verse <= 5 ? verse + '절' : '';
     }
     return blocks;
   }

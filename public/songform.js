@@ -12,6 +12,8 @@
     { code: 'V1', hint: '1절' },
     { code: 'V2', hint: '2절' },
     { code: 'V3', hint: '3절' },
+    { code: 'V4', hint: '4절' },
+    { code: 'V5', hint: '5절' },
     { code: 'P', hint: '프리' },
     { code: 'C', hint: '후렴' },
     { code: 'B', hint: '브릿지' },

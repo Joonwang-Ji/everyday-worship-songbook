@@ -217,6 +217,7 @@
       try { teardown(); } catch {}
       teardown = null;
     }
+    $app.classList.remove('wide');
     const [hash, qs] = (location.hash.replace(/^#/, '') || '/').split('?');
     const q = new URLSearchParams(qs || '');
     window.scrollTo(0, 0);
@@ -443,7 +444,7 @@
     const files = song.files || [];
     const hasText = /\S/.test(song.chordpro || '');
 
-    const prefs = { size: +ls.get('ews_size', '18'), chords: ls.get('ews_chords', '1') === '1', acc: ls.get('ews_acc', 'auto') };
+    const prefs = { cols: ls.get('ews_cols', 'auto') === '1' ? '1' : 'auto', size: +ls.get('ews_size', '18'), chords: ls.get('ews_chords', '1') === '1', acc: ls.get('ews_acc', 'auto') };
     let saved = {};
     try { saved = JSON.parse(ls.get('ews_song_' + id, '{}')) || {}; } catch {}
     const st = { shift: Number.isInteger(saved.shift) ? saved.shift : 0, capo: Number.isInteger(saved.capo) ? saved.capo : 0 };
@@ -519,6 +520,7 @@
               <span class="ctl-label">글자</span>
               <button class="btn small" id="fdown">가−</button><button class="btn small" id="fup">가+</button>
               <button class="btn small" id="chtoggle"></button>
+              <button class="btn small" id="coltoggle"></button>
             </div>
             <div class="capo-note" id="note"></div>
           </div>
@@ -546,9 +548,19 @@
     $capo.value = String(st.capo);
     $acc.value = prefs.acc;
 
+    // 넓은 화면(아이패드 등)에서는 코드 악보를 두 단으로 보여 준다. 사용자가 끌 수 있다.
+    function applyCols() {
+      const on = prefs.cols === 'auto' && window.innerWidth >= 900;
+      $score.classList.toggle('cols2', on);
+      $app.classList.toggle('wide', on);
+    }
+    const onWinResize = () => { if (document.body.contains($score)) applyCols(); else window.removeEventListener('resize', onWinResize); };
+    window.addEventListener('resize', onWinResize);
     function draw() {
       document.documentElement.style.setProperty('--song-size', prefs.size + 'px');
       $chtoggle.textContent = prefs.chords ? '코드 숨기기' : '코드 보기';
+      document.getElementById('coltoggle').textContent = prefs.cols === 'auto' ? '2단: 자동' : '2단: 끔';
+      applyCols();
       const p = Chord.plan(origKey, st.shift, st.capo, prefs.acc);
       $score.innerHTML = Chord.renderHTML(parsed, { originalKey: origKey, shift: st.shift, capo: st.capo, acc: prefs.acc, showChords: prefs.chords });
       if (hasKey) {
@@ -593,6 +605,7 @@
     $acc.onchange = () => { prefs.acc = $acc.value; ls.set('ews_acc', prefs.acc); draw(); };
     document.getElementById('fup').onclick = () => { prefs.size = Math.min(40, prefs.size + 2); ls.set('ews_size', prefs.size); draw(); };
     document.getElementById('fdown').onclick = () => { prefs.size = Math.max(12, prefs.size - 2); ls.set('ews_size', prefs.size); draw(); };
+    document.getElementById('coltoggle').onclick = () => { prefs.cols = prefs.cols === 'auto' ? '1' : 'auto'; ls.set('ews_cols', prefs.cols); draw(); };
     $chtoggle.onclick = () => { prefs.chords = !prefs.chords; ls.set('ews_chords', prefs.chords ? '1' : '0'); draw(); };
     draw();
 
@@ -972,18 +985,26 @@
       const canCopyBlock = !!myBlock && allBlocks.some((b) => b !== myBlock && b.chordLines > 0);
       let h = `<h2 style="margin-top:0">${li + 1}번째 줄</h2>`;
       if (l.kind === 'lyric') {
-        h += `<div class="menu-col">
-          <button type="button" class="btn" data-op="edit">가사 고치기</button>
-          ${sameLi >= 0 ? `<button type="button" class="btn" data-op="copy-same">↺ 같은 가사 줄(${sameLi + 1}번째)의 코드 복사</button>` : ''}
-          ${canCopyBlock ? '<button type="button" class="btn" data-op="copy-block">↺ 다른 구간의 코드를 이 구간에 복사</button>' : ''}
-          <button type="button" class="btn" data-op="chorus">${inCh ? '후렴 표시 끄기' : '이 덩어리를 후렴으로 표시'}</button>
-          <button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button>
-          <button type="button" class="btn" data-op="instr-up">＋ 위에 코드만 있는 줄 (간주·인트로)</button>
-          <button type="button" class="btn" data-op="instr-dn">＋ 아래에 코드만 있는 줄 (간주·인트로)</button>
-          <button type="button" class="btn" data-op="gap">＋ 위에 빈 줄</button>
-          ${l.chords.length ? '<button type="button" class="btn" data-op="clear">이 줄 코드 모두 지우기</button>' : ''}
-          <button type="button" class="btn danger" data-op="del">이 줄 삭제</button></div>
-          <p class="hint" style="margin:10px 0 4px">이 줄 위에 구간 이름 넣기</p>${secChips(true)}`;
+        const T = (op, ic, txt, cls) => `<button type="button" class="btn mtile ${cls || ''}" data-op="${op}"><span class="mi">${ic}</span><span>${txt}</span></button>`;
+        h += `<div class="mgrid">
+          ${T('edit', '✏️', '가사 고치기')}
+          ${T('chorus', '🔁', inCh ? '후렴 끄기' : '후렴으로 표시')}
+          ${sameLi >= 0 ? T('copy-same', '↺', `같은 가사 코드 복사<small>${sameLi + 1}번째 줄에서</small>`) : ''}
+          ${canCopyBlock ? T('copy-block', '↺', '구간 코드 복사<small>다른 구간에서</small>') : ''}
+        </div>
+        <p class="mlabel">추가</p>
+        <div class="mgrid">
+          ${T('add', '＋', '아래에 가사 줄')}
+          ${T('gap', '＋', '위에 빈 줄')}
+          ${T('instr-up', '🎸', '위에 코드 줄<small>간주·인트로</small>')}
+          ${T('instr-dn', '🎸', '아래에 코드 줄<small>간주·인트로</small>')}
+        </div>
+        <details class="mdet"><summary>구간 이름 넣기 (1절·후렴 …)</summary>${secChips(true)}</details>
+        <p class="mlabel">정리</p>
+        <div class="mgrid">
+          ${l.chords.length ? T('clear', '🧹', '코드 모두 지우기') : ''}
+          ${T('del', '🗑', '이 줄 삭제', 'danger')}
+        </div>`;
       } else if (l.kind === 'comment') {
         h += `<p class="hint" style="margin:0 0 4px">이름 바꾸기</p>${secChips(false)}
           <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 이름표 삭제</button></div>`;
@@ -1859,7 +1880,7 @@
         <div class="row between"><div class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</div>${key ? `<span class="keybadge">${esc(key)}</span>` : ''}</div>
         <div class="song-meta">
           ${it.form ? `<span>송폼 ${esc(it.form)}</span>` : ''}
-          ${imageOnly ? '<span class="fmt img">🖼 이미지 악보</span>' : it.has_chords ? '<span class="fmt chord">🎼 코드 악보</span>' : ''}
+          ${imageOnly ? '<span class="fmt img" title="이미지 악보" aria-label="이미지 악보">🖼</span>' : it.has_chords ? '<span class="fmt chord" title="코드 악보" aria-label="코드 악보">🎼</span>' : ''}
           ${it.memo ? `<span>${esc(it.memo)}</span>` : ''}
         </div>
         ${imgKeyNote ? `<div class="hint" style="margin:2px 0 0">이미지 악보는 원래 키(${esc(it.original_key)}) 기준 · 이 콘티에서는 ${esc(it.key)}로 부름</div>` : ''}
@@ -2024,6 +2045,7 @@
       acc: ls.get('ews_acc', 'auto'),
       theme: ls.get('ews_play_theme', 'auto'),
       wake: ls.get('ews_play_wake', '1') === '1',
+      cols: ['auto', '1', '2'].includes(ls.get('ews_play_cols', 'auto')) ? ls.get('ews_play_cols', 'auto') : 'auto',
     };
     const exitHref = src.sl ? '#/setlist/' + src.sl : '#/song/' + src.songId + (q.toString() ? '?' + q.toString() : '');
 
@@ -2145,7 +2167,32 @@
         $pb.innerHTML = Files.renderPane(files); // PDF만 있는 곡: 열기 링크
       }
       if (cur.tab === 'none') $pb.innerHTML = `<p class="muted center" style="margin-top:40px">등록된 악보가 아직 없습니다.</p>`;
+      fitCols();
       updateDots();
+    }
+    // 코드 악보 2단 보기: 넓은 화면에서 두 단으로 나누고, 스크롤 없이 한 화면에 들어오도록 글자를 줄여 맞춘다. (못 맞추면 1단)
+    function fitCols() {
+      $play.style.setProperty('--song-size', P.size + 'px');
+      const sc = $pb.querySelector('.score');
+      $pb.classList.remove('cols');
+      if (sc) sc.style.height = '';
+      if (!sc || !cur || cur.tab === 'img' || cur.tab === 'none') return;
+      if (P.cols === '1' || (P.cols === 'auto' && $pb.clientWidth < 700)) return;
+      $pb.classList.add('cols');
+      const cs = getComputedStyle($pb);
+      sc.style.height = Math.max(100, $pb.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) + 'px';
+      const avail = $pb.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      let size = P.size;
+      for (;;) {
+        $play.style.setProperty('--song-size', size + 'px');
+        if (sc.scrollWidth <= avail + 2) return;
+        if (size <= 14) break;
+        size -= 1;
+      }
+      // 글자를 가장 작게 줄여도 두 단에 다 안 들어가면 1단으로 되돌린다
+      $pb.classList.remove('cols');
+      sc.style.height = '';
+      $play.style.setProperty('--song-size', P.size + 'px');
     }
     function updateDots() {
       const parts = [];
@@ -2256,6 +2303,7 @@
           ${'wakeLock' in navigator ? '' : '<p class="hint">이 브라우저는 화면 꺼짐 방지를 지원하지 않아요. 기기 설정의 자동 잠금 시간을 길게 바꿔 두세요.</p>'}
           <p class="hint" style="margin-top:10px">코드 악보일 때만:</p>
           <div class="srow"><span>글자 크기</span><span class="row"><button type="button" class="seg" data-a="fdown">가−</button><b>${P.size}</b><button type="button" class="seg" data-a="fup">가+</button></span></div>
+          <div class="srow"><span>2단 보기</span><span class="row">${seg('cols', [['auto', '자동'], ['1', '1단'], ['2', '2단']], P.cols)}</span></div>
           <div class="srow"><span>코드 표시</span><span class="row">${seg('chords', [['1', '보기'], ['0', '숨기기']], P.chords ? '1' : '0')}</span></div>
           <div class="srow"><span>코드 표기</span><span class="row">${seg('acc', [['auto', '자동'], ['sharp', '♯'], ['flat', '♭']], P.acc)}</span></div>
           <p class="hint">키 변경은 곡 보기 화면에서 하세요. 콘티에서 정한 키로 열립니다.</p>
@@ -2291,6 +2339,7 @@
       else if (a === 'fdown') P.size = Math.max(14, P.size - 2);
       else if (a === 'chords') { P.chords = v === '1'; ls.set('ews_chords', v); }
       else if (a === 'acc') { P.acc = v; ls.set('ews_acc', v); }
+      else if (a === 'cols') { P.cols = v; ls.set('ews_play_cols', v); }
       else if (a === 'theme') { P.theme = v; ls.set('ews_play_theme', v); }
       else if (a === 'wake') { P.wake = v === '1'; ls.set('ews_play_wake', v); if (P.wake) acquireWake(); else releaseWake(); }
       ls.set('ews_play_size', String(P.size));
@@ -2316,6 +2365,7 @@
       $play.style.display = 'none';
       void $play.offsetHeight;
       $play.style.display = '';
+      fitCols();
     };
     const onResize = () => {
       clearTimeout(rt1); clearTimeout(rt2);
