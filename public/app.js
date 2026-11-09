@@ -1051,8 +1051,8 @@
   }
 
   // ---------- 연주 모드 (5차) ----------
-  // 전체 화면 악보. 콘티에서 열면 좌우 스와이프(또는 아래 버튼)로 이전·다음 곡으로 넘어가고,
-  // 위쪽에는 그 곡의 키·송폼·메모가 계속 보인다. 화면 꺼짐 방지, 자동 스크롤, 다크모드, 큰 글씨를 지원한다.
+  // 전체 화면 악보. 위쪽 한 줄(곡 이름·키·송폼·메모)만 남기고 나머지는 모두 악보다.
+  // 이미지 악보는 확대 없이 한 장이 화면(위아래·좌우)에 통째로 들어오게 맞추고, 좌우로 밀어 쪽·곡을 넘긴다.
   // src: { sl: 콘티 번호 } 또는 { songId: 곡 번호 }  ·  q: ?i=시작 순서 / ?song=곡 번호 / (곡 하나일 때) key, view
   async function viewPlay(src, q) {
     q = q || new URLSearchParams();
@@ -1060,7 +1060,7 @@
     if (src.sl) {
       items = (await api('/setlists/' + src.sl)).setlist.items;
     } else {
-      items = [{ song_id: src.songId, key: q.get('key') || '', form: '', memo: '', view: ['chord', 'image'].includes(q.get('view')) ? q.get('view') : 'auto' }];
+      items = [{ song_id: src.songId, title: '', key: q.get('key') || '', form: '', memo: '', view: ['chord', 'image'].includes(q.get('view')) ? q.get('view') : 'auto' }];
     }
     if (!items.length) {
       $app.innerHTML = noteBox(`<p>이 콘티에는 아직 곡이 없습니다.</p><a class="btn" href="#/setlist/${src.sl}">콘티로 돌아가기</a>`);
@@ -1077,9 +1077,7 @@
       chords: ls.get('ews_chords', '1') === '1',
       acc: ls.get('ews_acc', 'auto'),
       theme: ls.get('ews_play_theme', 'auto'),
-      speed: Math.min(10, Math.max(1, +ls.get('ews_play_speed', '3') || 3)),
       wake: ls.get('ews_play_wake', '1') === '1',
-      fit: ls.get('ews_play_fit', 'width'),
     };
     const exitHref = src.sl ? '#/setlist/' + src.sl : '#/song/' + src.songId + (q.toString() ? '?' + q.toString() : '');
 
@@ -1087,19 +1085,18 @@
       <div class="play" id="play">
         <div class="play-top">
           <div class="play-row">
-            <a class="pbtn" id="pexit" href="${exitHref}" aria-label="연주 모드 나가기">✕ 나가기</a>
-            <div class="play-title" id="ptitle"></div>
+            <a class="pbtn" id="pexit" href="${exitHref}" aria-label="연주 모드 나가기">✕</a>
+            <button class="play-title" id="ptitle" type="button"></button>
             <span class="play-off" id="poff" hidden>오프라인</span>
-            <button class="pbtn" id="pgear" type="button">설정</button>
+            <button class="pbtn" id="pgear" type="button" aria-label="설정">⚙</button>
           </div>
           <div class="play-info" id="pinfo"></div>
         </div>
-        <div class="play-body" id="pbody"></div>
-        <div class="play-bar">
-          <button class="pbtn" id="pprev" type="button" ${multi ? '' : 'hidden'}>‹ 이전</button>
-          ${multi ? '<button class="pbtn" id="plist" type="button"></button>' : ''}
-          <button class="pbtn" id="pscroll" type="button">▶ 스크롤</button>
-          <button class="pbtn" id="pnext" type="button" ${multi ? '' : 'hidden'}>다음 ›</button>
+        <div class="play-main">
+          <div class="play-body" id="pbody"></div>
+          <div class="play-edge l" id="pel" hidden></div>
+          <div class="play-edge r" id="per" hidden></div>
+          <div class="play-dots" id="pdots"></div>
         </div>
         <div class="play-sheet" id="psheet" hidden></div>
         <div class="play-sheet" id="plsheet" hidden></div>
@@ -1135,6 +1132,7 @@
       const kobj = Chord.parseKey(origKey);
       const hasKey = !!kobj;
       const files = song.files || [];
+      const pages = files.filter((f) => f.kind === 'image');
       const hasText = /\S/.test(song.chordpro || '');
       let saved = {};
       try { saved = JSON.parse(ls.get('ews_song_' + song.id, '{}')) || {}; } catch {}
@@ -1150,30 +1148,26 @@
       if (hasText && files.length) tab = it.view === 'image' ? 'img' : it.view === 'chord' ? 'chord' : ls.get('ews_tab_' + song.id, '') === 'img' ? 'img' : 'chord';
       else if (hasText) tab = 'chord';
       else if (files.length) tab = 'img';
-      return { song, it, parsed, origKey, hasKey, files, hasText, shift, capo, tab };
+      return { song, it, parsed, origKey, hasKey, files, pages, hasText, shift, capo, tab, page: 0 };
     }
 
     let cur = null;
     let nav = 0;
-    const setBodyH = () => $play.style.setProperty('--bodyh', $pb.clientHeight + 'px');
+    // 이미지가 들어갈 칸의 높이(px). 이미지를 이 높이 안에 통째로 맞춘다.
+    const setBodyH = () => $play.style.setProperty('--bodyh', Math.max(100, $pb.clientHeight - 8) + 'px');
     function applyLook() {
       $play.classList.toggle('dark', P.theme === 'dark');
       $play.classList.toggle('light', P.theme === 'light');
       $play.style.setProperty('--song-size', P.size + 'px');
     }
-    function updateNav() {
-      if (!multi) return;
-      g('pprev').disabled = idx <= 0;
-      g('pnext').disabled = idx >= items.length - 1;
-      g('plist').textContent = `${idx + 1}/${items.length} 목록`;
-    }
     function draw() {
       if (!cur) return;
-      const { song, it, parsed, origKey, hasKey, files, hasText } = cur;
+      const { song, it, parsed, origKey, hasKey, files, pages, hasText } = cur;
+      const isImg = cur.tab === 'img';
       const top = $pb.scrollTop;
       let keyTxt = '';
       let extra = '';
-      if (cur.tab === 'chord') {
+      if (!isImg) {
         const p = Chord.plan(origKey, cur.shift, cur.capo, P.acc);
         keyTxt = hasKey ? p.soundKey : it.key || '';
         if (cur.capo) extra = `카포 ${cur.capo} · ${p.shapeKey} 코드`;
@@ -1184,35 +1178,41 @@
       g('ptitle').textContent = (multi ? `${idx + 1}. ` : '') + song.title;
       g('pinfo').innerHTML = [
         keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '',
-        extra ? `<span class="pi muted">${esc(extra)}</span>` : '',
-        song.tempo ? `<span class="pi muted">♩${song.tempo}</span>` : '',
         it.form ? `<span class="pi"><b>송폼</b> ${esc(it.form)}</span>` : '',
         it.memo ? `<span class="pi"><b>메모</b> ${esc(it.memo)}</span>` : '',
-        hasText && files.length ? `<button class="pbtn mini" id="pswap" type="button">${cur.tab === 'chord' ? '이미지 악보로' : '코드 악보로'}</button>` : '',
+        extra ? `<span class="pi muted">${esc(extra)}</span>` : '',
+        hasText && files.length ? `<button class="pbtn mini" id="pswap" type="button">${isImg ? '코드 악보로' : '이미지 악보로'}</button>` : '',
       ].join('');
-      $pb.classList.toggle('fit', P.fit === 'screen' && cur.tab === 'img');
-      if (cur.tab === 'chord') {
-        $pb.innerHTML = `<div class="score">${Chord.renderHTML(parsed, { originalKey: origKey, shift: cur.shift, capo: cur.capo, acc: P.acc, showChords: P.chords })}</div>`;
-      } else if (cur.tab === 'img') {
-        $pb.innerHTML = Files.renderPane(files);
-        Files.bindPane($pb, files);
-      } else {
-        $pb.innerHTML = `<p class="muted center" style="margin-top:40px">등록된 악보가 아직 없습니다.</p>`;
-      }
+      $pb.classList.toggle('img', isImg);
+      g('pel').hidden = g('per').hidden = !isImg; // 이미지 악보일 때만 화면 양옆을 눌러 넘길 수 있다
       setBodyH();
-      $pb.scrollTop = top;
-      updateNav();
+      if (!isImg) {
+        $pb.innerHTML = `<div class="score">${Chord.renderHTML(parsed, { originalKey: origKey, shift: cur.shift, capo: cur.capo, acc: P.acc, showChords: P.chords })}</div>`;
+        $pb.scrollTop = top;
+      } else if (pages.length) {
+        $pb.innerHTML = `<img class="sheet" src="${esc(pages[cur.page].url)}" alt="악보 ${cur.page + 1}">`;
+        if (pages[cur.page + 1]) new Image().src = pages[cur.page + 1].url;
+      } else {
+        $pb.innerHTML = Files.renderPane(files); // PDF만 있는 곡: 열기 링크
+      }
+      if (cur.tab === 'none') $pb.innerHTML = `<p class="muted center" style="margin-top:40px">등록된 악보가 아직 없습니다.</p>`;
+      updateDots();
     }
-    async function show(i) {
+    function updateDots() {
+      const parts = [];
+      if (multi) parts.push(`곡 ${idx + 1}/${items.length}`);
+      if (cur && cur.tab === 'img' && cur.pages.length > 1) parts.push(`쪽 ${cur.page + 1}/${cur.pages.length}`);
+      g('pdots').textContent = parts.join(' · ');
+      g('pdots').hidden = !parts.length;
+    }
+    async function show(i, startPage) {
       idx = i;
       const my = ++nav;
-      setScrolling(false);
       const it = items[i];
       g('ptitle').textContent = (multi ? `${i + 1}. ` : '') + '불러오는 중…';
       g('pinfo').innerHTML = '';
       $pb.innerHTML = '';
       $pb.scrollTop = 0;
-      updateNav();
       if (src.sl) history.replaceState(null, '', '#/play/' + src.sl + '?i=' + i);
       let song;
       try {
@@ -1220,63 +1220,31 @@
       } catch (e) {
         if (my !== nav) return;
         cur = null;
-        g('ptitle').textContent = (multi ? `${i + 1}. ` : '') + it.title;
+        g('ptitle').textContent = (multi ? `${i + 1}. ` : '') + (it.title || '');
         $pb.innerHTML = `<div class="card"><p class="error">${esc(e.message)}</p><p class="muted small">인터넷이 없다면, 미리 “오프라인 준비”를 해 둔 곡만 열 수 있어요.</p><button class="btn" id="pretry" type="button">다시 시도</button></div>`;
-        g('pretry').onclick = () => show(i);
+        g('pretry').onclick = () => show(i, startPage);
         return;
       }
       if (my !== nav) return;
       cur = buildState(song, it);
+      if (startPage === 'last' && cur.tab === 'img') cur.page = Math.max(0, cur.pages.length - 1);
       document.title = song.title + ' · Everyday Worship Songbook';
       draw();
       prefetch(i + 1);
       prefetch(i - 1);
     }
-    function go(d) {
+    // 이미지 악보가 여러 쪽이면 쪽을 먼저 넘기고, 끝에서 다음(이전) 곡으로 넘어간다.
+    function step(d) {
+      if (cur && cur.tab === 'img' && cur.pages.length > 1) {
+        const n = cur.page + d;
+        if (n >= 0 && n < cur.pages.length) { cur.page = n; draw(); return; }
+      }
       const n = idx + d;
       if (n < 0 || n >= items.length) {
         if (multi) toast(d > 0 ? '마지막 곡입니다.' : '첫 곡입니다.');
         return;
       }
-      show(n);
-    }
-
-    // ----- 자동 스크롤 -----
-    let scrolling = false;
-    let raf = 0;
-    let lastTs = 0;
-    let pos = 0;
-    let resumeAt = 0;
-    let touching = false;
-    function setScrolling(on) {
-      scrolling = on;
-      cancelAnimationFrame(raf);
-      const b = g('pscroll');
-      if (b) b.textContent = on ? '⏸ 멈춤' : '▶ 스크롤';
-      if (on) {
-        pos = $pb.scrollTop;
-        lastTs = 0;
-        resumeAt = 0;
-        raf = requestAnimationFrame(tick);
-      }
-    }
-    function tick(ts) {
-      if (!scrolling) return;
-      const dt = lastTs ? (ts - lastTs) / 1000 : 0;
-      lastTs = ts;
-      if (touching || ts < resumeAt) {
-        pos = $pb.scrollTop; // 손으로 움직이는 동안엔 멈추고, 손을 뗀 1.5초 뒤 그 자리에서 이어 간다
-      } else {
-        const max = $pb.scrollHeight - $pb.clientHeight;
-        pos += P.speed * 6 * dt;
-        if (pos >= max) {
-          $pb.scrollTop = max;
-          setScrolling(false);
-          return;
-        }
-        $pb.scrollTop = pos;
-      }
-      raf = requestAnimationFrame(tick);
+      show(n, d < 0 ? 'last' : 0);
     }
 
     // ----- 화면 꺼짐 방지 -----
@@ -1294,36 +1262,35 @@
     }
     const onVis = () => { if (document.visibilityState === 'visible') acquireWake(); };
 
-    // ----- 스와이프로 곡 넘기기 -----
-    // 확대 중이거나, 악보가 가로로 스크롤되는 중이거나, 세로로 훑는 동작일 땐 넘기지 않는다.
-    let sx = 0, sy = 0, st = 0, tracking = false;
-    $pb.addEventListener('touchstart', (e) => {
-      touching = true;
-      if (e.touches.length !== 1) { tracking = false; return; }
-      sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now(); tracking = true;
-    }, { passive: true });
-    $pb.addEventListener('touchmove', (e) => { if (e.touches.length > 1) tracking = false; }, { passive: true });
-    $pb.addEventListener('touchend', (e) => {
-      touching = false;
-      resumeAt = performance.now() + 1500;
-      if (!tracking || !multi) return;
-      tracking = false;
-      const t = e.changedTouches[0];
-      const dx = t.clientX - sx, dy = t.clientY - sy;
-      if (window.visualViewport && window.visualViewport.scale > 1.02) return;
-      if ($pb.scrollWidth > $pb.clientWidth + 4) return;
-      if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 2 || Date.now() - st > 700) return;
-      go(dx < 0 ? 1 : -1);
-    }, { passive: true });
-    $pb.addEventListener('touchcancel', () => { tracking = false; touching = false; }, { passive: true });
+    // ----- 좌우 스와이프로 넘기기 (세로로 훑는 동작이나 짧은 움직임은 무시) -----
+    function bindSwipe(el) {
+      let sx = 0, sy = 0, st = 0, tracking = false;
+      el.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1) { tracking = false; return; }
+        sx = e.touches[0].clientX; sy = e.touches[0].clientY; st = Date.now(); tracking = true;
+      }, { passive: true });
+      el.addEventListener('touchmove', (e) => { if (e.touches.length > 1) tracking = false; }, { passive: true });
+      el.addEventListener('touchend', (e) => {
+        if (!tracking) return;
+        tracking = false;
+        const t = e.changedTouches[0];
+        const dx = t.clientX - sx, dy = t.clientY - sy;
+        if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5 || Date.now() - st > 800) return;
+        step(dx < 0 ? 1 : -1);
+      }, { passive: true });
+      el.addEventListener('touchcancel', () => { tracking = false; }, { passive: true });
+    }
+    bindSwipe($pb);
+    bindSwipe(g('pel'));
+    bindSwipe(g('per'));
+    g('pel').onclick = () => step(-1);
+    g('per').onclick = () => step(1);
 
-    // ----- 아래 버튼, 위쪽 "이미지↔코드" 전환, 설정·곡 목록 창 -----
-    g('pprev').onclick = () => go(-1);
-    g('pnext').onclick = () => go(1);
-    g('pscroll').onclick = () => setScrolling(!scrolling);
+    // ----- 위쪽 버튼, 설정·곡 목록 창 -----
     g('pinfo').onclick = (ev) => {
       if (!cur || ev.target.id !== 'pswap') return;
       cur.tab = cur.tab === 'chord' ? 'img' : 'chord';
+      cur.page = 0;
       ls.set('ews_tab_' + cur.song.id, cur.tab);
       $pb.scrollTop = 0;
       draw();
@@ -1333,14 +1300,14 @@
       const seg = (name, opts, val) => opts.map(([v, t]) => `<button type="button" class="seg ${val === v ? 'on' : ''}" data-a="${name}" data-v="${v}">${t}</button>`).join('');
       g('psheet').innerHTML = `
         <div class="sheet-card">
+          ${multi ? '<button type="button" class="btn" data-a="list" style="width:100%;margin-bottom:6px">곡 목록 열기</button>' : ''}
+          <div class="srow"><span>화면 색</span><span class="row">${seg('theme', [['auto', '자동'], ['light', '밝게'], ['dark', '어둡게']], P.theme)}</span></div>
+          <div class="srow"><span>화면 꺼짐 방지</span><span class="row">${seg('wake', [['1', '켜기'], ['0', '끄기']], P.wake ? '1' : '0')}</span></div>
+          ${'wakeLock' in navigator ? '' : '<p class="hint">이 브라우저는 화면 꺼짐 방지를 지원하지 않아요. 기기 설정의 자동 잠금 시간을 길게 바꿔 두세요.</p>'}
+          <p class="hint" style="margin-top:10px">코드 악보일 때만:</p>
           <div class="srow"><span>글자 크기</span><span class="row"><button type="button" class="seg" data-a="fdown">가−</button><b>${P.size}</b><button type="button" class="seg" data-a="fup">가+</button></span></div>
           <div class="srow"><span>코드 표시</span><span class="row">${seg('chords', [['1', '보기'], ['0', '숨기기']], P.chords ? '1' : '0')}</span></div>
           <div class="srow"><span>코드 표기</span><span class="row">${seg('acc', [['auto', '자동'], ['sharp', '♯'], ['flat', '♭']], P.acc)}</span></div>
-          <div class="srow"><span>화면 색</span><span class="row">${seg('theme', [['auto', '자동'], ['light', '밝게'], ['dark', '어둡게']], P.theme)}</span></div>
-          <div class="srow"><span>이미지 악보</span><span class="row">${seg('fit', [['width', '너비에 맞춤'], ['screen', '한 화면에']], P.fit)}</span></div>
-          <div class="srow"><span>자동 스크롤 속도</span><span class="row"><input type="range" id="pspd" min="1" max="10" value="${P.speed}"><b id="pspdv">${P.speed}</b></span></div>
-          <div class="srow"><span>화면 꺼짐 방지</span><span class="row">${seg('wake', [['1', '켜기'], ['0', '끄기']], P.wake ? '1' : '0')}</span></div>
-          ${'wakeLock' in navigator ? '' : '<p class="hint">이 브라우저는 화면 꺼짐 방지를 지원하지 않아요. 기기 설정의 자동 잠금 시간을 길게 바꿔 두세요.</p>'}
           <p class="hint">키 변경은 곡 보기 화면에서 하세요. 콘티에서 정한 키로 열립니다.</p>
           <button type="button" class="btn primary" data-a="close" style="width:100%">닫기</button>
         </div>`;
@@ -1356,11 +1323,11 @@
       g('plsheet').hidden = false;
     }
     g('pgear').onclick = openSettings;
-    if (multi) g('plist').onclick = openList;
+    if (multi) g('ptitle').onclick = openList; // 곡 이름을 누르면 곡 목록
     g('plsheet').onclick = (ev) => {
       const b = ev.target.closest && ev.target.closest('button');
       if (ev.target === g('plsheet') || (b && b.dataset.a === 'close')) return closeSheets();
-      if (b && b.dataset.i !== undefined) { closeSheets(); show(+b.dataset.i); }
+      if (b && b.dataset.i !== undefined) { closeSheets(); show(+b.dataset.i, 0); }
     };
     g('psheet').onclick = (ev) => {
       const b = ev.target.closest && ev.target.closest('button');
@@ -1369,46 +1336,39 @@
       const a = b.dataset.a;
       const v = b.dataset.v;
       if (a === 'close') return closeSheets();
+      if (a === 'list') { closeSheets(); return openList(); }
       if (a === 'fup') P.size = Math.min(48, P.size + 2);
       else if (a === 'fdown') P.size = Math.max(14, P.size - 2);
       else if (a === 'chords') { P.chords = v === '1'; ls.set('ews_chords', v); }
       else if (a === 'acc') { P.acc = v; ls.set('ews_acc', v); }
       else if (a === 'theme') { P.theme = v; ls.set('ews_play_theme', v); }
-      else if (a === 'fit') { P.fit = v; ls.set('ews_play_fit', v); }
       else if (a === 'wake') { P.wake = v === '1'; ls.set('ews_play_wake', v); if (P.wake) acquireWake(); else releaseWake(); }
       ls.set('ews_play_size', String(P.size));
       applyLook();
       draw();
       openSettings();
     };
-    g('psheet').addEventListener('input', (ev) => {
-      if (ev.target.id !== 'pspd') return;
-      P.speed = +ev.target.value;
-      ls.set('ews_play_speed', String(P.speed));
-      g('pspdv').textContent = P.speed;
-    });
 
     const onKey = (e) => {
       if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || '')) return;
-      if (e.key === 'ArrowLeft') go(-1);
-      else if (e.key === 'ArrowRight') go(1);
-      else if (e.key === ' ') { e.preventDefault(); setScrolling(!scrolling); }
+      if (e.key === 'ArrowLeft') step(-1);
+      else if (e.key === 'ArrowRight') step(1);
       else if (e.key === 'Escape') closeSheets();
     };
     const onNet = () => { g('poff').hidden = !(navigator.onLine === false || servedFromCache); };
     const onOnline = () => { servedFromCache = false; onNet(); }; // 인터넷이 돌아오면 배지를 끈다 (다음 요청에서 다시 확인)
     document.addEventListener('keydown', onKey);
     document.addEventListener('visibilitychange', onVis);
-    window.addEventListener('resize', setBodyH);
+    const onResize = () => { setBodyH(); };
+    window.addEventListener('resize', onResize);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onNet);
     window.addEventListener('ews-net', onNet);
     teardown = () => {
-      setScrolling(false);
       releaseWake();
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('visibilitychange', onVis);
-      window.removeEventListener('resize', setBodyH);
+      window.removeEventListener('resize', onResize);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onNet);
       window.removeEventListener('ews-net', onNet);
@@ -1418,7 +1378,7 @@
     applyLook();
     onNet();
     acquireWake();
-    await show(idx);
+    await show(idx, 0);
   }
 
   // 콘티의 곡들을 오프라인에서도 열 수 있게 미리 받아 둔다. (서비스 워커가 받은 내용을 이 기기에 저장한다)

@@ -75,7 +75,9 @@
     const label = ov.querySelector('.lb-n');
     function show() {
       img.src = urls[i];
-      img.style.width = steps[z] * 100 + '%';
+      // 처음(z=0)은 위아래·좌우 모두 화면 안에 통째로 맞춘다. 누르면 가로 폭 기준으로 확대된다.
+      scroller.classList.toggle('fit', z === 0);
+      img.style.width = z === 0 ? '' : steps[z] * 100 + '%';
       label.textContent = `${i + 1} / ${urls.length}` + (z ? ` · ${steps[z]}배` : '');
       scroller.scrollTop = 0;
     }
