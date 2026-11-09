@@ -576,7 +576,18 @@
           </div>
           <div class="card">
             <div id="draftbar" class="draftbar" hidden></div>
-            <label for="cp" style="margin-top:0">악보 본문 (ChordPro)</label>
+            <div class="row between" style="margin-bottom:8px">
+              <span class="lbl-like">악보 본문</span>
+              <div class="te-mode" id="te-mode" role="group" aria-label="편집 방식">
+                <button type="button" data-mode="tab">탭 편집</button><button type="button" data-mode="text">글자로 보기</button>
+              </div>
+            </div>
+            <div class="row" style="margin:0 0 8px"><button type="button" class="btn small" id="pastebtn">📋 가사 붙여넣기로 시작</button></div>
+            <div id="tabpane" class="te">
+              <div id="te-lines" class="te-lines"></div>
+              <div class="te-pal" id="te-pal"></div>
+            </div>
+            <div id="textpane">
             <div class="ctools" id="ctools">
               <div class="ctools-row" id="ct-chords"></div>
               <div class="ctools-row" id="ct-quals"></div>
@@ -585,7 +596,6 @@
               <p class="hint" id="ct-hint" style="margin:2px 0 0"></p>
             </div>
             <textarea id="cp" class="code" spellcheck="false" placeholder="${esc(SAMPLE)}">${esc(song.chordpro)}</textarea>
-            <div id="cpcheck" class="cpcheck" hidden></div>
             <details>
               <summary>입력 방법 보기</summary>
               <pre class="help">코드는 글자 바로 앞에 [코드] 로 넣습니다.
@@ -596,6 +606,8 @@
 {soc} … {eoc}   ← 후렴 구간(왼쪽 줄 표시)
 [D/F#]  [Am7]  [Csus4]  [?](불확실한 코드)</pre>
             </details>
+            </div>
+            <div id="cpcheck" class="cpcheck" hidden></div>
           </div>
           <div class="card">
             <h2>이미지·PDF 악보</h2>
@@ -734,6 +746,369 @@
     $('key').addEventListener('change', scheduleCheck);
     runCheck();
 
+    // ----- 탭 편집기 (7차 B단계): 가사를 악보 모양으로 보여 주고, 글자를 탭해 코드를 얹는다. 저장 형식은 ChordPro 글자 그대로 -----
+    // 글자 칸(#cp)이 항상 "진짜 내용"이다. 탭 편집은 그 글자를 읽어 고친 뒤 다시 써 넣는다. (손대지 않은 줄은 원문 그대로)
+    let tm = TabEdit.parse(ta.value);
+    let tsel = null; // {li, pos, ci}  ci>=0 이면 코드가 선택된 것, -1이면 빈 자리
+    let undoS = [], redoS = [];
+    let mode = ls.get('ews_edit_mode', 'tab') === 'text' ? 'text' : 'tab';
+    const keyNow = () => Chord.guessKey(Chord.parseChordPro(ta.value), $('key').value);
+    const fireInput = () => ta.dispatchEvent(new Event('input', { bubbles: true }));
+    function setBody(text, nextSel, noUndo) {
+      if (!noUndo) { undoS.push(ta.value); if (undoS.length > 60) undoS.shift(); redoS = []; }
+      ta.value = text;
+      fireInput();
+      tm = TabEdit.parse(text);
+      tsel = nextSel || null;
+      teRender();
+    }
+    const apply = (res, sel) => { if (res) setBody(TabEdit.serialize(res.model || res), sel); };
+    function tabRefresh() { tm = TabEdit.parse(ta.value); tsel = null; teRender(); }
+
+    function setMode(m) {
+      mode = m;
+      ls.set('ews_edit_mode', m);
+      $('tabpane').hidden = m !== 'tab';
+      $('textpane').hidden = m !== 'text';
+      $('pastebtn').hidden = false;
+      $('te-mode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
+      if (m === 'tab') { undoS = []; redoS = []; tabRefresh(); }
+      else drawTools();
+    }
+    $('te-mode').onclick = (ev) => { const b = ev.target.closest('button[data-mode]'); if (b && b.dataset.mode !== mode) setMode(b.dataset.mode); };
+
+    function teRender() {
+      if (mode !== 'tab' || !ta.isConnected) return;
+      const box = $('te-lines');
+      let html = '';
+      if (!ta.value.trim()) {
+        html = `<div class="te-empty"><p><b>아직 악보가 없어요.</b></p><p class="muted small">가사를 붙여넣어 구간을 나누거나, 줄을 하나씩 추가해서 시작하세요.</p></div>`;
+      } else {
+        let inCh = false;
+        tm.lines.forEach((l, li) => {
+          const gut = `<button type="button" class="te-gut" data-gut="${li}" aria-label="${li + 1}번째 줄 메뉴">⋯</button>`;
+          if (l.kind === 'soc') inCh = true;
+          const ch = inCh && l.kind !== 'soc' && l.kind !== 'eoc' ? ' chorus' : '';
+          let body;
+          if (l.kind === 'lyric') {
+            const byPos = new Map();
+            l.chords.forEach((c, ci) => { if (!byPos.has(c.pos)) byPos.set(c.pos, []); byPos.get(c.pos).push({ c: c.c, ci }); });
+            const cell = (p, glyph, extra) => {
+              const cs = byPos.get(p) || [];
+              const sel = tsel && tsel.li === li && tsel.pos === p;
+              return `<span class="tc${extra || ''}${cs.length ? ' has' : ''}${sel && tsel.ci < 0 ? ' sel' : ''}" data-li="${li}" data-p="${p}"><span class="tch">${cs
+                .map((x) => `<b class="tk${sel && tsel.ci === x.ci ? ' sel' : ''}" data-ci="${x.ci}">${esc(x.c || '·')}</b>`)
+                .join('')}</span><span class="tl">${glyph}</span></span>`;
+            };
+            let cells = '';
+            [...l.text].forEach((c, i) => { cells += cell(i, c === ' ' ? '&nbsp;' : esc(c), c === ' ' ? ' sp' : ''); });
+            cells += cell(l.text.length, '＋', ' tend');
+            body = `<div class="te-ln">${cells}</div>`;
+          } else if (l.kind === 'comment') {
+            body = `<div class="te-lab">${esc(l.label || '(이름 없음)')}</div>`;
+          } else if (l.kind === 'soc' || l.kind === 'eoc') {
+            body = `<div class="te-soc">${l.kind === 'soc' ? '후렴 시작' : '후렴 끝'}</div>`;
+          } else if (l.kind === 'blank') {
+            body = `<div class="te-gap"></div>`;
+          } else {
+            body = `<div class="te-raw">${esc(l.raw)}<small> · 이 줄은 글자로 보기에서 고칠 수 있어요</small></div>`;
+          }
+          html += `<div class="te-row${ch}${l.kind === 'blank' ? ' blank' : ''}">${gut}${body}</div>`;
+          if (l.kind === 'eoc') inCh = false;
+        });
+      }
+      html += `<div class="row" style="margin-top:8px"><button type="button" class="btn small" data-op="addend">＋ 맨 끝에 가사 줄 추가</button></div>`;
+      box.innerHTML = html;
+      tePalette();
+      // 고른 글자가 아래 고정 팔레트에 가려지지 않게, 가려지면 화면을 살짝 올린다
+      if (tsel) requestAnimationFrame(() => {
+        const el = box.querySelector('.tk.sel, .tc.sel');
+        const pal = $('te-pal');
+        if (!el || !pal) return;
+        const r = el.getBoundingClientRect(), pr = pal.getBoundingClientRect();
+        if (r.bottom > pr.top - 10 && r.top < pr.bottom) window.scrollBy({ top: r.bottom - pr.top + 14 });
+      });
+    }
+
+    function tePalette() {
+      const pal = $('te-pal');
+      if (!pal) return;
+      const l = tsel ? tm.lines[tsel.li] : null;
+      const chordSel = l && l.kind === 'lyric' && tsel.ci >= 0 ? l.chords[tsel.ci] : null;
+      const gk = keyNow();
+      const dia = ChordEdit.diatonic(gk.key);
+      const roots = dia || ['C', 'D', 'E', 'F', 'G', 'A', 'B'].map((c) => ({ label: '', chord: c }));
+      let status;
+      if (chordSel) status = `<b>${esc(chordSel.c || '·')}</b> 선택 · 코드를 누르면 바뀌어요`;
+      else if (l && l.kind === 'lyric') {
+        const ch = l.text[tsel.pos];
+        status = `${ch ? '“' + esc(ch.trim() ? ch : '띄어쓰기') + '” 앞' : '줄 끝'} · 코드를 고르세요`;
+      } else status = '코드를 붙일 글자를 탭하세요';
+      let h = `<div class="te-pal-row te-top"><button type="button" class="chip ctb sm" data-act="undo" aria-label="되돌리기" ${undoS.length ? '' : 'disabled'}>↶</button><button type="button" class="chip ctb sm" data-act="redo" aria-label="다시 하기" ${redoS.length ? '' : 'disabled'}>↷</button><span class="te-status">${status}</span></div>`;
+      h += `<div class="te-pal-row">${roots.map((d) => `<button type="button" class="chip ctb" data-pc="${esc(d.chord)}"><b>${esc(d.chord)}</b>${d.label ? `<small>${esc(d.label)}</small>` : ''}</button>`).join('')}<button type="button" class="chip ctb" data-pc="?" title="불확실한 코드">?</button><button type="button" class="chip ctb sm" data-act="direct">다른 코드…</button></div>`;
+      if (chordSel) {
+        const chordOnly = !l.text.trim();
+        h += `<div class="te-pal-row"><button type="button" class="chip ctb sm" data-act="left">◀</button><button type="button" class="chip ctb sm" data-act="right">▶</button><button type="button" class="chip ctb sm" data-act="more">${chordOnly ? '＋ 코드 이어 붙이기' : '＋ 같은 자리에 하나 더'}</button><button type="button" class="chip ctb sm danger" data-act="del">코드 삭제</button></div>`;
+        const bn = ChordEdit.bassNotes(gk.key);
+        h += `<div class="te-pal-row"><span class="ctl-label">모양</span>${ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-pq="${esc(q)}">${esc(lab)}</button>`).join('')}${bn ? `<span class="ctl-label">베이스</span>${bn.map((n) => `<button type="button" class="chip ctb sm" data-pb="${esc(n)}">/${esc(n)}</button>`).join('')}<button type="button" class="chip ctb sm" data-pb="">없음</button>` : ''}</div>`;
+      }
+      pal.innerHTML = h;
+    }
+
+    // 코드 하나 적용: 선택된 것이 코드면 바꾸고, 빈 자리면 넣는다
+    function putChord(chord) {
+      if (!tsel) { toast('먼저 코드를 붙일 글자를 탭하세요.'); return; }
+      if (!TabEdit.parseLyric('[' + chord + ']')) return;
+      const l = tm.lines[tsel.li];
+      if (!l || l.kind !== 'lyric') { toast('가사 줄에서 글자를 탭해 주세요.'); return; }
+      const r = tsel.ci >= 0 ? TabEdit.replaceChord(tm, tsel.li, tsel.ci, chord) : TabEdit.addChord(tm, tsel.li, tsel.pos, chord);
+      if (r) apply(r, { li: tsel.li, pos: tsel.ci >= 0 ? l.chords[tsel.ci].pos : tsel.pos, ci: r.ci });
+    }
+    function selectedChord() {
+      const l = tsel && tm.lines[tsel.li];
+      return l && l.kind === 'lyric' && tsel.ci >= 0 ? l.chords[tsel.ci] : null;
+    }
+
+    $('tabpane').addEventListener('click', (ev) => {
+      const t = ev.target;
+      const gut = t.closest('[data-gut]');
+      if (gut) { lineSheet(+gut.dataset.gut); return; }
+      const op = t.closest('[data-op]');
+      if (op && op.dataset.op === 'addend') { newLinesSheet(tm.lines.length - 1); return; }
+      const tc = t.closest('.tc');
+      if (tc && $('te-lines').contains(tc)) {
+        const li = +tc.dataset.li, pos = +tc.dataset.p;
+        const l = tm.lines[li];
+        const k = t.closest('.tk');
+        let ci = -1;
+        if (k) ci = +k.dataset.ci;
+        else if (tc.classList.contains('has')) ci = l.chords.findIndex((c) => c.pos === pos);
+        tsel = { li, pos, ci };
+        teRender();
+        return;
+      }
+      const pc = t.closest('[data-pc]');
+      if (pc) { putChord(pc.dataset.pc); return; }
+      const pq = t.closest('[data-pq]');
+      const pb = t.closest('[data-pb]');
+      if (pq || pb) {
+        const cur = selectedChord();
+        const nc = cur && TabEdit.reshape(cur.c, pq ? { quality: pq.dataset.pq } : { bass: pb.dataset.pb });
+        if (!nc) { toast('코드 모양이 아니라서 바꿀 수 없어요. 다른 코드를 눌러 바꿔 주세요.'); return; }
+        const r = TabEdit.replaceChord(tm, tsel.li, tsel.ci, nc);
+        apply(r, { li: tsel.li, pos: tsel.pos, ci: r.ci });
+        return;
+      }
+      const act = t.closest('[data-act]');
+      if (!act || act.disabled) return;
+      const a = act.dataset.act;
+      if (a === 'undo' || a === 'redo') {
+        const from = a === 'undo' ? undoS : redoS, to = a === 'undo' ? redoS : undoS;
+        if (!from.length) return;
+        to.push(ta.value);
+        setBody(from.pop(), null, true);
+        return;
+      }
+      if (a === 'direct') { directSheet(); return; }
+      const cur = selectedChord();
+      if (!cur) return;
+      const l = tm.lines[tsel.li];
+      if (a === 'left' || a === 'right') {
+        const r = TabEdit.moveChord(tm, tsel.li, tsel.ci, a === 'left' ? -1 : 1);
+        if (!r || !r.moved) { toast(a === 'left' ? '줄 맨 앞이에요.' : '줄 맨 끝이에요.'); return; }
+        apply(r, { li: tsel.li, pos: cur.pos + (a === 'left' ? -1 : 1), ci: r.ci });
+      } else if (a === 'del') {
+        apply(TabEdit.deleteChord(tm, tsel.li, tsel.ci), { li: tsel.li, pos: cur.pos, ci: -1 });
+      } else if (a === 'more') {
+        const chordOnly = !l.text.trim();
+        const r = chordOnly ? TabEdit.appendChord(tm, tsel.li, '?') : TabEdit.addChord(tm, tsel.li, cur.pos, '?');
+        if (r) apply(r, { li: tsel.li, pos: r.model.lines[tsel.li].chords[r.ci].pos, ci: r.ci });
+      }
+    });
+
+    // 직접 고르는 코드 창(키 밖의 코드, 복잡한 코드)
+    function directSheet() {
+      if (!tsel) { toast('먼저 코드를 붙일 글자를 탭하세요.'); return; }
+      const flats = Chord.keyUsesFlats(keyNow().key);
+      const roots = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((i) => Chord.noteName(i, flats));
+      const st = { root: '', q: '', bass: '' };
+      const sh = showSheet(`
+        <h2 style="margin-top:0">다른 코드</h2>
+        <div class="te-pal-row wrap"><span class="ctl-label">음</span>${roots.map((r) => `<button type="button" class="chip ctb sm" data-r="${r}">${r}</button>`).join('')}</div>
+        <div class="te-pal-row wrap"><span class="ctl-label">모양</span>${ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-q="${esc(q)}">${esc(lab)}</button>`).join('')}</div>
+        <div class="te-pal-row wrap"><span class="ctl-label">베이스</span>${roots.map((r) => `<button type="button" class="chip ctb sm" data-b="${r}">/${r}</button>`).join('')}<button type="button" class="chip ctb sm" data-b="">없음</button></div>
+        <label for="dc-in">만들어진 코드 (직접 고쳐도 돼요)</label><input id="dc-in" type="text" autocapitalize="off" autocomplete="off" spellcheck="false">
+        <p class="error" id="dc-err"></p>
+        <div class="row"><button type="button" class="btn primary" id="dc-ok">넣기</button><button type="button" class="btn" id="dc-no">닫기</button></div>`);
+      const inp = sh.q('#dc-in');
+      const compose = () => { inp.value = st.root ? st.root + st.q + (st.bass ? '/' + st.bass : '') : ''; };
+      sh.wrap.addEventListener('click', (ev) => {
+        const b = ev.target.closest('button');
+        if (!b) return;
+        if (b.dataset.r !== undefined) st.root = b.dataset.r;
+        else if (b.dataset.q !== undefined) st.q = b.dataset.q;
+        else if (b.dataset.b !== undefined) st.bass = b.dataset.b;
+        else if (b.id === 'dc-no') { sh.close(); return; }
+        else if (b.id === 'dc-ok') {
+          const v = inp.value.trim();
+          if (!v || !ChordEdit.isChord(v)) { sh.q('#dc-err').textContent = '코드 모양이 아니에요. 예: G, Am7, D/F#, Csus4'; return; }
+          sh.close();
+          putChord(v);
+          return;
+        } else return;
+        sh.wrap.querySelectorAll('[data-r],[data-q],[data-b]').forEach((x) => {
+          const on = (x.dataset.r !== undefined && x.dataset.r === st.root) || (x.dataset.q !== undefined && x.dataset.q === st.q && st.root) || (x.dataset.b !== undefined && x.dataset.b === st.bass && st.root);
+          x.classList.toggle('on', !!on);
+        });
+        compose();
+      });
+    }
+
+    // 줄 메뉴(왼쪽 ⋯)
+    function lineSheet(li) {
+      const l = tm.lines[li];
+      if (!l) return;
+      const secChips = (skipChorus) => `<div class="te-pal-row wrap">${TabEdit.SECTION_NAMES.filter((n) => !(skipChorus && n === '후렴')).map((n) => `<button type="button" class="chip ctb sm" data-sec="${esc(n)}">${esc(n)}</button>`).join('')}</div>`;
+      const inCh = TabEdit.isInChorus(tm, li);
+      let h = `<h2 style="margin-top:0">${li + 1}번째 줄</h2>`;
+      if (l.kind === 'lyric') {
+        h += `<div class="menu-col">
+          <button type="button" class="btn" data-op="edit">가사 고치기</button>
+          <button type="button" class="btn" data-op="chorus">${inCh ? '후렴 표시 끄기' : '이 덩어리를 후렴으로 표시'}</button>
+          <button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button>
+          <button type="button" class="btn" data-op="instr-up">＋ 위에 코드만 있는 줄 (간주·인트로)</button>
+          <button type="button" class="btn" data-op="instr-dn">＋ 아래에 코드만 있는 줄 (간주·인트로)</button>
+          <button type="button" class="btn" data-op="gap">＋ 위에 빈 줄</button>
+          ${l.chords.length ? '<button type="button" class="btn" data-op="clear">이 줄 코드 모두 지우기</button>' : ''}
+          <button type="button" class="btn danger" data-op="del">이 줄 삭제</button></div>
+          <p class="hint" style="margin:10px 0 4px">이 줄 위에 구간 이름 넣기</p>${secChips(true)}`;
+      } else if (l.kind === 'comment') {
+        h += `<p class="hint" style="margin:0 0 4px">이름 바꾸기</p>${secChips(false)}
+          <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 이름표 삭제</button></div>`;
+      } else if (l.kind === 'soc' || l.kind === 'eoc') {
+        h += `<div class="menu-col"><button type="button" class="btn" data-op="chorus">후렴 표시 끄기</button><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button></div>`;
+      } else if (l.kind === 'blank') {
+        h += `<p class="hint" style="margin:0 0 4px">여기 아래에 구간 이름 넣기</p>${secChips(true)}
+          <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 빈 줄 삭제</button></div>`;
+      } else {
+        h += `<p class="hint">모르는 모양의 줄이라 그대로 두었어요. 고치려면 “글자로 보기”에서 바꿔 주세요.</p>
+          <div class="menu-col"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 줄 삭제</button></div>`;
+      }
+      h += `<div class="row" style="margin-top:12px"><button type="button" class="btn" data-op="close">닫기</button></div>`;
+      const sh = showSheet(h);
+      sh.wrap.addEventListener('click', (ev) => {
+        const b = ev.target.closest('button');
+        if (!b) return;
+        const sec = b.dataset.sec;
+        if (sec !== undefined) {
+          sh.close();
+          if (l.kind === 'comment') apply(TabEdit.replaceLine(tm, li, '{comment: ' + sec + '}'));
+          else {
+            const at = l.kind === 'blank' ? li + 1 : li;
+            const r = TabEdit.insertSection(tm, at, sec);
+            apply(r);
+          }
+          return;
+        }
+        const op = b.dataset.op;
+        if (!op) return;
+        sh.close();
+        if (op === 'close') return;
+        if (op === 'edit') lyricSheet(li, false);
+        else if (op === 'add') newLinesSheet(li);
+        else if (op === 'del') apply(TabEdit.deleteLine(tm, li));
+        else if (op === 'clear') apply(TabEdit.clearChords(tm, li));
+        else if (op === 'gap') apply(TabEdit.insertLines(tm, li, ['']));
+        else if (op === 'chorus') { const r = TabEdit.toggleChorus(tm, li); if (r) apply(r); else toast('후렴으로 표시할 가사 줄이 아니에요.'); }
+        else if (op === 'instr-up' || op === 'instr-dn') {
+          const at = op === 'instr-up' ? li : li + 1;
+          const m2 = TabEdit.insertLines(tm, at, ['[?]']);
+          setBody(TabEdit.serialize(m2), { li: at, pos: 0, ci: 0 });
+          toast('아래 코드 중 하나를 누르면 바뀌어요. “＋ 코드 이어 붙이기”로 뒤에 더 붙일 수 있어요.');
+        }
+      });
+    }
+    // 가사 고치기(한 줄)
+    function lyricSheet(li) {
+      const l = tm.lines[li];
+      const sh = showSheet(`<h2 style="margin-top:0">가사 고치기</h2>
+        <p class="hint" style="margin:0 0 6px">코드는 글자를 따라가요. 바뀐 한가운데 있던 코드는 고친 자리 앞으로 모여요.</p>
+        <textarea id="ly-in" rows="2" spellcheck="false">${esc(l.text)}</textarea>
+        <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="ly-ok">고치기</button><button type="button" class="btn" id="ly-no">닫기</button></div>`);
+      const inp = sh.q('#ly-in');
+      setTimeout(() => inp.focus(), 50);
+      sh.q('#ly-no').onclick = () => sh.close();
+      sh.q('#ly-ok').onclick = () => {
+        sh.close();
+        apply(TabEdit.setLyricText(tm, li, inp.value.replace(/\n/g, ' ')));
+      };
+    }
+    // 새 가사 줄 추가(여러 줄 한꺼번에 붙여넣어도 줄마다 나뉨). 기준 줄 li의 아래에 들어간다.
+    function newLinesSheet(li) {
+      const sh = showSheet(`<h2 style="margin-top:0">가사 줄 추가</h2>
+        <p class="hint" style="margin:0 0 6px">여러 줄을 붙여넣으면 줄마다 나뉘어 들어가요.</p>
+        <textarea id="nl-in" rows="4" spellcheck="false" placeholder="가사"></textarea>
+        <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="nl-ok">추가</button><button type="button" class="btn" id="nl-no">닫기</button></div>`);
+      const inp = sh.q('#nl-in');
+      setTimeout(() => inp.focus(), 50);
+      sh.q('#nl-no').onclick = () => sh.close();
+      sh.q('#nl-ok').onclick = () => {
+        const lines = inp.value.replace(/\r\n?/g, '\n').split('\n').map((s) => s.replace(/[\[\]{}]/g, '').replace(/\s+$/, ''));
+        while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+        sh.close();
+        if (!lines.length) return;
+        const empty = !ta.value.trim();
+        if (empty) setBody(lines.join('\n'));
+        else apply(TabEdit.insertLines(tm, li + 1, lines));
+      };
+    }
+
+    // 가사 붙여넣기: 빈 줄 기준으로 구간을 나누고, 구간 이름을 고른 뒤 악보에 넣는다
+    function pasteSheet() {
+      const sh = showSheet(`<h2 style="margin-top:0">가사 붙여넣기</h2>
+        <div id="ps-step1">
+          <p class="hint" style="margin:0 0 6px">가사를 통째로 붙여넣으세요. 빈 줄을 기준으로 구간을 나누고, 이름은 다음 화면에서 고칠 수 있어요. <b>[1절] [후렴]</b> 같은 이름표 줄이 있으면 알아서 읽어요.</p>
+          <textarea id="ps-in" rows="8" spellcheck="false" placeholder="여기에 가사를 붙여넣기"></textarea>
+          <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="ps-next">구간 나누기</button><button type="button" class="btn" id="ps-no">닫기</button></div>
+        </div>
+        <div id="ps-step2" hidden></div>`);
+      const inp = sh.q('#ps-in');
+      sh.q('#ps-no').onclick = () => sh.close();
+      let blocks = [];
+      sh.q('#ps-next').onclick = () => {
+        blocks = TabEdit.splitLyrics(inp.value);
+        if (!blocks.length) { toast('가사가 비어 있어요.'); return; }
+        const names = ['', ...TabEdit.SECTION_NAMES];
+        const s2 = sh.q('#ps-step2');
+        s2.hidden = false;
+        sh.q('#ps-step1').hidden = true;
+        s2.innerHTML = `<p class="hint" style="margin:0 0 8px">${blocks.length}개 구간으로 나눴어요. 이름이 맞는지 확인하세요. (이름 없음 = 이름표 없이 가사만)</p>
+          <div class="ps-blocks">${blocks
+            .map((b, i) => `<div class="ps-block"><select data-i="${i}" aria-label="${i + 1}번째 구간 이름">${names.map((n) => `<option value="${esc(n)}" ${n === b.label ? 'selected' : ''}>${n || '(이름 없음)'}</option>`).join('')}</select><div class="ps-prev">${esc(b.lines.slice(0, 2).join(' / '))}${b.lines.length > 2 ? ` … (${b.lines.length}줄)` : ''}</div></div>`)
+            .join('')}</div>
+          <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="ps-ok">악보에 넣기</button><button type="button" class="btn" id="ps-back">← 다시 붙여넣기</button></div>`;
+        s2.querySelectorAll('select').forEach((sel) => (sel.onchange = () => { blocks[+sel.dataset.i].label = sel.value; }));
+        sh.q('#ps-back').onclick = () => { s2.hidden = true; sh.q('#ps-step1').hidden = false; };
+        sh.q('#ps-ok').onclick = () => {
+          const built = TabEdit.buildFromBlocks(blocks);
+          const cur = ta.value.replace(/\s+$/, '');
+          sh.close();
+          if (mode === 'text') {
+            ta.value = cur ? cur + '\n\n' + built : built;
+            fireInput();
+            toast('가사를 넣었습니다. “탭 편집”에서 코드를 얹어 보세요.');
+          } else {
+            setBody(cur ? cur + '\n\n' + built : built);
+            toast('가사를 넣었습니다. 글자를 탭해서 코드를 얹어 보세요.');
+          }
+        };
+      };
+    }
+    $('pastebtn').onclick = pasteSheet;
+    // 키(원래 키)를 바꾸면 코드 칩도 그 키에 맞춰 다시 그린다
+    $('key').addEventListener('change', () => { if (mode === 'tab') tePalette(); });
+    setMode(mode);
+
     // ----- 태그: 추천 칩(주제·빠르기·절기 …) 누르면 넣고 빼기 -----
     const tagList = () => $('tags').value.split(/[,，]/).map((t) => t.trim()).filter(Boolean);
     function drawTagChips() {
@@ -847,6 +1222,7 @@
         for (const [k, i] of Object.entries(FIELDS)) if (typeof d.f[k] === 'string') $(i).value = d.f[k];
         bar.hidden = true;
         preview(); drawTagChips(); drawExt(); drawTools(); runCheck();
+        if (mode === 'tab') { undoS = []; redoS = []; tabRefresh(); }
         toast('저장하지 않았던 작업을 불러왔습니다. 저장을 눌러야 반영돼요.');
       };
       $('dr-drop').onclick = () => { ls.del(draftKey); bar.hidden = true; };
