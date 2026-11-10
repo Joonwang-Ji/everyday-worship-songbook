@@ -531,3 +531,12 @@ body.ink-open { background: #2b2b2b; }
 /* 16차: 필기 화면이 열려 있는 동안 뒤의 화면(악보·메뉴 등)은 통째로 숨긴다. 스크리블 도구 막대나 키보드로 필기 화면이 잠깐 줄어들 때 뒤의 악보가 비치지 않게 한다. */
 body.ink-open > *:not(.ink-ed):not(#toast):not(#viewdbg) { visibility: hidden !important; }
 #oday { width: auto; flex: 0 0 auto; }
+
+/* 16차 재보정(2): 홈 화면 앱에서 창이 화면보다 짧아질 때(오늘 화면처럼 문서가 짧을 때) 창 밖 32px는 웹 화면이 그릴 수 없다.
+   진단에서 --nav-gap 보정이 32로 잡혔는데도 띠가 그대로였다(메뉴는 1024까지 늘어났지만 칠해지는 건 창 끝 992까지).
+   ① 창 밖 영역은 페이지 바탕색(html 배경)이 칠해지므로 html 배경을 아래 메뉴와 같은 색으로 해서 메뉴가 이어진 것처럼 보이게 한다.
+   ② 모든 화면의 문서가 창보다 조금(홈 화면 앱에서만, 약 15~60px) 길어지게 해서 짧은 문서 때문에 창이 줄어드는 상황 자체를 피해 본다(긴 화면은 창이 1024로 정상이었음). */
+html { background: var(--card); }
+body { min-height: 100vh; }
+@media (display-mode: standalone) { main { min-height: calc(100vh - 20px); } }
+html:has(body.ink-open) { background: #2b2b2b; }
