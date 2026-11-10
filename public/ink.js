@@ -370,6 +370,7 @@
     document.body.appendChild(ov);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    document.body.classList.add('ink-open'); // 입력창이 올라와 화면이 줄어들 때 뒤의 아래 탭이 비치지 않게 숨긴다
     const q = (sel) => ov.querySelector(sel);
     const scroller = q('.ink-scroll');
     const stage = q('.ink-stage');
@@ -815,6 +816,7 @@
       window.removeEventListener('resize', layout);
       if (window.visualViewport) { visualViewport.removeEventListener('resize', fitVV); visualViewport.removeEventListener('scroll', fitVV); }
       document.body.style.overflow = prevOverflow;
+      document.body.classList.remove('ink-open');
       ov.remove();
     }
     async function close() {
