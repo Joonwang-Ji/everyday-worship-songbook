@@ -226,6 +226,8 @@ async function ensureSchema(db) {
   // 원곡이 영어 등일 때 적어 두는 원제 / 이미지·PDF 악보 곡을 위한 "검색용 가사(후렴 등)"
   await ensureColumn(db, 'songs', 'orig_title', `orig_title TEXT NOT NULL DEFAULT ''`);
   await ensureColumn(db, 'songs', 'lyrics_extra', `lyrics_extra TEXT NOT NULL DEFAULT ''`);
+  // 13차: 박자(4/4, 3/4, 6/8 …). 비어 있으면 아직 정하지 않은 곡
+  await ensureColumn(db, 'songs', 'time_sig', `time_sig TEXT NOT NULL DEFAULT ''`);
   // 11차: 콘티의 예배 종류 / 인도자(이름 글자, 쉼표로 구분) / 임시(급하게 만든) 표시
   await ensureColumn(db, 'setlists', 'service_id', `service_id INTEGER`);
   await ensureColumn(db, 'setlists', 'leaders', `leaders TEXT NOT NULL DEFAULT ''`);
@@ -393,6 +395,12 @@ function cleanSong(body, { requireTitle = true } = {}) {
   if (key && !KEY_RE.test(key)) throw new HttpError(400, '원래 키는 G, Am, Bb 같은 형식으로 입력해 주세요.');
   let tempo = parseInt(body.tempo, 10);
   if (!Number.isFinite(tempo) || tempo < 20 || tempo > 300) tempo = null;
+  // 박자: "4/4"처럼 (분자 1~16 / 분모 2·4·8·16). 모양이 맞지 않으면 비운다.
+  let timeSig = '';
+  {
+    const m = /^\s*(\d{1,2})\s*[\/／]\s*(\d{1,2})\s*$/.exec(String(body.time_sig == null ? '' : body.time_sig));
+    if (m && +m[1] >= 1 && +m[1] <= 16 && [2, 4, 8, 16].includes(+m[2])) timeSig = `${+m[1]}/${+m[2]}`;
+  }
   let youtube = str(body.youtube_url, 500);
   if (youtube && !/^https?:\/\//i.test(youtube)) youtube = '';
   const tags = [...new Set(str(body.tags, 300).split(/[,，]/).map((t) => t.trim()).filter(Boolean))].join(',');
@@ -404,6 +412,7 @@ function cleanSong(body, { requireTitle = true } = {}) {
     artist: str(body.artist, 200),
     original_key: key,
     tempo,
+    time_sig: timeSig,
     youtube_url: youtube,
     tags,
     chordpro,
@@ -1065,7 +1074,7 @@ export async function onRequest({ request, env }) {
         const pq = parseQuery(url.searchParams.get('q') || '');
         const { results } = await db
           .prepare(
-            `SELECT id,title,orig_title,artist,original_key,tempo,tags,chordpro,lyrics_extra,updated_at,
+            `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,tags,chordpro,lyrics_extra,updated_at,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
               (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds
              FROM songs ORDER BY title`
@@ -1160,10 +1169,10 @@ export async function onRequest({ request, env }) {
         const now = nowIso();
         const r = await db
           .prepare(
-            `INSERT INTO songs (title,orig_title,lyrics_extra,artist,original_key,tempo,youtube_url,tags,chordpro,memo,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+            `INSERT INTO songs (title,orig_title,lyrics_extra,artist,original_key,tempo,time_sig,youtube_url,tags,chordpro,memo,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
           )
-          .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.youtube_url, song.tags, song.chordpro, song.memo, now, now)
+          .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.youtube_url, song.tags, song.chordpro, song.memo, now, now)
           .run();
         return json({ id: r.meta.last_row_id }, 201);
       }
@@ -1260,8 +1269,8 @@ export async function onRequest({ request, env }) {
         }
         stmts.push(
           db
-            .prepare('UPDATE songs SET title=?,orig_title=?,lyrics_extra=?,artist=?,original_key=?,tempo=?,youtube_url=?,tags=?,chordpro=?,memo=?,updated_at=? WHERE id=?')
-            .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.youtube_url, song.tags, song.chordpro, song.memo, now, id)
+            .prepare('UPDATE songs SET title=?,orig_title=?,lyrics_extra=?,artist=?,original_key=?,tempo=?,time_sig=?,youtube_url=?,tags=?,chordpro=?,memo=?,updated_at=? WHERE id=?')
+            .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.youtube_url, song.tags, song.chordpro, song.memo, now, id)
         );
         await db.batch(stmts);
         return json({ id });

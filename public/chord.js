@@ -140,28 +140,54 @@
   }
 
   function renderHTML(parsed, opt) {
-    const o = Object.assign({ originalKey: '', shift: 0, capo: 0, acc: 'auto', showChords: true }, opt);
+    const o = Object.assign({ originalKey: '', shift: 0, capo: 0, acc: 'auto', showChords: true, parts: false }, opt);
     const p = plan(o.originalKey, o.shift, o.capo, o.acc);
     const conv = (c) => (c ? transposeChord(c, p.semis, p.flats) : '');
     const out = [];
     let inChorus = false;
     let usedBreak = false; // 단 나누기는 한 곡에 첫 번째 표시만 쓴다(2단 보기에서 3단이 생기지 않게)
+    // parts: 구간(1절·후렴·브릿지…)을 <div class="part">로 묶는다. 연주 모드 쪽 넘기기가 구간 단위로 쪽을 나눌 때 쓴다.
+    // 구간 = 구간 이름({comment}) 줄부터 다음 구간 이름 직전까지. 이름 없이 시작하는 후렴은 그 블록이 한 구간.
+    let inPart = false;
+    let partHasBody = false;
     const closeChorus = () => {
       if (inChorus) out.push('</div>');
       inChorus = false;
+    };
+    const closePart = () => {
+      closeChorus();
+      if (inPart) out.push('</div>');
+      inPart = false;
+      partHasBody = false;
+    };
+    const openPart = () => {
+      if (inPart) return;
+      out.push('<div class="part">');
+      inPart = true;
+      partHasBody = false;
     };
     for (const ln of parsed.lines) {
       if (ln.type === 'blank') {
         closeChorus();
         out.push('<div class="gap"></div>');
       } else if (ln.type === 'colbreak') {
+        if (o.parts) closePart();
         closeChorus();
         if (!usedBreak) out.push('<div class="colb" aria-hidden="true"></div>');
         usedBreak = true;
       } else if (ln.type === 'comment') {
+        if (o.parts) {
+          closePart();
+          openPart();
+        }
         closeChorus();
         out.push('<div class="cm">' + esc(ln.text) + '</div>');
       } else {
+        if (o.parts) {
+          if (ln.chorus && !inChorus && inPart && partHasBody) closePart();
+          openPart();
+          partHasBody = true;
+        }
         if (ln.chorus && !inChorus) {
           out.push('<div class="chorus">');
           inChorus = true;
@@ -185,6 +211,7 @@
         }
       }
     }
+    if (o.parts) closePart();
     closeChorus();
     return out.join('');
   }

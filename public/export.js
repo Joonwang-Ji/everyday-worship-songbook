@@ -165,7 +165,7 @@
     g.fillStyle = INK;
     for (const l of tl) { g.fillText(l, M, y + 46); y += 62; }
     if (keyLabel) { g.font = font(44, 800); g.fillStyle = BRAND; g.textAlign = 'right'; g.fillText(keyLabel, W - M, M + 44); g.textAlign = 'left'; }
-    const sub = [info.artist, info.origKey && info.origKey !== keyText ? `원키 ${info.origKey}` : '', info.tempo ? `♩${info.tempo}` : ''].filter(Boolean).join('  ·  ');
+    const sub = [info.artist, info.origKey && info.origKey !== keyText ? `원키 ${info.origKey}` : '', info.timeSig || '', info.tempo ? `♩${info.tempo}` : ''].filter(Boolean).join('  ·  ');
     if (sub) { g.font = font(26, 400); g.fillStyle = MUTED; g.fillText(sub, M, y + 28); y += 40; }
     for (const [label, text] of [['송폼', it.form], ['메모', it.memo]]) {
       if (!(text || '').trim()) continue;
@@ -343,7 +343,7 @@
       if (o.onProgress) o.onProgress(done, total, `${n}. ${it.title}`);
       let song = null;
       try { song = await o.getSong(it.song_id); } catch { /* 아래에서 안내 쪽을 넣는다 */ }
-      const info = { artist: song ? song.artist : '', origKey: song ? song.original_key : '', tempo: song ? song.tempo : '' };
+      const info = { artist: song ? song.artist : '', origKey: song ? song.original_key : '', tempo: song ? song.tempo : '', timeSig: song ? song.time_sig : '' };
       const files = song ? song.files || [] : [];
       const hasChord = !!song && /\S/.test(song.chordpro || '');
       let mode = it.view || 'auto';

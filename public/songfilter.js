@@ -30,6 +30,37 @@
     const n = s.file_count || 0;
     return { chord: !!s.has_chords, image, pdf, n, both: image && pdf };
   }
+  // ---------- 악보 보완 (13차) ----------
+  // 이상적인 곡은 코드 악보와 이미지·PDF 악보가 모두 있는 곡. 'full' | 'chord'(코드만) | 'file'(이미지·PDF만) | 'none'
+  function completeness(s) {
+    const f = formatOf(s);
+    const hasFile = f.n > 0;
+    return f.chord && hasFile ? 'full' : f.chord ? 'chord' : hasFile ? 'file' : 'none';
+  }
+  const MISSING_TEXT = { chord: '이미지·PDF 없음', file: '코드 없음', none: '악보 없음' };
+  const missingText = (s) => MISSING_TEXT[completeness(s)] || '';
+  // [채우기]로 편집 화면을 열 때 먼저 보여 줄 칸: 코드 악보가 비었으면 chord, 아니면 image
+  const fixTarget = (s) => (completeness(s) === 'chord' ? 'image' : 'chord');
+  function stats(songs) {
+    const n = { total: songs.length, full: 0, chord: 0, file: 0, none: 0 };
+    for (const s of songs) n[completeness(s)]++;
+    return n;
+  }
+  // 오늘의 보완 제안: 비어 있는 곡 중에서 ① 다가오는 콘티에 들어 있는 곡 ② 우리 팀이 자주 쓴 곡 ③ 제목순으로 max곡.
+  // opt.upcoming: 다가오는 콘티에 든 곡 번호 Set, opt.hidden: {곡번호: 숨김 끝나는 시각(ms)}, opt.now
+  function suggest(songs, opt) {
+    const o = Object.assign({ upcoming: new Set(), hidden: {}, now: Date.now(), max: 3 }, opt);
+    const rows = [];
+    for (const s of songs) {
+      const state = completeness(s);
+      if (state === 'full') continue;
+      if ((o.hidden[s.id] || 0) > o.now) continue;
+      rows.push({ s, state, soon: o.upcoming.has(s.id) });
+    }
+    rows.sort((a, b) => (b.soon ? 1 : 0) - (a.soon ? 1 : 0) || (b.s.use_count || 0) - (a.s.use_count || 0) || cmpTitle(a.s, b.s));
+    return rows.slice(0, o.max);
+  }
+
   // 곡 한 줄에 붙는 형식 배지. 주제 태그와 모양이 달라서 한눈에 구분된다.
   function badgesHTML(s, esc) {
     const f = formatOf(s);
@@ -77,6 +108,8 @@
     if (st.keys.length && !st.keys.includes(normKey(s.original_key))) return false;
     if (st.fmt === 'chord' && !s.has_chords) return false;
     if (st.fmt === 'file' && !(s.file_count > 0)) return false;
+    if (st.fmt === 'missing' && completeness(s) === 'full') return false;
+    if (st.fmt === 'full' && completeness(s) !== 'full') return false;
     return true;
   }
   const isActive = (st) => !!(st.tags.length || st.keys.length || st.fmt);
@@ -106,7 +139,7 @@
     const keys = new Set(chips.map((c) => c.key));
     st.keys = st.keys.filter((k) => keys.has(k));
   }
-  const summary = (st) => [...st.tags, st.keys.length ? st.keys.join('·') : '', st.fmt === 'chord' ? '코드 악보' : st.fmt === 'file' ? '이미지·PDF' : ''].filter(Boolean).join(' + ');
+  const summary = (st) => [...st.tags, st.keys.length ? st.keys.join('·') : '', st.fmt === 'chord' ? '코드 악보' : st.fmt === 'file' ? '이미지·PDF' : st.fmt === 'missing' ? '빠진 것 있음' : st.fmt === 'full' ? '둘 다 있음' : ''].filter(Boolean).join(' + ');
 
   // ---------- 칩 그리기 ----------
   function chipsHTML(st, groups, chips, esc) {
@@ -114,7 +147,7 @@
     const chip = (on, attrs, text) => `<button type="button" class="chip ${on ? 'on' : ''}" ${attrs}>${text}</button>`;
     const parts = groups.map((g) => grp(g.label, g.items.map((t) => chip(st.tags.includes(t), `data-t="${esc(t)}"`, esc(t))).join('')));
     if (chips.length) parts.push(grp('키 (원래 키)', chips.map((c) => chip(st.keys.includes(c.key), `data-k="${esc(c.key)}"`, `${esc(c.key)} <small>${c.n}</small>`)).join('')));
-    parts.push(grp('악보', chip(st.fmt === 'chord', 'data-fmt="chord"', '🎼 코드') + chip(st.fmt === 'file', 'data-fmt="file"', '🖼 이미지·PDF')));
+    parts.push(grp('악보', chip(st.fmt === 'chord', 'data-fmt="chord"', '🎼 코드') + chip(st.fmt === 'file', 'data-fmt="file"', '🖼 이미지·PDF') + chip(st.fmt === 'missing', 'data-fmt="missing"', '⚠ 빠진 것 있음') + chip(st.fmt === 'full', 'data-fmt="full"', '✓ 둘 다 있음')));
     return parts.join('');
   }
 
@@ -149,10 +182,10 @@
     st.tags = [...new Set(p.getAll('tag').map((t) => t.trim()).filter(Boolean))];
     st.keys = [...new Set((p.get('key') || '').split(',').map((k) => normKey(k.trim().replace(/^./, (c) => c.toUpperCase()))).filter(Boolean))].sort((a, b) => keyRank(a) - keyRank(b));
     const f = p.get('fmt');
-    st.fmt = f === 'chord' || f === 'file' ? f : '';
+    st.fmt = f === 'chord' || f === 'file' || f === 'missing' || f === 'full' ? f : '';
     const sort = SORTS.includes(p.get('sort')) ? p.get('sort') : 'title';
     return { st, q: (p.get('q') || '').trim(), sort };
   }
 
-  return { OTHER_KEY, normKey, keyRank, formatOf, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
+  return { OTHER_KEY, normKey, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
 });
