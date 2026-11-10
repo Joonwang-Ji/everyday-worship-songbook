@@ -287,9 +287,12 @@
   const HL_COLORS = ['#fde047', '#86efac', '#f9a8d4', '#93c5fd'];
   const WIDTHS = { pen: [25, 45, 80], hl: [150, 250, 400] };
   const TEXT_SIZES = [250, 380, 560];
-  const ZOOMS = [1, 1.5, 2, 3, 4];
+  const MAX_ZOOM = 6;
   const DEFAULTS = { pen: { c: PEN_COLORS[0], w: 1 }, hl: { c: HL_COLORS[0], w: 1 }, tx: { c: PEN_COLORS[1], z: 1 } };
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
+  // 확대·이동은 브라우저에 맡기지 않고 직접 처리한다(브라우저가 맡으면 펜슬 획이 끊기고, 확대하면 화면 전체가 커져 도구 줄이 밀려난다).
+  //  펜슬·마우스 = 쓰기 / 손가락 한 개 = 쓰기(☝ 켬) 또는 이동(☝ 끔) / 손가락 두 개 = 항상 확대·이동
   function edit({ files, start = 0, songId, title = '', onClose }) {
     const pages = (files || []).filter((f) => f.kind === 'image');
     if (!pages.length) return cfg.toast('필기할 이미지 악보가 없어요. (PDF 악보에는 쓸 수 없습니다)');
@@ -298,7 +301,6 @@
     let finger = ls.get('ews_ink_finger', '1') === '1';
     let tool = 'pen';
     let page = Math.max(0, Math.min(pages.length - 1, start));
-    let z = 0;
     let ratio = 1.4;
     let items = [];
     let del = new Set();
@@ -307,13 +309,18 @@
     let timer = null;
     let active = null;
     let txtEdit = null;
+    let bw = 300, bh = 420;
+    const view = { s: 1, x: 0, y: 0 };
+    const base = new Map(); // 이 필기 화면을 연 뒤 처음 불러온 장의 모습 (취소하면 이걸로 되돌린다)
+    const dirty = new Set();
     const ov = document.createElement('div');
     ov.className = 'ink-ed';
     ov.setAttribute('role', 'dialog');
     ov.innerHTML = `
       <div class="ink-top">
+        <button type="button" data-a="cancel" class="ink-cancel">취소</button>
         <button type="button" data-a="x" class="ink-done">완료</button>
-        <span class="ink-n"></span>
+        <button type="button" data-a="fit" class="ink-n" aria-label="화면에 맞추기"></button>
         <span class="ink-nav">
           <button type="button" data-a="prev" aria-label="이전 장">‹</button>
           <button type="button" data-a="next" aria-label="다음 장">›</button>
@@ -334,7 +341,7 @@
     document.body.appendChild(ov);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    const q = (s) => ov.querySelector(s);
+    const q = (sel) => ov.querySelector(sel);
     const scroller = q('.ink-scroll');
     const stage = q('.ink-stage');
     const img = stage.querySelector('img');
@@ -342,18 +349,44 @@
     const $txt = q('.ink-txt');
     const $ta = $txt.querySelector('textarea');
     let live = null; // 쓰는 중인 획의 미리보기 path
-
     const H = () => 1000 * ratio;
-    function layout() {
-      const aw = scroller.clientWidth, ah = scroller.clientHeight;
-      const w = Math.min(aw - 8, (ah - 8) / ratio) * ZOOMS[z];
-      stage.style.width = Math.max(50, w) + 'px';
-      stage.style.height = Math.max(50, w * ratio) + 'px';
+
+    // ----- 보기(확대·이동) -----
+    const area = () => ({ w: scroller.clientWidth, h: scroller.clientHeight });
+    function fitBase() {
+      const a = area();
+      bw = Math.max(50, Math.min(a.w - 8, (a.h - 8) / ratio));
+      bh = bw * ratio;
+      stage.style.width = bw + 'px';
+      stage.style.height = bh + 'px';
       svg.setAttribute('viewBox', `0 0 1000 ${H().toFixed(1)}`);
-      q('.ink-n').textContent = `${title ? title + ' · ' : ''}${page + 1}/${pages.length}${z ? ` · ${ZOOMS[z]}배` : ''}`;
     }
+    function clampView() {
+      const a = area(), sw = bw * view.s, sh = bh * view.s, m = 24;
+      view.x = sw <= a.w ? (a.w - sw) / 2 : clamp(view.x, a.w - sw - m, m);
+      view.y = sh <= a.h ? (a.h - sh) / 2 : clamp(view.y, a.h - sh - m, m);
+    }
+    function applyView() {
+      stage.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.s})`;
+      q('.ink-n').textContent = `${title ? title + ' · ' : ''}${page + 1}/${pages.length}${view.s > 1.02 ? ` · ${view.s.toFixed(1)}배` : ''}`;
+    }
+    function resetView() { view.s = 1; clampView(); applyView(); }
+    function zoomTo(ns, cx, cy) {
+      ns = clamp(ns, 1, MAX_ZOOM);
+      const px = (cx - view.x) / view.s, py = (cy - view.y) / view.s;
+      view.s = ns; view.x = cx - px * ns; view.y = cy - py * ns;
+      clampView(); applyView();
+    }
+    function layout() { fitBase(); clampView(); applyView(); redraw(); }
     function redraw() {
-      svg.innerHTML = dataSVG({ items }, 1000, H());
+      let html = dataSVG({ items: txtEdit ? items.filter((i) => i.id !== txtEdit.id) : items }, 1000, H());
+      if (txtEdit) {
+        if (txtEdit.s.trim()) html += itemSVG(txtEdit, 1000, H());
+        // 글자를 넣을 자리를 점선 원과 십자로 표시한다
+        const u = 1000 / (bw * view.s), mx = (txtEdit.x / 10000) * 1000, my = (txtEdit.y / 10000) * H();
+        html += `<g class="ink-mark" pointer-events="none"><circle cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="${(10 * u).toFixed(2)}" fill="rgba(255,255,255,.6)" stroke="#e11d48" stroke-width="${(2 * u).toFixed(2)}" stroke-dasharray="${(4 * u).toFixed(2)}"/><path d="M${(mx - 16 * u).toFixed(1)} ${my.toFixed(1)}h${(32 * u).toFixed(1)}M${mx.toFixed(1)} ${(my - 16 * u).toFixed(1)}v${(32 * u).toFixed(1)}" stroke="#e11d48" stroke-width="${(1.5 * u).toFixed(2)}"/></g>`;
+      }
+      svg.innerHTML = html;
     }
     const jsonSize = () => JSON.stringify({ items, del: [...del] }).length;
     async function persist() {
@@ -362,6 +395,7 @@
       await save(pages[page].id, songId, { v: 1, items: items.slice(), del: [...del].slice(-2000) });
     }
     function touch() {
+      dirty.add(page);
       clearTimeout(timer);
       timer = setTimeout(persist, 600);
     }
@@ -371,12 +405,12 @@
       const rec = await rget(f.id);
       items = rec && rec.data ? rec.data.items.slice() : [];
       del = new Set(rec && rec.data ? rec.data.del : []);
+      if (!base.has(page)) base.set(page, { v: 1, items: items.slice(), del: [...del] });
       ratio = 1.4;
-      img.onload = () => { ratio = img.naturalHeight / img.naturalWidth || 1.4; layout(); redraw(); };
+      img.onload = () => { ratio = img.naturalHeight / img.naturalWidth || 1.4; fitBase(); resetView(); redraw(); };
       img.src = f.url;
+      fitBase(); resetView(); redraw();
       if (img.complete && img.naturalWidth) img.onload();
-      layout();
-      redraw();
       pull(songId);
     }
     const removeItem = (id) => { items = items.filter((i) => i.id !== id); del.add(id); };
@@ -398,11 +432,11 @@
     }
 
     // ----- 도구 줄 -----
-    function dots(list, cur, key) {
+    function dots(list, cur) {
       return list.map((c) => `<button type="button" class="ink-dot${c === cur ? ' on' : ''}" data-col="${c}" style="background:${c}" aria-label="색 ${c}"></button>`).join('');
     }
     function renderBar() {
-      const tb = (id, label, extra = '') => `<button type="button" class="ink-b${tool === id ? ' on' : ''}" data-tool="${id}" aria-pressed="${tool === id}">${label}</button>${extra}`;
+      const tb = (id, label) => `<button type="button" class="ink-b${tool === id ? ' on' : ''}" data-tool="${id}" aria-pressed="${tool === id}">${label}</button>`;
       q('#ink-r1').innerHTML =
         tb('pen', '✎ 펜') + tb('hl', '🖍 형광펜') + tb('er', '⌫ 지우개') + tb('tx', 'T 글자') + tb('hand', '✋ 이동') +
         `<span class="ink-sp"></span><button type="button" class="ink-b" data-a="undo" ${undo.length ? '' : 'disabled'} aria-label="되돌리기">↶</button><button type="button" class="ink-b" data-a="redo" ${redo.length ? '' : 'disabled'} aria-label="다시 하기">↷</button>`;
@@ -413,14 +447,12 @@
         r2 += WIDTHS[tool].map((w, i) => `<button type="button" class="ink-w${i === o.w ? ' on' : ''}" data-w="${i}" aria-label="굵기 ${i + 1}"><i style="height:${tool === 'pen' ? 2 + i * 2 : 6 + i * 4}px"></i></button>`).join('');
       } else if (tool === 'tx') {
         r2 += dots(PEN_COLORS, opts.tx.c);
-        r2 += TEXT_SIZES.map((s, i) => `<button type="button" class="ink-w txs${i === opts.tx.z ? ' on' : ''}" data-z="${i}" aria-label="글자 크기 ${i + 1}" style="font-size:${12 + i * 4}px">가</button>`).join('');
+        r2 += TEXT_SIZES.map((sz, i) => `<button type="button" class="ink-w txs${i === opts.tx.z ? ' on' : ''}" data-z="${i}" aria-label="글자 크기 ${i + 1}" style="font-size:${12 + i * 4}px">가</button>`).join('');
         r2 += '<span class="ink-hint">빈 곳을 누르면 글자를 넣고, 글자를 누르면 고칩니다</span>';
       } else if (tool === 'er') r2 += '<span class="ink-hint">지울 필기 위를 문지르세요 (획 하나씩 지워져요)</span>';
-      else r2 += '<span class="ink-hint">손가락으로 이동·확대할 수 있어요 (쓰려면 펜을 다시 고르세요)</span>';
-      if (tool !== 'hand') r2 += `<span class="ink-sp"></span><button type="button" class="ink-b small${finger ? ' on' : ''}" data-a="finger" aria-pressed="${finger}" title="Apple Pencil만 쓰려면 끄세요">☝ 손가락 ${finger ? '켬' : '끔'}</button>`;
+      else r2 += '<span class="ink-hint">한 손가락으로 끌어 이동, 두 손가락으로 확대·축소 (쓰려면 펜을 다시 고르세요)</span>';
+      if (tool !== 'hand') r2 += `<span class="ink-sp"></span><button type="button" class="ink-b small${finger ? ' on' : ''}" data-a="finger" aria-pressed="${finger}" title="Apple Pencil만 쓰려면 끄세요. 끄면 한 손가락은 화면 이동이에요">☝ 손가락 ${finger ? '쓰기' : '이동'}</button>`;
       q('#ink-r2').innerHTML = r2;
-      svg.style.touchAction = tool === 'hand' ? 'auto' : finger ? 'none' : 'pan-x pan-y pinch-zoom';
-      svg.style.cursor = tool === 'hand' ? 'grab' : tool === 'tx' ? 'text' : 'crosshair';
     }
     function saveOpts() { ls.set('ews_ink_opts', JSON.stringify(opts)); }
     ov.querySelector('.ink-tools').addEventListener('click', (e) => {
@@ -437,11 +469,11 @@
 
     // ----- 쓰기 -----
     const norm = (e) => {
-      const r = stage.getBoundingClientRect();
-      return [Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (e.clientY - r.top) / r.height))];
+      const r = stage.getBoundingClientRect(); // 확대·이동이 반영된 실제 위치
+      return [clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1)];
     };
     function hitItems(nx, ny) {
-      const r = 0.018;
+      const r = 0.018 / view.s;
       const out = [];
       for (const it of items) {
         if (it.t === 'x') {
@@ -476,60 +508,37 @@
       }
       if (a.erased.length !== a.shown) { a.shown = a.erased.length; redraw(); }
     }
-    svg.addEventListener(
-      'touchstart',
-      (e) => {
-        if (tool === 'hand') return;
-        // 아이패드: Apple Pencil 획은 화면 스크롤로 넘어가지 않게 막고, 손가락은 그대로 스크롤·확대한다
-        for (const t of e.changedTouches) if (t.touchType === 'stylus') { e.preventDefault(); return; }
-        if (finger) e.preventDefault();
-      },
-      { passive: false }
-    );
-    svg.addEventListener('pointerdown', (e) => {
-      if (tool === 'hand' || active || (e.pointerType === 'mouse' && e.button !== 0)) return;
-      if (e.pointerType === 'pen' && ls.get('ews_ink_pen', '') !== '1') {
-        ls.set('ews_ink_pen', '1');
-        if (finger && ls.get('ews_ink_finger_set', '') !== '1') { finger = false; ls.set('ews_ink_finger', '0'); renderBar(); cfg.toast('펜이 감지돼서 손가락 쓰기를 껐어요. (도구 줄의 ☝에서 다시 켤 수 있어요)'); }
-      }
-      if (e.pointerType === 'touch' && !finger) return;
-      e.preventDefault();
-      const n = norm(e);
-      active = { id: e.pointerId, type: e.pointerType, start: n, moved: 0, pts: [n], erased: [], shown: 0 };
-      try { svg.setPointerCapture(e.pointerId); } catch {}
-      if (tool === 'pen' || tool === 'hl') {
-        const o = opts[tool];
-        active.stroke = { t: tool === 'pen' ? 's' : 'h', c: o.c, w: WIDTHS[tool][o.w] };
-        live = document.createElementNS(NS, 'path');
-        live.setAttribute('fill', 'none');
-        live.setAttribute('stroke', o.c);
-        live.setAttribute('stroke-width', (active.stroke.w / 10).toFixed(2));
-        live.setAttribute('stroke-linecap', tool === 'hl' ? 'butt' : 'round');
-        live.setAttribute('stroke-linejoin', 'round');
-        if (tool === 'hl') live.setAttribute('class', 'hl');
-        svg.appendChild(live);
-        drawLive();
-      } else if (tool === 'er') erase(active, n);
-    });
     function drawLive() {
       if (!live || !active) return;
       const p = [];
       active.pts.forEach((pt) => p.push(Math.round(pt[0] * 10000), Math.round(pt[1] * 10000)));
       live.setAttribute('d', pathD(p, 1000, H()));
     }
-    svg.addEventListener('pointermove', (e) => {
-      if (!active || e.pointerId !== active.id) return;
-      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
-      for (const ev of evs.length ? evs : [e]) {
-        const n = norm(ev);
-        const last = active.pts[active.pts.length - 1];
-        if (Math.hypot(n[0] - last[0], (n[1] - last[1]) * ratio) < 0.0008) continue;
-        active.moved += Math.hypot(n[0] - last[0], (n[1] - last[1]) * ratio);
-        if (tool === 'er') erase(active, n);
-        else if (active.stroke) active.pts.push(n);
-      }
-      if (active.stroke) drawLive();
-    });
+    function startDraw(e) {
+      const n = norm(e);
+      active = { id: e.pointerId, type: e.pointerType, start: n, moved: 0, pts: [n], erased: [], shown: 0 };
+      if (tool === 'pen' || tool === 'hl') {
+        const o = opts[tool];
+        // 확대해서 쓰면 선·글자가 같은 화면 굵기가 되도록 그림 기준 굵기를 줄여 저장한다
+        const w = Math.max(10, Math.round(WIDTHS[tool][o.w] / view.s));
+        active.stroke = { t: tool === 'pen' ? 's' : 'h', c: o.c, w };
+        live = document.createElementNS(NS, 'path');
+        live.setAttribute('fill', 'none');
+        live.setAttribute('stroke', o.c);
+        live.setAttribute('stroke-width', (w / 10).toFixed(2));
+        live.setAttribute('stroke-linecap', tool === 'hl' ? 'butt' : 'round');
+        live.setAttribute('stroke-linejoin', 'round');
+        if (tool === 'hl') live.setAttribute('class', 'hl');
+        svg.appendChild(live);
+        drawLive();
+      } else if (tool === 'er') erase(active, n);
+    }
+    function discardDraw() {
+      const a = active;
+      active = null;
+      if (live) { live.remove(); live = null; }
+      if (a && a.erased.length) { a.erased.forEach(addItem); redraw(); }
+    }
     function finish(cancel) {
       const a = active;
       active = null;
@@ -538,7 +547,7 @@
       if (cancel) { if (a.erased.length) { a.erased.forEach(addItem); redraw(); } return; }
       if (a.stroke) {
         if (!canAdd()) return;
-        const pts = simplify(a.pts.map((p) => [Math.round(p[0] * 10000), Math.round(p[1] * 10000)]), ratio, 6);
+        const pts = simplify(a.pts.map((pt) => [Math.round(pt[0] * 10000), Math.round(pt[1] * 10000)]), ratio, 6 / view.s);
         const p = [];
         pts.forEach((pt) => p.push(pt[0], pt[1]));
         const it = { id: uid(), t: a.stroke.t, c: a.stroke.c, w: a.stroke.w, p };
@@ -554,77 +563,198 @@
         openText(hit || null, a.start);
       }
     }
-    svg.addEventListener('pointerup', (e) => { if (active && e.pointerId === active.id) finish(false); });
-    svg.addEventListener('pointercancel', (e) => { if (active && e.pointerId === active.id) finish(true); });
-    svg.addEventListener('lostpointercapture', (e) => { if (active && e.pointerId === active.id) finish(false); });
+
+    // 손가락·펜 입력 가르기
+    const touches = new Map();
+    const ignore = new Set();
+    let pinch = null, pan = null, penActive = false;
+    const rel = (e) => { const r = scroller.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+    const modeOf = (e) => (tool === 'hand' || (e.pointerType === 'touch' && !finger) ? 'pan' : 'draw');
+    function startPinch() {
+      const [a, b] = [...touches.values()];
+      const r = scroller.getBoundingClientRect();
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, s: view.s, vx: view.x, vy: view.y, cx: (a.x + b.x) / 2 - r.left, cy: (a.y + b.y) / 2 - r.top };
+      pan = null;
+    }
+    function movePinch() {
+      const [a, b] = [...touches.values()];
+      const r = scroller.getBoundingClientRect();
+      const ns = clamp((pinch.s * (Math.hypot(a.x - b.x, a.y - b.y) || 1)) / pinch.d, 1, MAX_ZOOM);
+      const cx = (a.x + b.x) / 2 - r.left, cy = (a.y + b.y) / 2 - r.top;
+      const px = (pinch.cx - pinch.vx) / pinch.s, py = (pinch.cy - pinch.vy) / pinch.s;
+      view.s = ns; view.x = cx - px * ns; view.y = cy - py * ns;
+      clampView(); applyView();
+    }
+    const startPan = (e) => { pan = { id: e.pointerId, x: e.clientX, y: e.clientY, vx: view.x, vy: view.y }; };
+    scroller.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      e.preventDefault();
+      if (e.pointerType === 'pen' && ls.get('ews_ink_pen', '') !== '1') {
+        ls.set('ews_ink_pen', '1');
+        if (finger && ls.get('ews_ink_finger_set', '') !== '1') { finger = false; ls.set('ews_ink_finger', '0'); renderBar(); cfg.toast('펜이 감지돼서 손가락은 화면 이동으로 바꿨어요. (도구 줄의 ☝에서 다시 켤 수 있어요)'); }
+      }
+      try { scroller.setPointerCapture(e.pointerId); } catch {}
+      if (e.pointerType === 'touch') {
+        if (penActive) { ignore.add(e.pointerId); return; } // 펜으로 쓰는 중에 닿은 손바닥은 무시
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touches.size >= 2) { discardDraw(); startPinch(); return; }
+        if (modeOf(e) === 'pan') startPan(e); else startDraw(e);
+        return;
+      }
+      if (e.pointerType === 'pen') { penActive = true; touches.clear(); pinch = null; pan = null; discardDraw(); }
+      if (modeOf(e) === 'pan') startPan(e); else startDraw(e);
+    });
+    scroller.addEventListener('pointermove', (e) => {
+      if (ignore.has(e.pointerId)) return;
+      if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pinch && touches.size >= 2) { movePinch(); return; }
+      }
+      if (pan && e.pointerId === pan.id) {
+        view.x = pan.vx + (e.clientX - pan.x);
+        view.y = pan.vy + (e.clientY - pan.y);
+        clampView(); applyView();
+        return;
+      }
+      if (!active || e.pointerId !== active.id) return;
+      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      for (const ev of evs.length ? evs : [e]) {
+        const n = norm(ev);
+        const last = active.pts[active.pts.length - 1];
+        if (Math.hypot(n[0] - last[0], (n[1] - last[1]) * ratio) < 0.0004 / view.s) continue;
+        active.moved += Math.hypot(n[0] - last[0], (n[1] - last[1]) * ratio);
+        if (tool === 'er') erase(active, n);
+        else if (active.stroke) active.pts.push(n);
+      }
+      if (active.stroke) drawLive();
+    });
+    function endPointer(e, cancel) {
+      if (ignore.delete(e.pointerId)) return;
+      if (e.pointerType === 'touch') {
+        const had = touches.delete(e.pointerId);
+        if (pinch) {
+          if (touches.size < 2) { pinch = null; touches.forEach((_, id) => ignore.add(id)); touches.clear(); } // 남은 한 손가락은 뗄 때까지 무시
+          return;
+        }
+        if (!had) return;
+      }
+      if (e.pointerType === 'pen') penActive = false;
+      if (pan && e.pointerId === pan.id) { pan = null; return; }
+      // 펜이 중간에 취소돼도 지금까지 그은 만큼은 남긴다(끊김 방지)
+      if (active && e.pointerId === active.id) finish(cancel && e.pointerType !== 'pen');
+    }
+    scroller.addEventListener('pointerup', (e) => endPointer(e, false));
+    scroller.addEventListener('pointercancel', (e) => endPointer(e, true));
+    scroller.addEventListener('wheel', (e) => { e.preventDefault(); const [cx, cy] = rel(e); zoomTo(view.s * (e.deltaY < 0 ? 1.18 : 1 / 1.18), cx, cy); }, { passive: false });
+    scroller.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+    scroller.addEventListener('contextmenu', (e) => e.preventDefault());
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach((n) => ov.addEventListener(n, (e) => e.preventDefault())); // 사파리의 화면 전체 확대 막기
 
     // ----- 글자 메모 -----
     function renderTextBar() {
       const cur = txtEdit;
-      q('#ink-tr').innerHTML = dots(PEN_COLORS, cur.c) + TEXT_SIZES.map((s, i) => `<button type="button" class="ink-w txs${s === cur.z ? ' on' : ''}" data-z2="${s}" style="font-size:${12 + i * 4}px">가</button>`).join('');
+      q('#ink-tr').innerHTML = dots(PEN_COLORS, cur.c) + TEXT_SIZES.map((sz, i) => `<button type="button" class="ink-w txs${sz === cur.z ? ' on' : ''}" data-z2="${sz}" style="font-size:${12 + i * 4}px">가</button>`).join('');
+    }
+    // 입력창이 가리지 않도록 글자 자리가 보이게 화면을 옮긴다
+    function revealPoint() {
+      if (!txtEdit) return;
+      const r = scroller.getBoundingClientRect();
+      const sy = r.top + view.y + (txtEdit.y / 10000) * bh * view.s;
+      const limit = $txt.getBoundingClientRect().top - 70;
+      if (sy > limit) { view.y -= sy - limit; applyView(); }
     }
     function openText(it, at) {
-      txtEdit = it ? { ...it, isNew: false } : { id: uid(), t: 'x', x: Math.round(at[0] * 10000), y: Math.round(at[1] * 10000), c: opts.tx.c, z: TEXT_SIZES[opts.tx.z], s: '', isNew: true };
+      const z0 = clamp(Math.round(TEXT_SIZES[opts.tx.z] / view.s), 60, 600);
+      txtEdit = it ? { ...it, isNew: false } : { id: uid(), t: 'x', x: Math.round(at[0] * 10000), y: Math.round(at[1] * 10000), c: opts.tx.c, z: z0, s: '', isNew: true };
       $ta.value = txtEdit.s;
       $txt.hidden = false;
       $txt.querySelector('[data-t="del"]').hidden = txtEdit.isNew;
       renderTextBar();
-      setTimeout(() => $ta.focus(), 30);
+      redraw();
+      setTimeout(() => { revealPoint(); $ta.focus(); }, 30);
     }
+    function closeText() {
+      $txt.hidden = true;
+      txtEdit = null;
+      redraw();
+      clampView();
+      applyView();
+    }
+    $ta.addEventListener('input', () => { if (txtEdit) { txtEdit.s = $ta.value; redraw(); } });
     $txt.addEventListener('click', (e) => {
       const b = e.target.closest('button');
       if (!b || !txtEdit) return;
-      if (b.dataset.col) { txtEdit.c = b.dataset.col; renderTextBar(); }
-      else if (b.dataset.z2) { txtEdit.z = +b.dataset.z2; renderTextBar(); }
-      else if (b.dataset.t === 'cancel') { $txt.hidden = true; txtEdit = null; }
+      if (b.dataset.col) { txtEdit.c = b.dataset.col; renderTextBar(); redraw(); }
+      else if (b.dataset.z2) { txtEdit.z = +b.dataset.z2; renderTextBar(); redraw(); }
+      else if (b.dataset.t === 'cancel') closeText();
       else if (b.dataset.t === 'del') {
         const old = items.find((i) => i.id === txtEdit.id);
-        if (old) { removeItem(old.id); record({ a: 'del', items: [old] }); redraw(); touch(); renderBar(); }
-        $txt.hidden = true; txtEdit = null;
+        if (old) { removeItem(old.id); record({ a: 'del', items: [old] }); touch(); renderBar(); }
+        closeText();
       } else if (b.dataset.t === 'ok') {
         const s = $ta.value.replace(/\s+$/, '');
         const old = items.find((i) => i.id === txtEdit.id);
         if (!s.trim()) {
-          if (old) { removeItem(old.id); record({ a: 'del', items: [old] }); redraw(); touch(); renderBar(); }
+          if (old) { removeItem(old.id); record({ a: 'del', items: [old] }); touch(); renderBar(); }
         } else {
           const it = { id: txtEdit.id, t: 'x', c: txtEdit.c, x: txtEdit.x, y: txtEdit.y, z: txtEdit.z, s };
-          if (!old && !canAdd()) { return; }
+          if (!old && !canAdd()) return;
           addItem(it);
           record(old ? { a: 'edit', before: old, after: it } : { a: 'add', item: it });
-          if (txtEdit.isNew) { opts.tx.c = it.c; opts.tx.z = Math.max(0, TEXT_SIZES.indexOf(it.z)); saveOpts(); }
-          redraw(); touch(); renderBar();
+          if (txtEdit.isNew) { opts.tx.c = it.c; saveOpts(); }
+          touch(); renderBar();
         }
-        $txt.hidden = true; txtEdit = null;
+        closeText();
       }
     });
 
     // ----- 위쪽 줄 · 닫기 -----
     async function go(d) {
+      if (txtEdit) closeText();
       await persist();
       const np = page + d;
       if (np < 0 || np >= pages.length) return;
       page = np;
-      z = 0;
       await loadPage();
     }
-    async function close() {
+    function teardown() {
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('visibilitychange', onHide);
       window.removeEventListener('resize', layout);
-      await persist();
+      if (window.visualViewport) { visualViewport.removeEventListener('resize', fitVV); visualViewport.removeEventListener('scroll', fitVV); }
       document.body.style.overflow = prevOverflow;
       ov.remove();
+    }
+    async function close() {
+      if (txtEdit) closeText();
+      await persist();
+      teardown();
+      if (onClose) onClose(page);
+    }
+    // 이번에 쓴 필기를 모두 버리고 처음 모습으로 되돌린다
+    async function cancelAll() {
+      if (txtEdit) closeText();
+      if (dirty.size || timer) {
+        if (!confirm('이번에 쓴 필기를 모두 버리고 닫을까요?')) return;
+      }
+      clearTimeout(timer);
+      timer = null;
+      for (const i of dirty) if (base.has(i)) await save(pages[i].id, songId, base.get(i));
+      teardown();
       if (onClose) onClose(page);
     }
     q('.ink-top').addEventListener('click', (e) => {
       const b = e.target.closest('button');
       if (!b) return;
       const a = b.dataset.a;
+      const c = area();
       if (a === 'x') close();
+      else if (a === 'cancel') cancelAll();
       else if (a === 'prev') go(-1);
       else if (a === 'next') go(1);
-      else if (a === 'in') { z = Math.min(ZOOMS.length - 1, z + 1); layout(); }
-      else if (a === 'out') { z = Math.max(0, z - 1); layout(); }
+      else if (a === 'fit') resetView();
+      else if (a === 'in') zoomTo(view.s * 1.5, c.w / 2, c.h / 2);
+      else if (a === 'out') zoomTo(view.s / 1.5, c.w / 2, c.h / 2);
     });
     function onKey(e) {
       if (e.target && e.target.tagName === 'TEXTAREA') return;
@@ -633,9 +763,19 @@
       else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); doRedo(); }
     }
     const onHide = () => { if (document.hidden && timer) persist(); };
+    // 키보드가 올라오면 보이는 영역만큼으로 줄여서 입력창이 가려지지 않게 한다
+    function fitVV() {
+      const vv = window.visualViewport;
+      if (!vv) return;
+      ov.style.top = vv.offsetTop + 'px';
+      ov.style.height = vv.height + 'px';
+      ov.style.bottom = 'auto';
+      if (txtEdit) revealPoint();
+    }
     document.addEventListener('keydown', onKey);
     document.addEventListener('visibilitychange', onHide);
     window.addEventListener('resize', layout);
+    if (window.visualViewport) { visualViewport.addEventListener('resize', fitVV); visualViewport.addEventListener('scroll', fitVV); }
     renderBar();
     loadPage();
   }
