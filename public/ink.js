@@ -564,6 +564,7 @@
       active = null;
       if (live) { live.remove(); live = null; }
       if (!a) return;
+      if (window.__inkdbg) window.__inkdbg('finish ' + tool + ' 이동 ' + a.moved.toFixed(4) + ' 점 ' + a.pts.length + (cancel ? ' 취소' : ''));
       if (cancel) { if (a.erased.length) { a.erased.forEach(addItem); redraw(); } return; }
       if (a.stroke) {
         if (!canAdd()) return;
@@ -648,10 +649,11 @@
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
       const rect = stage.getBoundingClientRect();
       for (const ev of evs.length ? evs : [e]) {
+        if (e.buttons && !ev.buttons) continue; // 펜이 닿기 전 공중(호버) 위치가 묶여 오면 버린다
         const n = norm(ev, rect);
         const last = active.pts[active.pts.length - 1];
         if (Math.hypot(n[0] - last[0], (n[1] - last[1]) * ratio) < 0.0004 / view.s) continue;
-        active.moved += Math.hypot(n[0] - last[0], (n[1] - last[1]) * ratio);
+        active.moved = Math.max(active.moved, Math.hypot(n[0] - active.start[0], (n[1] - active.start[1]) * ratio)); // 탭 판정은 처음 자리에서 얼마나 멀어졌는지로
         if (tool === 'er') erase(active, n);
         else if (active.stroke) active.pts.push(n);
       }
@@ -704,6 +706,7 @@
         if (lastMv) { const g = now - lastMv; if (g > 60) { gaps++; if (g > maxGap) maxGap = g; add('간격 ' + Math.round(g) + 'ms ' + e.pointerType); } }
         lastMv = now; moves++;
       }, true);
+      window.__inkdbg = add;
       add('진단 켜짐 (tool=' + tool + ')');
     }
 
