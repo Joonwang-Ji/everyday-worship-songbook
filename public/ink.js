@@ -187,6 +187,35 @@
   }
 
   // ---------- 그리기 도우미 ----------
+  // 획을 "선 긋기(stroke)"가 아니라 채운 모양(fill)으로 그린다.
+  // 아이패드 사파리는 점이 많은 곡선을 stroke로 그으면 곳곳에 하얀 틈이 생겨서, 같은 굵기의 채운 모양으로 대신한다.
+  function strokeD(p, W, H, wd) {
+    const n = p.length / 2;
+    const r = Math.max(wd, 0.2) / 2;
+    const X = (i) => (p[i * 2] / 10000) * W;
+    const Y = (i) => (p[i * 2 + 1] / 10000) * H;
+    const pts = [[X(0), Y(0)]];
+    const push = (x, y) => { const l = pts[pts.length - 1]; if (Math.hypot(x - l[0], y - l[1]) >= 0.25) pts.push([x, y]); };
+    for (let i = 1; i < n - 1; i++) {
+      const sx = i === 1 ? X(0) : (X(i - 1) + X(i)) / 2, sy = i === 1 ? Y(0) : (Y(i - 1) + Y(i)) / 2;
+      const cx = X(i), cy = Y(i), ex = (X(i) + X(i + 1)) / 2, ey = (Y(i) + Y(i + 1)) / 2;
+      for (let k = 1; k <= 3; k++) {
+        const t = k / 3, u = 1 - t;
+        push(u * u * sx + 2 * u * t * cx + t * t * ex, u * u * sy + 2 * u * t * cy + t * t * ey);
+      }
+    }
+    if (n > 1) push(X(n - 1), Y(n - 1));
+    const f = (v) => v.toFixed(2);
+    const dot = (x, y) => `M${f(x - r)} ${f(y)}a${f(r)} ${f(r)} 0 1 0 ${f(2 * r)} 0a${f(r)} ${f(r)} 0 1 0 ${f(-2 * r)} 0z`;
+    let d = dot(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) {
+      const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
+      const len = Math.hypot(x1 - x0, y1 - y0) || 1;
+      const nx = (-(y1 - y0) / len) * r, ny = ((x1 - x0) / len) * r;
+      d += `M${f(x0 + nx)} ${f(y0 + ny)}L${f(x1 + nx)} ${f(y1 + ny)}L${f(x1 - nx)} ${f(y1 - ny)}L${f(x0 - nx)} ${f(y0 - ny)}z` + dot(x1, y1);
+    }
+    return d;
+  }
   function pathD(p, W, H) {
     const X = (i) => (p[i] / 10000) * W;
     const Y = (i) => (p[i + 1] / 10000) * H;
@@ -210,7 +239,7 @@
         .join('')}</text>`;
     }
     const hl = it.t === 'h';
-    return `<path d="${pathD(it.p, W, H)}" fill="none" stroke="${it.c}" stroke-width="${(it.w / 10).toFixed(2)}" stroke-linecap="${hl ? 'butt' : 'round'}" stroke-linejoin="round"${hl ? ' class="hl"' : ''}/>`;
+    return `<path d="${strokeD(it.p, W, H, it.w / 10)}" fill="${it.c}" stroke="none"${hl ? ' class="hl"' : ''}/>`;
   }
   const dataSVG = (data, W, H) => ((data && data.items) || []).map((it) => itemSVG(it, W, H)).join('');
 
@@ -516,7 +545,7 @@
         if (!live || !active) return;
         const p = [];
         active.pts.forEach((pt) => p.push(Math.round(pt[0] * 10000), Math.round(pt[1] * 10000)));
-        live.setAttribute('d', pathD(p, 1000, H()));
+        live.setAttribute('d', strokeD(p, 1000, H(), active.stroke.w / 10));
       });
     }
     let lastStroke = null;
@@ -543,11 +572,8 @@
         const w = Math.max(10, Math.round(WIDTHS[tool][o.w] / view.s));
         active.stroke = active.resume ? { t: active.resume.t, c: active.resume.c, w: active.resume.w } : { t: tool === 'pen' ? 's' : 'h', c: o.c, w };
         live = document.createElementNS(NS, 'path');
-        live.setAttribute('fill', 'none');
-        live.setAttribute('stroke', o.c);
-        live.setAttribute('stroke-width', (w / 10).toFixed(2));
-        live.setAttribute('stroke-linecap', tool === 'hl' ? 'butt' : 'round');
-        live.setAttribute('stroke-linejoin', 'round');
+        live.setAttribute('stroke', 'none');
+        live.setAttribute('fill', active.stroke.c);
         if (tool === 'hl') live.setAttribute('class', 'hl');
         svg.appendChild(live);
         drawLive();

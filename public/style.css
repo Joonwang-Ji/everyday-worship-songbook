@@ -483,7 +483,7 @@ body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 
 
 /* ---------- 15차: 이미지 악보 필기 ---------- */
 .ink-ov { position: absolute; pointer-events: none; z-index: 2; overflow: hidden; }
-.ink-ov .hl, .ink-svg .hl { stroke-opacity: .42; }
+.ink-ov .hl, .ink-svg .hl { fill-opacity: .42; stroke-opacity: .42; }
 .ink-ov .itx, .ink-svg .itx { font-family: -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; font-weight: 600; paint-order: stroke; stroke: rgba(255, 255, 255, .85); stroke-linejoin: round; white-space: pre; }
 .ink-entry { margin: 4px 0 10px; align-items: center; }
 /* 그림 영역만 터치를 직접 처리한다. 도구 줄·입력창은 기본 동작을 그대로 둬야 애플펜슬 손글씨(스크리블)와 버튼 탭이 된다 */
