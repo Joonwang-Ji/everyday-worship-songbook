@@ -50,12 +50,17 @@
     return `${+m[2]}/${+m[3]}(${'일월화수목금토'[dt.getDay()]})`;
   };
 
-  // s: { date, title, memo, items:[{title, key, original_key, form, memo}] }
+  // 인도자: 쉼표 글자 또는 배열 → 이름 배열
+  const leaderList = (v) => (Array.isArray(v) ? v : String(v || '').split(',')).map((x) => String(x).trim()).filter(Boolean);
+
+  // s: { date, title, memo, leaders, items:[{title, key, original_key, form, memo}] }
   function kakaoText(s) {
     const date = fmtDate(s.date);
     const title = (s.title || '').trim();
     const name = title ? (/콘티$/.test(title) ? title : title + ' 콘티') : '콘티';
     const out = [`📅 ${[date, name].filter(Boolean).join(' ')}`];
+    const who = leaderList(s.leaders);
+    if (who.length) out.push(`🎤 인도: ${who.join(', ')}`);
     if ((s.memo || '').trim()) out.push(...s.memo.trim().split('\n').map((l) => '※ ' + l.trim()).filter((l) => l !== '※'));
     out.push('');
     (s.items || []).forEach((it, i) => {
@@ -67,5 +72,5 @@
     return out.join('\n');
   }
 
-  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, fmtDate, kakaoText };
+  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, fmtDate, kakaoText, leaderList };
 });

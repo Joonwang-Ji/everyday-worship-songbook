@@ -71,7 +71,7 @@ async function imageCacheFirst(req) {
   return res;
 }
 
-const DATA_PATHS = [/^\/api\/songs\/\d+$/, /^\/api\/setlists$/, /^\/api\/setlists\/\d+$/, /^\/api\/me$/, /^\/api\/tags$/, /^\/api\/team$/];
+const DATA_PATHS = [/^\/api\/songs\/\d+$/, /^\/api\/setlists$/, /^\/api\/setlists\/\d+$/, /^\/api\/me$/, /^\/api\/tags$/, /^\/api\/team$/, /^\/api\/team\/options$/];
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;

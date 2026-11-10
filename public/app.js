@@ -218,6 +218,7 @@
       teardown = null;
     }
     $app.classList.remove('wide');
+    $app.onclick = null;
     const [hash, qs] = (location.hash.replace(/^#/, '') || '/').split('?');
     const q = new URLSearchParams(qs || '');
     window.scrollTo(0, 0);
@@ -246,7 +247,7 @@
       if (hash === '/admin') return await viewAdmin();
       if (hash === '/team') return await viewTeam(q);
       if (hash === '/setlists') return await viewSetlists();
-      if (hash === '/setlist/new') return await viewSetlistEdit(null);
+      if (hash === '/setlist/new') return await viewSetlistEdit(null, q);
       if ((m = /^\/setlist\/(\d+)$/.exec(hash))) return await viewSetlist(+m[1]);
       if ((m = /^\/setlist\/(\d+)\/edit$/.exec(hash))) return await viewSetlistEdit(+m[1]);
       location.hash = '#/';
@@ -680,7 +681,7 @@
     const keyOptions = ['', ...KEYS_MAJOR, ...KEYS_MINOR];
 
     $app.innerHTML = `
-      <div class="row between"><a href="${id ? '#/song/' + id : '#/songs'}" class="small">← ${id ? '곡 보기' : '목록'}</a><h2 style="margin:0">${id ? '악보 편집' : '새 곡 등록'}</h2></div>
+      <div class="editbar"><a href="${id ? '#/song/' + id : '#/songs'}" class="small">← ${id ? '곡 보기' : '목록'}</a><h2>${id ? '악보 편집' : '새 곡 등록'}</h2><button class="btn primary small" id="save2" type="button">저장</button></div>
       <div class="edit-wrap">
         <div>
           <div class="card">
@@ -690,14 +691,17 @@
             <div class="grid2">
               <div><label for="artist">아티스트</label><input id="artist" type="text" value="${esc(song.artist)}"></div>
               <div><label for="key">원래 키</label><select id="key">${keyOptions.map((k) => `<option value="${k}" ${k === song.original_key ? 'selected' : ''}>${k || '(모름)'}</option>`).join('')}</select></div>
-              <div><label for="tempo">템포(BPM)</label><input id="tempo" type="number" inputmode="numeric" min="20" max="300" value="${esc(song.tempo || '')}"></div>
             </div>
             <label for="tags">태그 (쉼표로 구분 · 아래 추천 칩을 눌러도 돼요)</label><input id="tags" type="text" placeholder="경배, 빠른곡" value="${esc(song.tags)}">
             <div id="tagchips"></div>
-            <label for="yt">유튜브 링크</label><input id="yt" type="url" placeholder="https://" value="${esc(song.youtube_url)}">
-            <label for="memo">메모</label><textarea id="memo" rows="2">${esc(song.memo)}</textarea>
-            <label for="lx">검색용 가사 · 후렴 (선택)</label><textarea id="lx" rows="3" placeholder="후렴 한두 줄을 적어 두면 가사로 검색돼요">${esc(song.lyrics_extra)}</textarea>
-            <div class="hint">코드 악보 본문의 가사는 자동으로 검색됩니다. <b>이미지·PDF 악보만 있는 곡</b>은 가사가 글자로 없어서 검색되지 않으니, 후렴 몇 줄을 여기에 적어 주세요. (악보 화면에는 보이지 않고 검색에만 쓰입니다)</div>
+            <details class="moreinfo" id="moreinfo" ${song.tempo || song.youtube_url || song.memo || song.lyrics_extra ? 'open' : ''}>
+              <summary>더 적을 정보 <span class="muted small">템포 · 유튜브 · 메모 · 검색용 가사</span></summary>
+              <label for="tempo">템포(BPM)</label><input id="tempo" type="number" inputmode="numeric" min="20" max="300" value="${esc(song.tempo || '')}">
+              <label for="yt">유튜브 링크</label><input id="yt" type="url" placeholder="https://" value="${esc(song.youtube_url)}">
+              <label for="memo">메모</label><textarea id="memo" rows="2">${esc(song.memo)}</textarea>
+              <label for="lx">검색용 가사 · 후렴 (선택)</label><textarea id="lx" rows="3" placeholder="후렴 한두 줄을 적어 두면 가사로 검색돼요">${esc(song.lyrics_extra)}</textarea>
+              <div class="hint">코드 악보 본문의 가사는 자동으로 검색됩니다. <b>이미지·PDF 악보만 있는 곡</b>은 가사가 글자로 없어서 검색되지 않으니, 후렴 몇 줄을 여기에 적어 주세요. (악보 화면에는 보이지 않고 검색에만 쓰입니다)</div>
+            </details>
           </div>
           <div class="card">
             <div id="draftbar" class="draftbar" hidden></div>
@@ -1321,7 +1325,9 @@
         youtube_url: $('yt').value, tags: $('tags').value, chordpro: $('cp').value, memo: $('memo').value, force: !!force,
       };
       const btn = $('save');
+      const btn2 = $('save2');
       btn.disabled = true;
+      btn2.disabled = true;
       try {
         const r = id ? await api('/songs/' + id, { method: 'PUT', body }) : await api('/songs', { method: 'POST', body });
         clearTimeout(draftTimer);
@@ -1342,9 +1348,11 @@
         err.textContent = e.message;
       } finally {
         btn.disabled = false;
+        btn2.disabled = false;
       }
     }
     $('save').onclick = () => save(false);
+    $('save2').onclick = () => save(false);
     const del = $('del');
     if (del) del.onclick = async () => {
       if (!confirm(`"${song.title}" 곡을 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) return;
@@ -1477,6 +1485,95 @@
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
   const noteBox = (html) => `<div class="card">${html}</div>`;
+
+  // ---------- 11차: 콘티 제목 · 인도자 · 예배 종류 ----------
+  // 제목 → "예배 종류 M/D" → "M/D 콘티" 순으로 보여 준다. (withDate=false 면 날짜는 뺀다: 날짜를 따로 보여 주는 화면·내보내기용)
+  const setlistTitle = (l, withDate = true) => {
+    const t = (l.title || '').trim();
+    if (t) return t;
+    const md = mmdd(l.date);
+    if (l.service_name) return withDate && md ? `${l.service_name} ${md}` : l.service_name;
+    return md && withDate ? `${md} 콘티` : '콘티';
+  };
+  const leadersOf = (l) => SongForm.leaderList(l && l.leaders);
+  const leaderTag = (l) => {
+    const w = leadersOf(l);
+    return w.length ? `<span class="who" title="인도자">🎤 ${esc(w.join(', '))}</span>` : '';
+  };
+  const tempTag = (l) => (l && l.is_temp ? '<span class="tag temp" title="급하게 만든 임시 콘티">⚡ 임시</span>' : '');
+
+  // 예배 종류 / 인도자 목록을 관리하는 아래 창 (팀장). 닫을 때 onChange 로 화면을 다시 그리게 한다.
+  async function manageOptions(kind, onChange) {
+    const label = kind === 'service' ? '예배 종류' : '인도자';
+    const eg = kind === 'service' ? '예: 주일오전예배' : '예: 홍길동';
+    const key = kind === 'service' ? 'services' : 'leaders';
+    let changed = false;
+    const sh = showSheet('<p class="muted">불러오는 중…</p>', () => { if (changed && onChange) onChange(); });
+    let list = [];
+    const load = async () => { list = (await api('/team/options'))[key]; };
+    const say = (m) => { const e = sh.q('#oerr'); if (e) e.textContent = m || ''; };
+    const draw = () => {
+      sh.q('.sheet-card').innerHTML = `<h2 style="margin-top:0">${label} 관리</h2>
+        <ul class="opt-list">${
+          list.length
+            ? list.map((o, i) => `<li data-id="${o.id}"><span class="grow">${esc(o.name)}</span>
+                <button type="button" class="btn small" data-oa="up" ${i === 0 ? 'disabled' : ''} aria-label="위로">↑</button>
+                <button type="button" class="btn small" data-oa="down" ${i === list.length - 1 ? 'disabled' : ''} aria-label="아래로">↓</button>
+                <button type="button" class="btn small" data-oa="ren">이름</button>
+                <button type="button" class="btn small danger" data-oa="del">삭제</button></li>`).join('')
+            : `<li class="muted">아직 없어요. 아래에서 추가해 보세요.</li>`
+        }</ul>
+        <form id="oadd" class="row"><input id="oname" type="text" maxlength="20" placeholder="${eg}" enterkeyhint="done" aria-label="${label} 이름"><button class="btn primary small">추가</button></form>
+        <p class="hint">${kind === 'service' ? '예배 종류를 지우면 그 콘티들은 “미분류”로 남아요.' : '인도자 이름을 고치면 이 팀의 지난 콘티에 적힌 이름도 같이 바뀌어요.'}</p>
+        <p class="error" id="oerr"></p>
+        <button class="btn" id="oclose" type="button" style="width:100%">닫기</button>`;
+      sh.q('#oclose').onclick = () => sh.close();
+      sh.q('#oadd').onsubmit = async (ev) => {
+        ev.preventDefault();
+        const name = sh.q('#oname').value.trim();
+        if (!name) return;
+        try {
+          await api('/team/options', { method: 'POST', body: { kind, name } });
+          changed = true;
+          await load();
+          draw();
+        } catch (e) { say(e.message); }
+      };
+    };
+    sh.wrap.addEventListener('click', async (ev) => {
+      const b = ev.target.closest && ev.target.closest('button[data-oa]');
+      if (!b) return;
+      const li = b.closest('li[data-id]');
+      const idx = list.findIndex((o) => String(o.id) === li.dataset.id);
+      const o = list[idx];
+      try {
+        if (b.dataset.oa === 'ren') {
+          const nn = prompt(`${label} 이름`, o.name);
+          if (nn === null || !nn.trim() || nn.trim() === o.name) return;
+          await api('/team/options/' + o.id, { method: 'PUT', body: { name: nn.trim() } });
+        } else if (b.dataset.oa === 'del') {
+          if (!confirm(`"${o.name}"을(를) 지울까요?`)) return;
+          await api('/team/options/' + o.id, { method: 'DELETE' });
+        } else {
+          const j = b.dataset.oa === 'up' ? idx - 1 : idx + 1;
+          if (j < 0 || j >= list.length) return;
+          const next = list.slice();
+          [next[idx], next[j]] = [next[j], next[idx]];
+          await Promise.all(next.map((x, n) => (x.position === n + 1 ? null : api('/team/options/' + x.id, { method: 'PUT', body: { position: n + 1 } }))).filter(Boolean));
+        }
+        changed = true;
+        await load();
+        draw();
+      } catch (e) { say(e.message); }
+    });
+    try {
+      await load();
+      draw();
+    } catch (e) {
+      sh.q('.sheet-card').innerHTML = `<p class="error">${esc(e.message)}</p><button class="btn" id="oclose" type="button">닫기</button>`;
+      sh.q('#oclose').onclick = () => sh.close();
+    }
+  }
 
   // ---------- 권한 열기: 필요한 순간에 그 자리에서 PIN 묻기 (6차 전 개편) ----------
   // kind: 'leader' = 콘티 편집(팀장 PIN) · 'song' = 악보 편집(관리자 PIN, 또는 악보 권한이 있는 팀장 PIN)
@@ -1662,7 +1759,7 @@
         <div class="hero-label">${esc(me.team.name)}</div>
         <h2 class="hero-title">아직 콘티가 없어요</h2>
         <p class="muted" style="margin:0 0 12px">콘티를 만들면 이번 주 곡이 여기에 나타나고, 한 번에 연주 모드로 들어갈 수 있어요.</p>
-        ${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary big')}
+        <div class="row">${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary big')}${lockBtn('leader', '⚡ 빠른 콘티', '#/setlist/new?quick=1', 'big')}</div>
       </div>`;
     } else {
       const { setlist: s } = await api('/setlists/' + featured.id);
@@ -1670,7 +1767,8 @@
       const shown = s.items.slice(0, 8);
       hero = `<div class="card hero">
         <div class="hero-label">${label}${s.date ? ' · ' + esc(fmtDate(s.date)) : ''}</div>
-        <h2 class="hero-title">${esc(s.title)}</h2>
+        <h2 class="hero-title">${esc(setlistTitle(s))}</h2>
+        ${s.is_temp || leadersOf(s).length ? `<div class="song-meta" style="margin:-4px 0 8px">${tempTag(s)}${leaderTag(s)}</div>` : ''}
         ${shown.length ? `<ol class="mini">${shown.map((it, i) => `<li><span class="num">${i + 1}</span><span class="grow">${esc(it.title)}</span>${(it.key || it.original_key) ? `<span class="keybadge">${esc(it.key || it.original_key)}</span>` : ''}</li>`).join('')}</ol>${s.items.length > shown.length ? `<p class="muted small" style="margin:4px 0 0">외 ${s.items.length - shown.length}곡</p>` : ''}` : '<p class="muted">이 콘티에는 아직 곡이 없어요.</p>'}
         <div class="row" style="margin-top:12px">${shown.length ? `<a class="btn primary big grow" href="#/play/${s.id}">▶ 연주 모드</a>` : ''}<a class="btn big" href="#/setlist/${s.id}">콘티 보기</a></div>
       </div>`;
@@ -1679,9 +1777,9 @@
     $app.innerHTML = `
       ${teamChip()}
       ${hero}
-      ${others.length ? `<h2>이어지는 콘티</h2><ul class="songs">${others.map((l) => `<li class="song-item"><a href="#/setlist/${l.id}"><div class="row between"><div class="song-title">${esc(l.title)}</div>${l.date ? `<span class="keybadge">${esc(fmtDate(l.date))}</span>` : ''}</div><div class="song-meta"><span>${l.item_count}곡</span></div></a></li>`).join('')}</ul>` : ''}
+      ${others.length ? `<h2>이어지는 콘티</h2><ul class="songs">${others.map((l) => `<li class="song-item"><a href="#/setlist/${l.id}"><div class="row between"><div class="song-title">${esc(setlistTitle(l))}</div>${l.date ? `<span class="keybadge">${esc(fmtDate(l.date))}</span>` : ''}</div><div class="song-meta">${tempTag(l)}${leaderTag(l)}<span>${l.item_count}곡</span></div></a></li>`).join('')}</ul>` : ''}
       ${search}
-      <div class="row"><a class="btn" href="#/setlists">콘티 전체</a><a class="btn" href="#/songs">곡 목록</a></div>`;
+      <div class="row"><a class="btn" href="#/setlists">콘티 전체</a>${lockBtn('leader', '⚡ 빠른 콘티', '#/setlist/new?quick=1', '')}<a class="btn" href="#/songs">곡 목록</a></div>`;
     bindSearch();
   }
 
@@ -1867,29 +1965,75 @@
       $app.innerHTML = `<h1>콘티</h1>${noteBox('<p>콘티는 팀 단위로 공유됩니다. 팀에 가입하면 이 팀의 콘티를 볼 수 있어요.</p><a class="btn primary" href="#/team">팀 가입하기</a>')}`;
       return;
     }
-    const { setlists, canEdit } = await api('/setlists');
-    $app.innerHTML = `
-      ${teamChip()}
-      <div class="row between"><h1>콘티</h1>${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary')}</div>
-      ${
-        setlists.length
-          ? `<ul class="songs">${setlists
-              .map(
-                (l) => `<li class="song-item"><a href="#/setlist/${l.id}">
-                  <div class="song-title">${esc(l.title)}</div>
-                  <div class="song-meta">${l.date ? `<span class="keybadge">${esc(fmtDate(l.date))}</span>` : ''}<span>${l.item_count}곡</span></div>
-                </a></li>`
-              )
-              .join('')}</ul>`
-          : `<p class="muted center">아직 콘티가 없습니다.${canEdit ? ' “+ 새 콘티”로 만들어 보세요.' : ''}</p>`
+    const [{ setlists, canEdit }, opts] = await Promise.all([api('/setlists'), api('/team/options').catch(() => ({ services: [] }))]);
+    let services = opts.services || [];
+    let sel = ls.get('ews_sl_svc', ''); // '' 전체 · 'none' 미분류 · 예배 종류 번호
+    let pickMode = false;
+    const picked = new Set();
+    const tmpCount = () => setlists.filter((l) => l.is_temp).length;
+    const draw = () => {
+      if (sel && sel !== 'none' && !services.some((x) => String(x.id) === sel)) sel = '';
+      const hasNone = setlists.some((l) => !l.service_id);
+      const shown = setlists.filter((l) => (sel === '' ? true : sel === 'none' ? !l.service_id : String(l.service_id) === sel));
+      const chip = (v, text, n) => `<button type="button" class="chip ${sel === v ? 'on' : ''}" data-svc="${v}">${esc(text)}${n !== undefined ? ` <small>${n}</small>` : ''}</button>`;
+      const svcRow = services.length || canEdit
+        ? `<div class="chips svc-row">${chip('', '전체', setlists.length)}${services.map((x) => chip(String(x.id), x.name, setlists.filter((l) => l.service_id === x.id).length)).join('')}${hasNone && services.length ? chip('none', '미분류', setlists.filter((l) => !l.service_id).length) : ''}${canEdit ? '<button type="button" class="chip" id="svcmgr" aria-label="예배 종류 관리">⚙ 종류 관리</button>' : ''}</div>`
+        : '';
+      const row = (l) => {
+        const inner = `<div class="row between"><div class="song-title">${esc(setlistTitle(l))}</div>${l.date ? `<span class="keybadge">${esc(fmtDate(l.date))}</span>` : ''}</div>
+          <div class="song-meta">${tempTag(l)}${l.service_name && (l.title || '').trim() ? `<span class="tag">${esc(l.service_name)}</span>` : ''}${leaderTag(l)}<span>${l.item_count}곡</span></div>`;
+        return pickMode
+          ? `<li class="song-item"><label class="pickrow"><input type="checkbox" data-pk="${l.id}" ${picked.has(l.id) ? 'checked' : ''}><span class="grow">${inner}</span></label></li>`
+          : `<li class="song-item"><a href="#/setlist/${l.id}">${inner}</a></li>`;
+      };
+      $app.innerHTML = `
+        ${teamChip()}
+        <div class="row between"><h1>콘티</h1>${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary')}</div>
+        <div class="row" style="margin-bottom:6px">${lockBtn('leader', '⚡ 빠른 콘티', '#/setlist/new?quick=1', '')}${canEdit && setlists.length ? `<button type="button" class="btn" id="pickmode">${pickMode ? '정리 끝' : '여러 개 정리'}</button>` : ''}</div>
+        ${svcRow}
+        ${pickMode ? `<div class="row card" style="padding:8px 10px;margin:6px 0"><span class="small grow">${picked.size}개 선택</span>${tmpCount() ? '<button type="button" class="btn small" id="picktmp">⚡ 임시 모두 선택</button>' : ''}<button type="button" class="btn small danger" id="pickdel" ${picked.size ? '' : 'disabled'}>삭제</button></div>` : ''}
+        ${shown.length ? `<ul class="songs">${shown.map(row).join('')}</ul>` : `<p class="muted center">${setlists.length ? '이 종류의 콘티가 없습니다.' : '아직 콘티가 없습니다.'}${canEdit && !setlists.length ? ' “+ 새 콘티”로 만들어 보세요.' : ''}</p>`}`;
+      const mgr = el('svcmgr');
+      if (mgr) mgr.onclick = () => manageOptions('service', async () => { services = (await api('/team/options')).services; draw(); });
+      const pm = el('pickmode');
+      if (pm) pm.onclick = () => { pickMode = !pickMode; picked.clear(); draw(); };
+      const pt = el('picktmp');
+      if (pt) pt.onclick = () => { setlists.filter((l) => l.is_temp).forEach((l) => picked.add(l.id)); draw(); };
+      const pd = el('pickdel');
+      if (pd) pd.onclick = async () => {
+        if (!picked.size || !confirm(`선택한 콘티 ${picked.size}개를 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) return;
+        try {
+          await api('/setlists/delete', { method: 'POST', body: { ids: [...picked] } });
+          for (let i = setlists.length - 1; i >= 0; i--) if (picked.has(setlists[i].id)) setlists.splice(i, 1);
+          toast('삭제했습니다.');
+          picked.clear();
+          pickMode = false;
+          draw();
+        } catch (e) { toast(e.message); }
+      };
+    };
+    draw();
+    $app.onclick = (ev) => {
+      const c = ev.target.closest && ev.target.closest('button[data-svc]');
+      if (c) { sel = c.dataset.svc; ls.set('ews_sl_svc', sel); draw(); return; }
+      const k = ev.target.closest && ev.target.closest('input[data-pk]');
+      if (k) {
+        const id = +k.dataset.pk;
+        if (k.checked) picked.add(id); else picked.delete(id);
+        const y = window.scrollY;
+        draw();
+        window.scrollTo(0, y);
       }
-      `;
+    };
   }
 
   // ---------- 콘티 보기 ----------
   async function viewSetlist(id) {
     const { setlist: s, canEdit } = await api('/setlists/' + id);
-    document.title = s.title + ' · Everyday Worship Songbook';
+    const shownTitle = setlistTitle(s);
+    document.title = shownTitle + ' · Everyday Worship Songbook';
+    // 내보내기(카톡 텍스트·표지·PDF)에는 날짜가 따로 들어가므로, 제목이 비었으면 예배 종류 이름만 쓴다
+    const exp = { ...s, title: (s.title || '').trim() || s.service_name || '' };
     const rows = s.items.map((it, i) => {
       const key = it.key || it.original_key || '';
       const imageOnly = it.view === 'image' || (!it.has_chords && it.file_count > 0);
@@ -1909,13 +2053,28 @@
       </a></li>`;
     });
     $app.innerHTML = `
-      <div class="row between"><a href="#/setlists" class="small">← 콘티 목록</a>${lockBtn('leader', '편집', '#/setlist/' + id + '/edit', 'small')}</div>
-      <h1>${esc(s.title)}</h1>
-      <div class="song-meta" style="margin-bottom:10px">${s.date ? `<span class="keybadge">${esc(fmtDate(s.date))}</span>` : ''}<span>${s.items.length}곡</span></div>
+      <div class="row between"><a href="#/setlists" class="small">← 콘티 목록</a><span class="row" style="gap:6px">${lockBtn('leader', '복사', '#/setlist/new?copy=' + id, 'small')}${lockBtn('leader', '편집', '#/setlist/' + id + '/edit', 'small')}</span></div>
+      <h1>${esc(shownTitle)}</h1>
+      <div class="song-meta" style="margin-bottom:10px">${tempTag(s)}${s.date ? `<span class="keybadge">${esc(fmtDate(s.date))}</span>` : ''}${s.service_name && (s.title || '').trim() ? `<span class="tag">${esc(s.service_name)}</span>` : ''}${leaderTag(s)}<span>${s.items.length}곡</span></div>
+      ${s.is_temp && canEdit ? '<div class="card tempbar"><span class="small grow">⚡ 급하게 만든 임시 콘티예요. 정리가 끝나면 확정해 두세요.</span><button class="btn small primary" id="confirmtmp" type="button">확정</button></div>' : ''}
       ${s.memo ? `<div class="memo" style="margin-bottom:12px">${esc(s.memo)}</div>` : ''}
       ${rows.length ? `<div class="row actions"><a class="btn primary big grow" href="#/play/${id}">▶ 연주 모드</a><button class="btn big" id="share" type="button">공유·저장</button></div>` : ''}
       ${rows.length ? `<ul class="songs">${rows.join('')}</ul>` : '<p class="muted">아직 곡이 없습니다.</p>'}
       <p class="muted small">곡을 누르면 이 콘티의 키로 악보가 열립니다.</p>`;
+
+    const $ct = document.getElementById('confirmtmp');
+    if ($ct) $ct.onclick = async () => {
+      $ct.disabled = true;
+      try {
+        await api('/setlists/' + id + '/confirm', { method: 'POST' });
+        toast('확정했습니다.');
+        route();
+      } catch (e) {
+        if (e.status === 403) await loadMe();
+        toast(e.message);
+        $ct.disabled = false;
+      }
+    };
 
     // ----- 공유·저장 창: 카톡용 텍스트 · 표지 이미지 · PDF · 오프라인 준비 -----
     const $share = document.getElementById('share');
@@ -1937,10 +2096,10 @@
       };
 
     
-    const baseName = [s.date, (s.title || '콘티').trim()].filter(Boolean).join(' ').replace(/[\\/:*?"<>|]/g, '').slice(0, 60) || '콘티';
+    const baseName = [s.date, (exp.title || '콘티').trim()].filter(Boolean).join(' ').replace(/[\\/:*?"<>|]/g, '').slice(0, 60) || '콘티';
     const $xt = sh.q('#x-text');
     if ($xt) $xt.onclick = async () => {
-      const text = SongForm.kakaoText(s);
+      const text = SongForm.kakaoText(exp);
       try {
         await navigator.clipboard.writeText(text);
         sh.close();
@@ -1969,13 +2128,13 @@
     };
     const $xp = sh.q('#x-png');
     if ($xp) $xp.onclick = () => guarded($xp, '이미지', async () => {
-      const blob = await Exporter.coverPng(s);
+      const blob = await Exporter.coverPng(exp);
       sh.close();
       showFileResult(blob, baseName + '.png', 'png');
     });
     const $xd = sh.q('#x-pdf');
     if ($xd) $xd.onclick = () => guarded($xd, 'PDF', async (setLabel) => {
-      const r = await Exporter.buildPdf(s, {
+      const r = await Exporter.buildPdf(exp, {
         getSong: async (sid) => (await api('/songs/' + sid)).song,
         getBytes: async (url) => {
           const res = await fetch(url);
@@ -2585,53 +2744,141 @@
   }
 
   // ---------- 콘티 편집 (팀장) ----------
-  async function viewSetlistEdit(id) {
+  async function viewSetlistEdit(id, q) {
     if (!me.team || !me.team.isLeader) {
       $app.innerHTML = noteBox('<p>콘티는 팀장만 만들고 고칠 수 있습니다.</p>' + lockBtn('leader', '팀장 PIN 입력', location.hash || '#/setlists', 'primary') + ' <a class="btn" href="#/setlists">콘티 목록</a>');
       return;
     }
-    const [songRes, listRes, tagRes] = await Promise.all([api('/songs'), id ? api('/setlists/' + id) : null, api('/tags')]);
+    q = q || new URLSearchParams();
+    const quick = !id && q.get('quick') === '1'; // 빠른 콘티: 곡부터 고르고, 정보는 접어 둔다
+    const copyId = !id ? parseInt(q.get('copy') || '', 10) : NaN; // 지난 콘티를 복사해서 새로 만들기
+    const srcId = id || (Number.isInteger(copyId) ? copyId : null);
+    const [songRes, listRes, tagRes, optRes, allLists] = await Promise.all([
+      api('/songs'),
+      srcId ? api('/setlists/' + srcId) : null,
+      api('/tags'),
+      api('/team/options').catch(() => ({ services: [], leaders: [] })),
+      id ? null : api('/setlists').catch(() => ({ setlists: [] })),
+    ]);
     const songs = songRes.songs;
+    let services = optRes.services || [];
+    let leaderOpts = optRes.leaders || [];
     const pickGroups = groupTags(tagRes);
     const pickF = SongFilter.newState(); // 곡 추가할 때 주제·키·악보 형식으로 좁히기 (곡 목록과 같은 규칙)
     const pickKeys = SongFilter.keyChips(songs);
     const byId = Object.fromEntries(songs.map((s) => [s.id, s]));
-    const data = id
+    const itemsOf = (setlist) => setlist.items.filter((it) => byId[it.song_id]).map((it) => ({ song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view }));
+    const data = listRes
       ? {
-          date: listRes.setlist.date || '',
+          date: id ? listRes.setlist.date || '' : nextSunday(), // 복사하면 날짜만 다음 일요일로 바뀐다
           title: listRes.setlist.title,
           memo: listRes.setlist.memo,
-          items: listRes.setlist.items.filter((it) => byId[it.song_id]).map((it) => ({ song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view })),
+          service_id: listRes.setlist.service_id || '',
+          leaders: SongForm.leaderList(listRes.setlist.leaders),
+          is_temp: id ? !!listRes.setlist.is_temp : false,
+          items: itemsOf(listRes.setlist),
         }
-      : { date: nextSunday(), title: '', memo: '', items: [] };
-    document.title = (id ? '콘티 편집' : '새 콘티') + ' · Everyday Worship Songbook';
+      : { date: quick ? todayKst() : nextSunday(), title: '', memo: '', service_id: '', leaders: [], is_temp: quick, items: [] };
+    document.title = (id ? '콘티 편집' : quick ? '빠른 콘티' : '새 콘티') + ' · Everyday Worship Songbook';
     // 송폼 탭 입력(6차): formSel = 카드별로 선택된 구간 번호, lastForms = 곡별 "지난번 송폼"
     let formSel = {};
     const lastForms = {};
+    const backHref = id ? '#/setlist/' + id : '#/setlists';
+    const heading = id ? '콘티 편집' : quick ? '⚡ 빠른 콘티' : copyId ? '콘티 복사' : '새 콘티';
 
-    $app.innerHTML = `
-      <div class="row between"><a href="${id ? '#/setlist/' + id : '#/setlists'}" class="small">← ${id ? '콘티 보기' : '콘티 목록'}</a><h2 style="margin:0">${id ? '콘티 편집' : '새 콘티'}</h2></div>
-      <div class="card">
-        <div class="grid2">
-          <div><label for="sd" style="margin-top:0">날짜</label><input id="sd" type="date" value="${esc(data.date)}"></div>
-          <div><label for="st" style="margin-top:0">제목</label><input id="st" type="text" maxlength="100" placeholder="예: 주일예배" value="${esc(data.title)}"></div>
-        </div>
-        <label for="sm">메모</label><textarea id="sm" rows="2" placeholder="예: 입례 찬양은 2절까지">${esc(data.memo)}</textarea>
-      </div>
-      <h2>곡 순서</h2>
-      <div id="items"></div>
-      <div class="card">
+    // 곡 추가 칸 (빠른 콘티에서는 맨 위)
+    const recentSongs = songs.filter((x) => x.last_used).sort((a, b) => (b.last_used || '').localeCompare(a.last_used || '')).slice(0, 10);
+    const prevLists = ((allLists && allLists.setlists) || []).filter((l) => l.item_count > 0).slice(0, 8);
+    const pickCard = `
+      <div class="card" id="pickcard">
         <h2>곡 추가</h2>
+        ${!id && prevLists.length ? `<select id="prevsl" aria-label="지난 콘티에서 곡 가져오기"><option value="">↺ 지난 콘티의 곡 전부 가져오기…</option>${prevLists.map((l) => `<option value="${l.id}">${esc(setlistTitle(l))}${l.date ? ' · ' + esc(mmdd(l.date)) : ''} (${l.item_count}곡)</option>`).join('')}</select>` : ''}
+        ${recentSongs.length ? `<div class="small muted" style="margin:8px 0 2px">최근 부른 곡</div><div class="chips" id="recentchips">${recentSongs.map((x) => `<button type="button" class="chip" data-add="${x.id}">${esc(x.title)}</button>`).join('')}</div>` : ''}
         <input type="search" id="sq" placeholder="제목 · 아티스트 · 태그로 찾기">
         <details class="filter" id="pfilter"><summary id="pfsum">분류·키로 찾기</summary><div id="pchips"></div></details>
         <div id="res" class="pick-list"></div>
-      </div>
+      </div>`;
+    const itemsCard = `<h2>곡 순서</h2><div id="items"></div>`;
+    const infoCard = `
+      <details class="card infocard" id="info" ${quick ? '' : 'open'}>
+        <summary id="infosum">정보</summary>
+        <div class="grid2">
+          <div><label for="sd" style="margin-top:0">날짜</label><input id="sd" type="date" value="${esc(data.date)}"></div>
+          <div><label for="ssvc" style="margin-top:0">예배 종류</label><select id="ssvc"></select></div>
+        </div>
+        <div class="small"><button type="button" class="linkbtn" id="svcmgr2">예배 종류 관리</button></div>
+        <label for="st">제목 <span class="muted small">(비워도 돼요)</span></label><input id="st" type="text" maxlength="100" placeholder="비우면 예배 종류와 날짜로 보여 줘요" value="${esc(data.title)}">
+        <label>인도자</label>
+        <div class="chips" id="lchips"></div>
+        <form id="ladd" class="row"><input id="lname" type="text" maxlength="20" placeholder="+ 새 인도자 이름" enterkeyhint="done" aria-label="새 인도자 이름"><button class="btn small">추가</button></form>
+        <div class="small"><button type="button" class="linkbtn" id="lmgr">인도자 목록 관리</button></div>
+        <label for="sm">메모</label><textarea id="sm" rows="2" placeholder="예: 입례 찬양은 2절까지">${esc(data.memo)}</textarea>
+        <label class="check"><input type="checkbox" id="stemp" ${data.is_temp ? 'checked' : ''}> ⚡ 임시 콘티 <span class="muted small">급하게 만든 것 — 나중에 정리하고 확정해요</span></label>
+      </details>`;
+
+    $app.innerHTML = `
+      <div class="row between"><a href="${backHref}" class="small">← ${id ? '콘티 보기' : '콘티 목록'}</a><h2 style="margin:0">${heading}</h2></div>
+      ${quick ? pickCard + itemsCard + infoCard : infoCard + itemsCard + pickCard}
       <p class="error" id="err"></p>
-      <div class="row">
+      <div class="row savebar">
         <button class="btn primary" id="save">저장</button>
-        <a class="btn" href="${id ? '#/setlist/' + id : '#/setlists'}">취소</a>
+        <button class="btn" id="saveplay" type="button">저장하고 ▶ 연주</button>
+        <a class="btn" href="${backHref}">취소</a>
         ${id ? '<button class="btn danger" id="del" style="margin-left:auto">삭제</button>' : ''}
       </div>`;
+
+    // ----- 정보 칸: 예배 종류 · 인도자 -----
+    const svcName = () => { const o = services.find((x) => String(x.id) === String(data.service_id)); return o ? o.name : ''; };
+    const drawInfoSum = () => {
+      const d = el('sd').value;
+      const parts = [d ? fmtDate(d) : '날짜 없음', svcName(), data.leaders.length ? '🎤 ' + data.leaders.join(', ') : '', data.is_temp ? '⚡임시' : ''].filter(Boolean);
+      el('infosum').textContent = '정보 · ' + parts.join(' · ');
+    };
+    const drawService = () => {
+      if (data.service_id && !services.some((x) => String(x.id) === String(data.service_id))) data.service_id = '';
+      el('ssvc').innerHTML = `<option value="">(미분류)</option>${services.map((x) => `<option value="${x.id}" ${String(x.id) === String(data.service_id) ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}`;
+      drawInfoSum();
+    };
+    const drawLeaders = () => {
+      const names = [...leaderOpts.map((o) => o.name), ...data.leaders.filter((n) => !leaderOpts.some((o) => o.name === n))];
+      el('lchips').innerHTML = names.length ? names.map((n) => `<button type="button" class="chip ${data.leaders.includes(n) ? 'on' : ''}" data-ld="${esc(n)}">${esc(n)}</button>`).join('') : '<span class="muted small">아직 인도자가 없어요. 아래에서 이름을 추가해 보세요.</span>';
+      drawInfoSum();
+    };
+    drawService();
+    drawLeaders();
+    el('ssvc').onchange = () => { data.service_id = el('ssvc').value; drawInfoSum(); };
+    el('sd').onchange = drawInfoSum;
+    el('stemp').onchange = () => { data.is_temp = el('stemp').checked; drawInfoSum(); };
+    el('lchips').onclick = (ev) => {
+      const b = ev.target.closest && ev.target.closest('button[data-ld]');
+      if (!b) return;
+      const n = b.dataset.ld;
+      data.leaders = data.leaders.includes(n) ? data.leaders.filter((x) => x !== n) : [...data.leaders, n];
+      drawLeaders();
+    };
+    el('ladd').onsubmit = async (ev) => {
+      ev.preventDefault();
+      const n = el('lname').value.replace(/[,\n]/g, ' ').trim().slice(0, 20);
+      if (!n) return;
+      try {
+        if (!leaderOpts.some((o) => o.name === n)) {
+          await api('/team/options', { method: 'POST', body: { kind: 'leader', name: n } });
+          leaderOpts = (await api('/team/options')).leaders;
+        }
+        if (!data.leaders.includes(n)) data.leaders.push(n);
+        el('lname').value = '';
+        drawLeaders();
+      } catch (e) { toast(e.message); }
+    };
+    el('svcmgr2').onclick = () => manageOptions('service', async () => { services = (await api('/team/options')).services; drawService(); });
+    el('lmgr').onclick = () => manageOptions('leader', async () => {
+      const before = leaderOpts.map((o) => o.name);
+      leaderOpts = (await api('/team/options')).leaders;
+      // 이름이 바뀌거나 지워진 인도자는 이 콘티의 선택에서도 정리한다
+      const now = leaderOpts.map((o) => o.name);
+      data.leaders = data.leaders.filter((n) => now.includes(n) || !before.includes(n));
+      drawLeaders();
+    });
 
     const keyOptionsFor = (s, current) => {
       const ok = Chord.parseKey(s.original_key);
@@ -2846,10 +3093,11 @@
           .join('') || '<p class="muted">찾는 곡이 없습니다.</p>';
     }
     el('sq').oninput = drawResults;
-    el('res').onclick = (ev) => {
+    const addSong = (ev) => {
       const b = ev.target.closest && ev.target.closest('button[data-add]');
       if (!b) return;
       const s = byId[+b.dataset.add];
+      if (!s) return;
       if (data.items.length >= 60) return toast('콘티에는 곡을 60개까지 넣을 수 있습니다.');
       // 기본 키: 우리 팀 기본 키 ▶ 원래 키
       data.items.push({ song_id: s.id, key: s.team_key || s.original_key || '', form: '', memo: '', view: 'auto' });
@@ -2857,34 +3105,63 @@
       drawResults();
       toast(`"${s.title}" 추가`);
     };
+    el('res').onclick = addSong;
+    if (el('recentchips')) el('recentchips').onclick = addSong;
+    // 지난 콘티의 곡을 통째로 가져오기 (키·송폼·메모까지)
+    if (el('prevsl'))
+      el('prevsl').onchange = async () => {
+        const v = el('prevsl').value;
+        if (!v) return;
+        el('prevsl').disabled = true;
+        try {
+          const r = await api('/setlists/' + v);
+          const add = itemsOf(r.setlist);
+          const room = 60 - data.items.length;
+          data.items.push(...add.slice(0, Math.max(0, room)));
+          formSel = {};
+          drawItems();
+          drawResults();
+          toast(add.length > room ? `곡 ${Math.max(0, room)}개만 가져왔어요. (최대 60곡)` : `${add.length}곡을 가져왔어요.`);
+        } catch (e) { toast(e.message); }
+        el('prevsl').value = '';
+        el('prevsl').disabled = false;
+      };
     drawItems();
     drawResults();
 
-    el('save').onclick = async () => {
+    const doSave = async (play) => {
       el('err').textContent = '';
+      if (play && !data.items.length) return toast('곡을 먼저 넣어 주세요.');
       const body = {
         date: el('sd').value,
         title: el('st').value,
         memo: el('sm').value,
+        service_id: data.service_id ? +data.service_id : null,
+        leaders: data.leaders,
+        is_temp: data.is_temp,
         items: data.items.map((it) => {
           return { song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view };
         }),
       };
       el('save').disabled = true;
+      el('saveplay').disabled = true;
       try {
         const r = id ? await api('/setlists/' + id, { method: 'PUT', body }) : await api('/setlists', { method: 'POST', body });
         toast('저장했습니다.');
-        location.hash = '#/setlist/' + r.id;
+        location.hash = (play ? '#/play/' : '#/setlist/') + r.id;
       } catch (e) {
         if (e.status === 403) await loadMe();
         el('err').textContent = e.message;
       } finally {
         el('save').disabled = false;
+        el('saveplay').disabled = false;
       }
     };
+    el('save').onclick = () => doSave(false);
+    el('saveplay').onclick = () => doSave(true);
     if (id)
       el('del').onclick = async () => {
-        if (!confirm(`"${data.title}" 콘티를 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) return;
+        if (!confirm(`"${setlistTitle({ title: data.title, date: data.date, service_name: svcName() })}" 콘티를 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) return;
         try {
           await api('/setlists/' + id, { method: 'DELETE' });
           toast('삭제했습니다.');

@@ -185,6 +185,16 @@ const SCHEMA = [
     key TEXT NOT NULL,
     PRIMARY KEY (team_id, song_id)
   )`,
+  // 팀별 예배 종류(kind='service': 주일오전예배 …, extra=기본 요일 0~6)와 인도자 목록(kind='leader')
+  `CREATE TABLE IF NOT EXISTS team_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    extra TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_team_options_team ON team_options(team_id, kind)`,
   // 앱 설정값(초대코드를 관리자 화면에서 바꾸면 여기에 저장)
   `CREATE TABLE IF NOT EXISTS settings (
     k TEXT PRIMARY KEY,
@@ -216,6 +226,10 @@ async function ensureSchema(db) {
   // 원곡이 영어 등일 때 적어 두는 원제 / 이미지·PDF 악보 곡을 위한 "검색용 가사(후렴 등)"
   await ensureColumn(db, 'songs', 'orig_title', `orig_title TEXT NOT NULL DEFAULT ''`);
   await ensureColumn(db, 'songs', 'lyrics_extra', `lyrics_extra TEXT NOT NULL DEFAULT ''`);
+  // 11차: 콘티의 예배 종류 / 인도자(이름 글자, 쉼표로 구분) / 임시(급하게 만든) 표시
+  await ensureColumn(db, 'setlists', 'service_id', `service_id INTEGER`);
+  await ensureColumn(db, 'setlists', 'leaders', `leaders TEXT NOT NULL DEFAULT ''`);
+  await ensureColumn(db, 'setlists', 'is_temp', `is_temp INTEGER NOT NULL DEFAULT 0`);
   await addMidTempoOnce(db);
   schemaReady = true;
 }
@@ -539,9 +553,17 @@ const VIEWS = ['auto', 'chord', 'image'];
 async function cleanSetlist(db, body) {
   const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
   const date = typeof body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : null;
-  let title = str(body.title, 100);
-  if (!title && !date) throw new HttpError(400, '콘티 제목이나 날짜를 입력해 주세요.');
-  if (!title) title = `${date} 콘티`;
+  // 제목은 비워도 된다. 화면에서 "제목 → 예배 종류 + 날짜 → 날짜 콘티" 순으로 대신 보여 준다.
+  const title = str(body.title, 100);
+  // 인도자: 이름 글자 목록(최대 8명, 한 명당 20자). 쉼표로 이어 저장한다.
+  const rawLeaders = Array.isArray(body.leaders) ? body.leaders : typeof body.leaders === 'string' ? body.leaders.split(',') : [];
+  const leaderNames = [];
+  for (const n of rawLeaders) {
+    const nm = typeof n === 'string' ? n.replace(/[,\n]/g, ' ').trim().slice(0, 20) : '';
+    if (nm && !leaderNames.includes(nm)) leaderNames.push(nm);
+  }
+  if (leaderNames.length > 8) throw new HttpError(400, '인도자는 8명까지 지정할 수 있습니다.');
+  const sid = parseInt(body.service_id, 10);
   const rawItems = Array.isArray(body.items) ? body.items : [];
   if (rawItems.length > MAX_SETLIST_ITEMS) throw new HttpError(400, `콘티에는 곡을 ${MAX_SETLIST_ITEMS}개까지 넣을 수 있습니다.`);
   const items = rawItems.map((it) => {
@@ -556,7 +578,13 @@ async function cleanSetlist(db, body) {
     const { results } = await db.prepare(`SELECT id FROM songs WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
     if (results.length !== ids.length) throw new HttpError(400, '삭제된 곡이 콘티에 들어 있습니다. 화면을 새로 고친 뒤 다시 시도해 주세요.');
   }
-  return { date, title, memo: str(body.memo, 2000), items };
+  return { date, title, memo: str(body.memo, 2000), items, leaders: leaderNames.join(','), service_id: Number.isInteger(sid) ? sid : null, is_temp: body.is_temp ? 1 : 0 };
+}
+// 예배 종류는 이 팀 것만 쓸 수 있다. 없는 번호면 "미분류"(NULL)로 저장한다.
+async function checkService(db, teamId, serviceId) {
+  if (serviceId === null) return null;
+  const row = await db.prepare(`SELECT id FROM team_options WHERE id=? AND team_id=? AND kind='service'`).bind(serviceId, teamId).first();
+  return row ? serviceId : null;
 }
 const itemInserts = (db, setlistId, items) =>
   items.map((it, i) =>
@@ -747,6 +775,7 @@ export async function onRequest({ request, env }) {
             db.prepare('DELETE FROM setlist_items WHERE setlist_id IN (SELECT id FROM setlists WHERE team_id=?)').bind(tid),
             db.prepare('DELETE FROM setlists WHERE team_id=?').bind(tid),
             db.prepare('DELETE FROM team_song_keys WHERE team_id=?').bind(tid),
+            db.prepare('DELETE FROM team_options WHERE team_id=?').bind(tid),
             db.prepare('UPDATE song_versions SET edited_by_team=NULL WHERE edited_by_team=?').bind(tid),
             db.prepare('DELETE FROM teams WHERE id=?').bind(tid),
           ]);
@@ -846,6 +875,74 @@ export async function onRequest({ request, env }) {
         for (const r of results) if (!(r.song_id in forms)) forms[r.song_id] = r.form;
         return json({ forms });
       }
+      // 예배 종류·인도자 목록 (열람: 팀원, 편집: 팀장)
+      if (parts[1] === 'options') {
+        const oid = parts[2] ? parseInt(parts[2], 10) : null;
+        if (parts[2] && !Number.isInteger(oid)) throw new HttpError(404, '항목을 찾을 수 없습니다.');
+        if (!oid && method === 'GET') {
+          const { results } = await db.prepare('SELECT id,kind,name,extra,position FROM team_options WHERE team_id=? ORDER BY position, id').bind(t.id).all();
+          return json({ services: results.filter((r) => r.kind === 'service'), leaders: results.filter((r) => r.kind === 'leader'), canEdit: ctx.leader });
+        }
+        if (!oid && method === 'POST') {
+          requireLeader(ctx);
+          const b = await readBody();
+          const kind = b.kind === 'leader' ? 'leader' : b.kind === 'service' ? 'service' : '';
+          if (!kind) throw new HttpError(400, '종류가 올바르지 않습니다.');
+          const names = (Array.isArray(b.names) ? b.names : [b.name]).map((n) => (typeof n === 'string' ? n.replace(/[,\n]/g, ' ').trim().slice(0, 20) : '')).filter(Boolean);
+          if (!names.length) throw new HttpError(400, '이름을 입력해 주세요.');
+          const extra = kind === 'service' && /^[0-6]$/.test(String(b.extra ?? '')) ? String(b.extra) : '';
+          const { results: ex } = await db.prepare('SELECT name,position FROM team_options WHERE team_id=? AND kind=?').bind(t.id, kind).all();
+          if (ex.length + names.length > 40) throw new HttpError(400, '한 종류에 40개까지 등록할 수 있습니다.');
+          let pos = ex.reduce((m, r) => Math.max(m, r.position), 0);
+          const have = new Set(ex.map((r) => r.name));
+          const stmts = [];
+          for (const nm of names) {
+            if (have.has(nm)) continue;
+            have.add(nm);
+            stmts.push(db.prepare('INSERT INTO team_options (team_id,kind,name,extra,position) VALUES (?,?,?,?,?)').bind(t.id, kind, nm, kind === 'service' && names.length === 1 ? extra : '', ++pos));
+          }
+          if (!stmts.length) throw new HttpError(409, '이미 있는 이름입니다.');
+          await db.batch(stmts);
+          return json({ ok: true }, 201);
+        }
+        if (oid) {
+          const opt = await db.prepare('SELECT * FROM team_options WHERE id=? AND team_id=?').bind(oid, t.id).first();
+          if (!opt) throw new HttpError(404, '항목을 찾을 수 없습니다.');
+          if (method === 'PUT') {
+            requireLeader(ctx);
+            const b = await readBody();
+            const name = typeof b.name === 'string' ? b.name.replace(/[,\n]/g, ' ').trim().slice(0, 20) : opt.name;
+            if (!name) throw new HttpError(400, '이름을 입력해 주세요.');
+            const dup = await db.prepare('SELECT id FROM team_options WHERE team_id=? AND kind=? AND name=? AND id<>?').bind(t.id, opt.kind, name, oid).first();
+            if (dup) throw new HttpError(409, '이미 있는 이름입니다.');
+            const extra = opt.kind === 'service' ? (/^[0-6]$/.test(String(b.extra ?? '')) ? String(b.extra) : b.extra === '' ? '' : opt.extra) : '';
+            const position = Number.isInteger(b.position) ? b.position : opt.position;
+            const stmts = [db.prepare('UPDATE team_options SET name=?,extra=?,position=? WHERE id=?').bind(name, extra, position, oid)];
+            await db.batch(stmts);
+            // 인도자 이름을 고치면 이 팀의 기존 콘티에 적힌 이름도 같이 바꾼다
+            if (opt.kind === 'leader' && name !== opt.name) {
+              const { results: ls } = await db.prepare(`SELECT id,leaders FROM setlists WHERE team_id=? AND leaders <> ''`).bind(t.id).all();
+              const up = [];
+              for (const l of ls) {
+                const arr = l.leaders.split(',');
+                if (!arr.includes(opt.name)) continue;
+                const next = [...new Set(arr.map((x) => (x === opt.name ? name : x)))];
+                up.push(db.prepare('UPDATE setlists SET leaders=? WHERE id=?').bind(next.join(','), l.id));
+              }
+              if (up.length) await db.batch(up);
+            }
+            return json({ ok: true });
+          }
+          if (method === 'DELETE') {
+            requireLeader(ctx);
+            const stmts = [db.prepare('DELETE FROM team_options WHERE id=?').bind(oid)];
+            // 예배 종류를 지우면 그 콘티들은 "미분류"로 남는다. 인도자 이름은 콘티에 글자로 남아 있다.
+            if (opt.kind === 'service') stmts.push(db.prepare('UPDATE setlists SET service_id=NULL WHERE service_id=? AND team_id=?').bind(oid, t.id));
+            await db.batch(stmts);
+            return json({ ok: true });
+          }
+        }
+      }
       // 곡별 "우리 팀 기본 키"
       if (parts[1] === 'keys' && parts[2] && method === 'PUT') {
         requireLeader(ctx);
@@ -869,13 +966,27 @@ export async function onRequest({ request, env }) {
     if (parts[0] === 'setlists') {
       requireTeam(ctx);
       const team = ctx.team;
+      // 여러 콘티 한 번에 삭제 (임시 콘티 정리용)
+      if (parts[1] === 'delete' && method === 'POST') {
+        requireLeader(ctx);
+        const b = await readBody();
+        const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map((v) => parseInt(v, 10)).filter(Number.isInteger))].slice(0, 100);
+        if (!ids.length) throw new HttpError(400, '삭제할 콘티를 골라 주세요.');
+        const mine = (await db.prepare(`SELECT id FROM setlists WHERE team_id=? AND id IN (${ids.map(() => '?').join(',')})`).bind(team.id, ...ids).all()).results.map((r) => r.id);
+        if (mine.length) {
+          const ph = mine.map(() => '?').join(',');
+          await db.batch([db.prepare(`DELETE FROM setlist_items WHERE setlist_id IN (${ph})`).bind(...mine), db.prepare(`DELETE FROM setlists WHERE id IN (${ph})`).bind(...mine)]);
+        }
+        return json({ ok: true, deleted: mine.length });
+      }
       const lid = parts[1] ? parseInt(parts[1], 10) : null;
       if (parts[1] && !Number.isInteger(lid)) throw new HttpError(404, '콘티를 찾을 수 없습니다.');
 
       if (!lid && method === 'GET') {
         const { results } = await db
           .prepare(
-            `SELECT l.id,l.date,l.title,l.memo,
+            `SELECT l.id,l.date,l.title,l.memo,l.service_id,l.leaders,l.is_temp,
+              (SELECT o.name FROM team_options o WHERE o.id = l.service_id AND o.kind='service') AS service_name,
               (SELECT COUNT(*) FROM setlist_items i WHERE i.setlist_id = l.id) AS item_count
              FROM setlists l WHERE l.team_id=? ORDER BY COALESCE(l.date,'') DESC, l.id DESC`
           )
@@ -887,8 +998,9 @@ export async function onRequest({ request, env }) {
       if (!lid && method === 'POST') {
         requireLeader(ctx);
         const s = await cleanSetlist(db, await readBody());
+        const svc = await checkService(db, team.id, s.service_id);
         const now = nowIso();
-        const r = await db.prepare('INSERT INTO setlists (team_id,date,title,memo,created_at,updated_at) VALUES (?,?,?,?,?,?)').bind(team.id, s.date, s.title, s.memo, now, now).run();
+        const r = await db.prepare('INSERT INTO setlists (team_id,date,title,memo,service_id,leaders,is_temp,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)').bind(team.id, s.date, s.title, s.memo, svc, s.leaders, s.is_temp, now, now).run();
         const id = r.meta.last_row_id;
         if (s.items.length) await db.batch(itemInserts(db, id, s.items));
         return json({ id }, 201);
@@ -911,15 +1023,25 @@ export async function onRequest({ request, env }) {
           .all();
         const { results: tk } = await db.prepare('SELECT song_id,key FROM team_song_keys WHERE team_id=?').bind(team.id).all();
         const tkMap = Object.fromEntries(tk.map((r) => [r.song_id, r.key]));
+        const svc = list.service_id ? await db.prepare(`SELECT name FROM team_options WHERE id=? AND kind='service'`).bind(list.service_id).first() : null;
+        const svcName = svc ? svc.name : '';
         const items = results.map(({ chordpro, ...it }) => ({ ...it, title: it.title || '(삭제된 곡)', has_chords: /\S/.test(chordpro || ''), team_key: tkMap[it.song_id] || '' }));
-        return json({ setlist: { id: list.id, date: list.date, title: list.title, memo: list.memo, items }, canEdit: ctx.leader });
+        return json({ setlist: { id: list.id, date: list.date, title: list.title, memo: list.memo, service_id: list.service_id, service_name: svcName, leaders: list.leaders || '', is_temp: list.is_temp ? 1 : 0, items }, canEdit: ctx.leader });
+      }
+
+      // 임시 표시를 떼어 정식 콘티로 확정
+      if (lid && parts[2] === 'confirm' && method === 'POST') {
+        requireLeader(ctx);
+        await db.prepare('UPDATE setlists SET is_temp=0,updated_at=? WHERE id=?').bind(nowIso(), lid).run();
+        return json({ ok: true });
       }
 
       if (lid && method === 'PUT') {
         requireLeader(ctx);
         const s = await cleanSetlist(db, await readBody());
+        const svc = await checkService(db, team.id, s.service_id);
         await db.batch([
-          db.prepare('UPDATE setlists SET date=?,title=?,memo=?,updated_at=? WHERE id=?').bind(s.date, s.title, s.memo, nowIso(), lid),
+          db.prepare('UPDATE setlists SET date=?,title=?,memo=?,service_id=?,leaders=?,is_temp=?,updated_at=? WHERE id=?').bind(s.date, s.title, s.memo, svc, s.leaders, s.is_temp, nowIso(), lid),
           db.prepare('DELETE FROM setlist_items WHERE setlist_id=?').bind(lid),
           ...itemInserts(db, lid, s.items),
         ]);

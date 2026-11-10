@@ -411,3 +411,30 @@ main.wide, #app.wide { max-width: 1280px; }
 .play-body.play-ghost { position: absolute; left: 0; right: 0; top: 0; bottom: 0; z-index: 1; pointer-events: none; overflow-y: hidden; }
 .play-body.img.play-ghost { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) { .play-body, .play-body.play-ghost { transition: none !important; } }
+
+/* ===== 11차: 콘티 개편 (빠른 콘티 · 예배 종류 · 인도자) ===== */
+.who { font-size: 13px; color: var(--muted); }
+.tag.temp { background: #fff3cd; color: #7a5b00; border: 1px solid #f0d98a; font-weight: 700; }
+@media (prefers-color-scheme: dark) { .tag.temp { background: #4a3d12; color: #f5dc8a; border-color: #7a6420; } }
+.svc-row { margin: 6px 0; }
+.svc-row .chip small { opacity: .7; }
+.opt-list { list-style: none; margin: 8px 0; padding: 0; }
+.opt-list li { display: flex; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.opt-list li.muted { border-bottom: 0; }
+.linkbtn { background: none; border: 0; color: var(--brand); text-decoration: underline; padding: 6px 0; font-size: 14px; cursor: pointer; }
+.tempbar { display: flex; align-items: center; gap: 10px; background: #fff8e1; border-color: #f0d98a; padding: 8px 12px; }
+@media (prefers-color-scheme: dark) { .tempbar { background: #3a3110; border-color: #7a6420; } }
+.pickrow { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+.pickrow input[type=checkbox] { width: 22px; height: 22px; flex: none; }
+.infocard > summary { cursor: pointer; font-weight: 700; padding: 6px 0; min-height: 36px; }
+.infocard[open] > summary { margin-bottom: 6px; }
+label.check { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; }
+label.check input { width: 22px; height: 22px; flex: none; margin-top: 1px; }
+.savebar { position: sticky; bottom: calc(62px + env(safe-area-inset-bottom)); z-index: 12; background: var(--bg); padding: 8px 0; border-top: 1px solid var(--line); margin-top: 10px; }
+#prevsl { width: 100%; margin-bottom: 4px; }
+
+/* ===== 11차: 곡 편집 화면 정리 ===== */
+.editbar { position: sticky; top: calc(46px + env(safe-area-inset-top)); z-index: 8; display: flex; align-items: center; gap: 10px; background: var(--bg); padding: 6px 0; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
+.editbar h2 { margin: 0; flex: 1; font-size: 18px; text-align: center; }
+.moreinfo { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 6px; }
+.moreinfo > summary { cursor: pointer; font-weight: 700; min-height: 40px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

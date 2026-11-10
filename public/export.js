@@ -60,7 +60,9 @@
       sc.font = font(62 * k, 800);
       const tl = wrap(sc, name, cw);
       sc.font = font(30 * k, 400);
-      const ml = (s.memo || '').trim() ? wrap(sc, '※ ' + s.memo.trim().replace(/\n+/g, '  '), cw) : [];
+      const who = SongForm.leaderList(s.leaders);
+      const memoText = [who.length ? '🎤 인도: ' + who.join(', ') : '', (s.memo || '').trim() ? '※ ' + s.memo.trim().replace(/\n+/g, '  ') : ''].filter(Boolean).join('   ');
+      const ml = memoText ? wrap(sc, memoText, cw) : [];
       const h = (date ? 50 * k : 0) + tl.length * 76 * k + (ml.length ? 14 * k + ml.length * 42 * k : 0) + 40 * k;
       blocks.push({
         h,
