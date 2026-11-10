@@ -213,9 +213,21 @@
   }
 
   // 16차: 아이패드 홈 화면 앱에서 아래 메뉴 밑에 빈 띠가 생기는 문제 보정.
-  // 아래 메뉴는 화면 맨 아래에 붙는(fixed, bottom:0) 막대인데, 키보드·스크리블 도구 막대가 나타났다 사라지거나 화면을 돌린 뒤에
-  // 사파리가 "페이지가 보는 화면 높이"를 실제 보이는 높이보다 짧게 잘못 기억하면 막대가 그만큼 위에 떠서 밑에 배경이 비친다.
-  // 눈에 보이는 영역의 맨 아래(visualViewport)와 막대 아래끝을 비교해, 남는 만큼 막대를 아래로 늘려 채운다.
+  // 실기기 진단(2026-11-10): 띠가 생긴 화면은 창 높이(innerHeight)와 보이는 영역(visualViewport)이 둘 다 992로, 실제 화면 높이 1024보다
+  // 상태 막대 높이(안전영역 위쪽 32px)만큼 짧았다. 띠가 없는 화면은 창 높이가 1024. 그래서 아래 메뉴(fixed, bottom:0)가 짧아진 창의
+  // 맨 아래에 붙어 그 밑 32px에 배경이 비친다. (사파리가 창 높이를 상태 막대만큼 빼고 기억하는 현상으로 보인다.)
+  // 보정: ① 메뉴 아래끝이 보이는 영역 맨 아래보다 위에 있거나(16A), ② 홈 앱에서 창이 화면보다 "안전영역 위쪽 높이"만큼 짧으면(16C)
+  // 그만큼 메뉴의 흰 배경을 아래로 늘려 채운다. 글자·아이콘 위치는 그대로다.
+  const isStandalone = () => !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
+  function insetTop() {
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;padding-top:env(safe-area-inset-top)';
+    document.body.appendChild(probe);
+    const v = parseFloat(getComputedStyle(probe).paddingTop) || 0;
+    probe.remove();
+    return v;
+  }
+  let lastNav = { gap: 0, short: 0, why: '-' };
   function fitNav() {
     try {
       const root = document.documentElement;
@@ -223,9 +235,18 @@
       root.style.removeProperty('--nav-gap'); // 보정 없는 원래 위치에서 잰다 (같은 프레임 안이라 깜빡이지 않음)
       const vv = window.visualViewport;
       const seeBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
-      const gap = Math.round(seeBottom - $nav.getBoundingClientRect().bottom);
+      let gap = Math.round(seeBottom - $nav.getBoundingClientRect().bottom);
+      let why = gap >= 2 ? '보이는 영역' : '-';
+      // 화면 높이: 세로면 긴 쪽, 가로면 짧은 쪽 (iOS는 회전해도 screen 값이 그대로일 수 있어 방향으로 고른다)
+      const full = window.innerHeight >= window.innerWidth ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+      const short = Math.round(full - window.innerHeight);
+      if (gap < 2 && isStandalone() && short >= 2 && short <= 64 && (!vv || vv.height >= window.innerHeight - 1)) {
+        const top = insetTop();
+        if (top > 0 && Math.abs(short - top) <= 4) { gap = short; why = '창이 짧음'; }
+      }
+      lastNav = { gap, short, why };
       if (gap >= 2 && gap <= 160) root.style.setProperty('--nav-gap', gap + 'px');
-      if (viewDbgOn()) viewDbgDraw(gap);
+      if (viewDbgOn()) viewDbgDraw();
     } catch {}
   }
   let navTimers = [];
@@ -236,7 +257,7 @@
     navTimers = [120, 450, 1200].map((ms) => setTimeout(fitNav, ms));
   }
   const viewDbgOn = () => ls.get('ews_view_dbg', '') === '1';
-  function viewDbgDraw(gap) {
+  function viewDbgDraw() {
     let box = document.getElementById('viewdbg');
     if (!viewDbgOn()) { if (box) box.remove(); return; }
     if (!box) {
@@ -253,13 +274,15 @@
     const cs = getComputedStyle(probe);
     const inset = cs.paddingTop + ' / ' + cs.paddingBottom;
     probe.remove();
+    const gap = lastNav.gap;
     const nb = $nav.hidden ? null : $nav.getBoundingClientRect();
     const f = (n) => (Math.round(n * 10) / 10);
     box.textContent = [
       '창 ' + innerWidth + '×' + innerHeight + ' · 문서 ' + document.documentElement.clientHeight,
       vv ? '보이는 영역 ' + f(vv.width) + '×' + f(vv.height) + ' 위 ' + f(vv.offsetTop) + ' 배율 ' + f(vv.scale) : '보이는 영역 정보 없음',
       '화면 ' + screen.width + '×' + screen.height + ' · 홈앱 ' + (navigator.standalone ? '예' : '아니오'),
-      '메뉴 아래끝 ' + (nb ? f(nb.bottom) : '-') + ' · 남은 틈 ' + gap + ' · 보정 ' + (document.documentElement.style.getPropertyValue('--nav-gap') || '0'),
+      '메뉴 아래끝 ' + (nb ? f(nb.bottom) : '-') + ' · 남은 틈 ' + gap + ' · 보정 ' + (document.documentElement.style.getPropertyValue('--nav-gap') || '0') + ' (' + lastNav.why + ')',
+      '창이 짧은 정도 ' + lastNav.short,
       '안전영역 위/아래 ' + inset + ' · 스크롤 ' + f(scrollY),
     ].join('\n');
   }
@@ -2086,7 +2109,7 @@
     el('viewdbgbtn').onclick = () => {
       ls.set('ews_view_dbg', viewDbgOn() ? '0' : '1');
       el('viewdbgbtn').textContent = '화면 진단 ' + (viewDbgOn() ? '끄기' : '켜기');
-      if (viewDbgOn()) fitNav(); else viewDbgDraw(0);
+      if (viewDbgOn()) fitNav(); else viewDbgDraw();
     };
     if (navigator.storage && navigator.storage.persisted) {
       navigator.storage.persisted().then((on) => {
