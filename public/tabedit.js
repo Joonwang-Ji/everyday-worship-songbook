@@ -2,13 +2,13 @@
 // 저장 형식(ChordPro 글자)은 그대로. 모델은 "줄 목록"이고, 손대지 않은 줄은 원문(raw)을 그대로 돌려준다.
 //   parse(text)      → { lines:[ {kind, raw, ...} ] }
 //   serialize(model) → 글자 (손대지 않았다면 parse 전 글자와 완전히 같다)
-// kind: 'lyric'(가사+[코드]) | 'blank' | 'comment'({comment:}) | 'soc' | 'eoc' | 'other'(주석·모르는 지시어·괄호가 깨진 줄: 그대로 보존)
+// kind: 'lyric'(가사+[코드]) | 'blank' | 'comment'({comment:}) | 'ref'({ref: C} 구간 자리표시) | 'soc' | 'eoc' | 'other'(주석·모르는 지시어·괄호가 깨진 줄: 그대로 보존)
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.TabEdit = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./sections.js'));
+  else root.TabEdit = factory(root.Sections);
+})(typeof self !== 'undefined' ? self : this, function (Sections) {
   const DIRECTIVE = /^\s*\{\s*([a-zA-Z_]+)\s*(?::\s*(.*?))?\s*\}\s*$/;
-  const SECTION_NAMES = ['인트로', '1절', '2절', '3절', '4절', '5절', '프리코러스', '후렴', '브릿지', '간주', '엔딩'];
+  const SECTION_NAMES = Sections.PICKS; // Intro V1~V5 PC C B Inter Tag Outro End
 
   // "[G]주님은 [C]나의" → {text:'주님은 나의', chords:[{pos:0,c:'G'},{pos:4,c:'C'}]}. 괄호가 깨졌으면 null.
   function parseLyric(raw) {
@@ -53,6 +53,7 @@
       const val = (d[2] || '').trim();
       if (['comment', 'c', 'comment_italic', 'ci'].includes(name)) return { kind: 'comment', raw, label: val };
       if (name === 'column_break' || name === 'colb') return { kind: 'colb', raw };
+      if (name === 'ref' || name === 'chorus') { const c = Sections.canon(val); return { kind: 'ref', raw, id: c ? c.id : name === 'chorus' && !val ? 'C' : val, rest: c ? c.rest : '' }; }
       if (name === 'soc' || name === 'start_of_chorus') return { kind: 'soc', raw };
       if (name === 'eoc' || name === 'end_of_chorus') return { kind: 'eoc', raw };
       return { kind: 'other', raw };
@@ -237,6 +238,7 @@
     while (isBody(b + 1)) b++;
     return { a, b };
   }
+  const isChorusLabel = (label) => { const c = Sections.canon(label); return !!c && c.id === 'C' && !c.rest; };
   // 후렴 표시 켜고 끄기. 이미 후렴 안이면 {soc}/{eoc}(와 바로 위 "후렴" 이름표)를 지우고, 아니면 덩어리를 {soc}~{eoc}로 감싼다.
   function toggleChorus(model, li) {
     const ch = chorusAround(model, li);
@@ -246,7 +248,7 @@
       if (ch.eoc >= 0) drop.push(ch.eoc);
       drop.push(ch.soc);
       const above = m.lines[ch.soc - 1];
-      if (above && above.kind === 'comment' && above.label === '후렴') drop.push(ch.soc - 1);
+      if (above && above.kind === 'comment' && isChorusLabel(above.label)) drop.push(ch.soc - 1);
       drop.sort((x, y) => y - x).forEach((i) => m.lines.splice(i, 1));
       return { model: m, on: false };
     }
@@ -255,12 +257,154 @@
     const m = clone(model);
     m.lines.splice(r.b + 1, 0, parseLine('{eoc}'));
     const above = m.lines[r.a - 1];
-    const hasLabel = above && above.kind === 'comment' && above.label === '후렴';
-    const head = hasLabel ? ['{soc}'] : (r.a > 0 && above && above.kind !== 'blank' ? [''] : []).concat(['{comment: 후렴}', '{soc}']);
+    const hasLabel = above && above.kind === 'comment' && isChorusLabel(above.label);
+    const head = hasLabel ? ['{soc}'] : (r.a > 0 && above && above.kind !== 'blank' ? [''] : []).concat(['{comment: C}', '{soc}']);
     m.lines.splice(r.a, 0, ...head.map(parseLine));
     return { model: m, on: true };
   }
   const isInChorus = (model, li) => !!chorusAround(model, li);
+
+  // ---------- 구간 자리표시 (18차) ----------
+  // {ref: C} 한 줄이 "앞에 나온 C 구간을 여기서 다시"를 뜻한다. 같은 가사·코드가 반복되는 구간은 처음 한 번만 쓰고 나머지는 자리표시로 둔다.
+  // 구간 목록 [{a, b(끝 다음 줄, 끝의 빈 줄 제외), id, label, isRef, hasLyrics, implicit}]
+  function listSections(model) {
+    const L = model.lines;
+    const secs = [];
+    let cur = null;
+    const isBody = (k) => k === 'lyric' || k === 'other';
+    const close = (i) => { if (cur) { cur.b = i; cur = null; } };
+    L.forEach((l, i) => {
+      if (l.kind === 'comment') {
+        close(i);
+        const c = Sections.canon(l.label);
+        cur = { a: i, b: L.length, id: c ? c.id : '', label: l.label, rest: c ? c.rest : '', isRef: false, hasLyrics: false, implicit: false };
+        secs.push(cur);
+      } else if (l.kind === 'ref') {
+        close(i);
+        secs.push({ a: i, b: i + 1, id: l.id, label: l.id + (l.rest ? ' ' + l.rest : ''), rest: l.rest || '', isRef: true, hasLyrics: false, implicit: false });
+      } else if (l.kind === 'soc') {
+        if (!cur || cur.hasLyrics) { close(i); cur = { a: i, b: L.length, id: 'C', label: '', rest: '', isRef: false, hasLyrics: false, implicit: true }; secs.push(cur); }
+      } else if (isBody(l.kind)) {
+        if (!cur) { cur = { a: i, b: L.length, id: '', label: '', rest: '', isRef: false, hasLyrics: false, implicit: true }; secs.push(cur); }
+        if (l.kind === 'lyric') cur.hasLyrics = true;
+      }
+    });
+    secs.forEach((x) => {
+      if (x.isRef) return;
+      while (x.b > x.a + 1 && (L[x.b - 1].kind === 'blank' || L[x.b - 1].kind === 'colb')) x.b--;
+    });
+    return secs;
+  }
+  const sectionAt = (model, li) => listSections(model).find((x) => li >= x.a && li < x.b) || null;
+  // 구간 본문의 원문 줄들(이름표 제외, 단 나누기 제외). 같은 구간인지 비교하고 펼칠 때 쓴다.
+  function sectionRaws(model, sec) {
+    const out = [];
+    for (let i = sec.a; i < sec.b; i++) {
+      const l = model.lines[i];
+      if (i === sec.a && l.kind === 'comment') continue;
+      if (l.kind === 'colb' || l.kind === 'ref') continue;
+      out.push(l.raw);
+    }
+    while (out.length && out[out.length - 1].trim() === '') out.pop();
+    return out;
+  }
+  // 자리표시 줄 li의 원본 구간. 같은 이름의 가사 있는 구간 중 바로 앞의 것, 없으면 곡 안 첫 번째.
+  function refSource(model, li) {
+    const secs = listSections(model);
+    const me = secs.find((x) => x.a === li && x.isRef);
+    if (!me) return null;
+    let best = null;
+    for (const o of secs) {
+      if (o.isRef || !o.hasLyrics || o.id !== me.id) continue;
+      if (o.a < li) best = o;
+      else if (!best) { best = o; break; }
+    }
+    return best;
+  }
+  // 구간(li가 들어 있는)을 자리표시로 바꾼다. 앞에 같은 이름의 구간이 있어야 하고, 코드·가사가 같을 때만 바로 바꾼다.
+  // 반환: {model} | {need:'name'|'source'} | {diff:true, srcA} (코드·가사가 달라 확인이 필요: force로 다시 부르면 바꿈)
+  function sectionToRef(model, li, opt) {
+    const secs = listSections(model);
+    const me = secs.find((x) => li >= x.a && li < x.b && !x.isRef);
+    if (!me || !me.hasLyrics) return { need: 'section' };
+    if (!me.id) return { need: 'name' };
+    let src = null;
+    for (const o of secs) if (!o.isRef && o.hasLyrics && o.id === me.id && o.a < me.a) src = o;
+    if (!src) return { need: 'source' };
+    const same = sectionRaws(model, src).join('\n') === sectionRaws(model, me).join('\n');
+    if (!same && !(opt && opt.force)) return { diff: true, srcA: src.a };
+    const m = clone(model);
+    m.lines.splice(me.a, me.b - me.a, parseLine('{ref: ' + me.id + (me.rest ? ' ' + me.rest : '') + '}'));
+    return { model: m, at: me.a };
+  }
+  // 자리표시를 펼쳐서 따로 쓴다: 원본 구간을 복사해 이름표 + 본문으로 바꾼다. 원본이 없으면 null.
+  function refToSection(model, li) {
+    const src = refSource(model, li);
+    if (!src) return null;
+    const l = model.lines[li];
+    const m = clone(model);
+    const raws = ['{comment: ' + l.id + (l.rest ? ' ' + l.rest : '') + '}'].concat(sectionRaws(model, src));
+    m.lines.splice(li, 1, ...raws.map(parseLine));
+    return { model: m, at: li };
+  }
+  // 반복 구간 정리 후보: 같은 이름 구간이 앞에도 있는 구간들. same = 코드·가사까지 같음(자동으로 바꿔도 안전), 아니면 이유를 단다.
+  function repeatCandidates(model) {
+    const secs = listSections(model);
+    const out = [];
+    secs.forEach((me) => {
+      if (me.isRef || !me.hasLyrics || !me.id) return;
+      let src = null;
+      for (const o of secs) if (!o.isRef && o.hasLyrics && o.id === me.id && o.a < me.a) src = o;
+      if (!src) return;
+      const A = sectionRaws(model, src), B = sectionRaws(model, me);
+      const same = A.join('\n') === B.join('\n');
+      let why = '';
+      if (!same) {
+        const strip = (r) => lyricKey(r.replace(/\[[^\]]*\]/g, ''));
+        why = A.map(strip).join('|') === B.map(strip).join('|') ? '코드가 달라요' : '가사가 달라요';
+      }
+      out.push({ a: me.a, b: me.b, id: me.id, label: me.label || me.id, srcA: src.a, same, why });
+    });
+    return out;
+  }
+  // 반복 구간 정리 실행: rows(repeatCandidates 중 고른 것)를 아래쪽부터 자리표시로 바꾼다. 반환 {model, n}
+  function collapseRepeats(model, rows) {
+    const m = clone(model);
+    let n = 0;
+    [...rows].sort((x, y) => y.a - x.a).forEach((r) => {
+      const l = m.lines[r.a];
+      const rest = l && l.kind === 'comment' ? (Sections.canon(l.label) || {}).rest || '' : '';
+      m.lines.splice(r.a, r.b - r.a, parseLine('{ref: ' + r.id + (rest ? ' ' + rest : '') + '}'));
+      n++;
+    });
+    return { model: m, n };
+  }
+  // 줄 li 앞에 자리표시를 넣는다(앞 줄이 비어 있지 않으면 빈 줄도 하나). 반환 {model, at}
+  function insertRef(model, li, id) {
+    const m = clone(model);
+    const prev = m.lines[li - 1];
+    const needGap = li > 0 && prev && prev.kind !== 'blank';
+    const raws = (needGap ? [''] : []).concat(['{ref: ' + id + '}']);
+    m.lines.splice(li, 0, ...raws.map(parseLine));
+    return { model: m, at: li + raws.length - 1 };
+  }
+  // 지금 악보에 나온 구간 이름들(자리표시 칩 후보). 가사가 있는 구간만, 처음 나온 순서.
+  function usedSectionIds(model) {
+    const seen = [];
+    listSections(model).forEach((x) => { if (!x.isRef && x.hasLyrics && x.id && !seen.includes(x.id)) seen.push(x.id); });
+    return seen;
+  }
+  // 저장 점검용: 원본이 없는 자리표시 / 이름을 알아볼 수 없는 자리표시의 줄 번호(0부터)
+  function refProblems(model) {
+    const secs = listSections(model);
+    const out = [];
+    secs.forEach((x) => {
+      if (!x.isRef) return;
+      if (!Sections.canon(x.id)) out.push({ li: x.a, why: 'name' });
+      else if (!refSource(model, x.a)) out.push({ li: x.a, why: 'source' });
+    });
+    return out;
+  }
 
   // ---------- 단 나누기 (2단 보기에서 여기부터 다음 단) ----------
   // li 줄이 "다음 단의 첫 줄"이 되도록 {column_break}를 넣을 자리. 바로 위의 구간 이름표·{soc}는 함께 다음 단으로 보낸다.
@@ -415,72 +559,174 @@
     return { model: m, filled, skipped, extra };
   }
 
-  // ---------- 가사 붙여넣기 → 구간 나누기 ----------
-  const LABEL_RE = /^[\[\(【<＜\-–—\s]*(인트로|intro|1\s*절|2\s*절|3\s*절|4\s*절|5\s*절|프리\s*코러스|프리|pre\s*-?\s*chorus|후렴|코러스|chorus|브릿지|브리지|bridge|간주|interlude|엔딩|ending|outro|verse\s*\d?|v\d)\s*\d?[\]\)】>＞\-–—\s:：]*$/i;
-  function canonLabel(s) {
-    const t = s.toLowerCase().replace(/[\s\[\]\(\)【】<>＜＞\-–—:：]/g, '');
-    if (/^인트로|^intro/.test(t)) return '인트로';
-    let m = /^(\d)절/.exec(t);
-    if (m) return m[1] + '절';
-    m = /^(?:verse|v)(\d)/.exec(t);
-    if (m) return m[1] + '절';
-    if (/^verse|^v$/.test(t)) return '1절';
-    if (/^프리|^pre/.test(t)) return '프리코러스';
-    if (/^후렴|^코러스|^chorus/.test(t)) return '후렴';
-    if (/^브릿지|^브리지|^bridge/.test(t)) return '브릿지';
-    if (/^간주|^interlude/.test(t)) return '간주';
-    if (/^엔딩|^ending|^outro/.test(t)) return '엔딩';
-    return '';
+  // ---------- 가사 붙여넣기 → 구간 나누기 (19차) ----------
+  // 붙여넣은 가사를 구간(덩어리)으로 나누고, 이름을 추측하고, 같은 가사가 반복되면 자동으로 자리표시로 만든다.
+  // 블록: {lines:[…], label:'V1'|'C'|…|'', fixed:이름을 사람이 정했거나 이름표 줄이 있었음, guess:추측이 불확실함, ref:이 구간은 위와 같음(자리표시), expand:반복이어도 펼쳐서 넣기}
+  const blockKey = (lines) => lyricKey(lines.join(' '));
+  // 줄 하나가 구간 이름표인지: "[후렴]" "Chorus" "V1:" "1절" … 이름 뒤에 다른 글자가 없어야 한다. 반환 표준 이름 또는 ''
+  function labelOfLine(raw) {
+    const t = String(raw || '').trim();
+    if (!t || t.length > 24) return '';
+    const c = Sections.canon(t);
+    return c && !c.rest ? c.id : '';
   }
-  const normBlock = (lines) => lines.join('\n').replace(/\s+/g, '').toLowerCase();
-  // 붙여넣은 가사를 빈 줄 기준으로 덩어리로 나눈다. 반환: [{lines:[…], label}] — label은 추측(바꿀 수 있음).
-  function splitLyrics(text) {
+  // 빈 줄이 없는 가사: 반복되는 두 줄 이상의 덩어리를 찾아 경계를 추측한다. 반환 [나눌 줄 번호(그 줄 앞에서 나눔)…] 또는 []
+  function guessBreaks(lines) {
+    const n = lines.length;
+    const k = lines.map((l) => lyricKey(l));
+    let best = null;
+    for (let i = 0; i < n; i++) {
+      if (!k[i]) continue;
+      for (let j = i + 1; j < n; j++) {
+        if (k[i] !== k[j]) continue;
+        let len = 0;
+        while (j + len < n && i + len < j && k[i + len] === k[j + len] && k[i + len]) len++;
+        if (len >= 2 && (!best || len > best.len)) best = { i, j, len };
+      }
+    }
+    if (!best) return [];
+    const key = k.slice(best.i, best.i + best.len).join('|');
+    const starts = [];
+    for (let i = 0; i + best.len <= n; i++) {
+      if (k.slice(i, i + best.len).join('|') === key && (!starts.length || i >= starts[starts.length - 1] + best.len)) starts.push(i);
+    }
+    const br = new Set();
+    for (const st of starts) { if (st > 0) br.add(st); if (st + best.len < n) br.add(st + best.len); }
+    return [...br].sort((x, y) => x - y);
+  }
+  function splitLyrics(text, opt) {
     const src = String(text || '').replace(/\r\n?/g, '\n').split('\n').map((s) => s.replace(/\s+$/, ''));
+    const clean = (raw) => raw.replace(/\[/g, '(').replace(/\]/g, ')').replace(/[{}]/g, '');
     const blocks = [];
     let cur = [];
-    let pendingLabel = '';
+    let pending = '';
     const flush = () => {
-      if (cur.length) blocks.push({ lines: cur, label: pendingLabel });
+      if (cur.length) blocks.push({ lines: cur, label: pending, fixed: !!pending, guess: false, ref: false, expand: false });
       cur = [];
-      pendingLabel = '';
+      pending = '';
     };
     for (const raw of src) {
       if (raw.trim() === '') { flush(); continue; }
-      if (LABEL_RE.test(raw.trim())) {
-        // "[후렴]" 같은 이름표 줄: 이어지는 덩어리의 이름으로 쓴다.
-        if (cur.length) flush();
-        pendingLabel = canonLabel(raw.trim());
-        continue;
-      }
-      cur.push(raw.replace(/\[/g, '(').replace(/\]/g, ')').replace(/[{}]/g, ''));
+      const id = labelOfLine(raw);
+      if (id) { flush(); pending = id; continue; } // 이름표 줄: 이어지는 덩어리의 이름
+      cur.push(clean(raw));
     }
     flush();
-    // 이름이 없는 덩어리 추측: 같은 가사가 두 번 이상 나오면 후렴, 나머지는 1절·2절…
-    const count = new Map();
-    blocks.forEach((b) => { const k = normBlock(b.lines); count.set(k, (count.get(k) || 0) + 1); });
-    const named = new Set(blocks.map((b) => b.label).filter(Boolean));
-    let verse = 0;
-    for (const b of blocks) {
-      if (b.label) continue;
-      if (count.get(normBlock(b.lines)) > 1) { b.label = '후렴'; continue; }
-      do { verse++; } while (named.has(verse + '절'));
-      b.label = verse <= 5 ? verse + '절' : '';
+    // 빈 줄이 하나도 없어 한 덩어리뿐이면, 반복되는 줄을 기준으로 경계를 추측한다
+    if (!(opt && opt.noBreaks) && blocks.length === 1 && !blocks[0].fixed && blocks[0].lines.length >= 6) {
+      const br = guessBreaks(blocks[0].lines);
+      if (br.length) {
+        const ls = blocks[0].lines;
+        const out = [];
+        let a = 0;
+        for (const b of [...br, ls.length]) { if (b > a) out.push({ lines: ls.slice(a, b), label: '', fixed: false, guess: false, ref: false, expand: false }); a = b; }
+        blocks.length = 0;
+        blocks.push(...out);
+        blocks.guessedBreaks = true;
+      }
     }
+    return autoLabel(blocks);
+  }
+  // 이름 추측 + 반복 자동 자리표시. 사람이 정한 이름(fixed)은 건드리지 않는다.
+  //  · 같은 가사가 가장 많이 반복되는 덩어리 → C(앞의 것이 원본)  · 첫 C 앞은 V1, C 사이는 V2·V3…
+  //  · 두 번째 C 뒤에 한 번만 나오는 덩어리는 B 후보(노란색, 확인 필요)
+  function autoLabel(blocks) {
+    const keys = blocks.map((b) => blockKey(b.lines));
+    const count = new Map();
+    keys.forEach((k) => count.set(k, (count.get(k) || 0) + 1));
+    // 이름이 정해진 덩어리의 가사는 그 이름을 같은 가사 덩어리 모두에게 퍼뜨린다
+    blocks.forEach((b, i) => {
+      if (!b.fixed) return;
+      blocks.forEach((o, j) => { if (j !== i && !o.fixed && keys[j] === keys[i]) { o.label = b.label; o.guess = false; o.spread = true; } });
+    });
+    const free = (b) => !b.fixed && !b.spread;
+    let chorusKey = null, bestN = 1;
+    const seenOrder = [];
+    blocks.forEach((b, i) => {
+      if (!free(b) || count.get(keys[i]) < 2) return;
+      if (!seenOrder.includes(keys[i])) seenOrder.push(keys[i]);
+      const n = count.get(keys[i]);
+      if (n > bestN || (n === bestN && chorusKey === null)) { bestN = n; chorusKey = keys[i]; }
+    });
+    const usedLabels = new Set(blocks.filter((b) => !free(b)).map((b) => b.label));
+    const hasFixedC = usedLabels.has('C');
+    let verse = 0;
+    let sawC = 0;
+    const nextVerse = () => { do { verse++; } while (usedLabels.has('V' + verse)); return 'V' + verse; };
+    blocks.forEach((b, i) => {
+      if (!free(b)) { if (b.label === 'C') sawC++; return; }
+      b.guess = false;
+      if (chorusKey !== null && keys[i] === chorusKey && !hasFixedC) { b.label = 'C'; sawC++; return; }
+      if (count.get(keys[i]) > 1) { // 후렴 말고 반복되는 덩어리: 한 번 확인
+        const same = blocks.find((o, j) => j < i && keys[j] === keys[i] && o.label);
+        if (same) { b.label = same.label; b.guess = same.guess; return; }
+        b.label = chorusKey === null ? nextVerse() : sawC >= 2 ? 'B' : 'PC';
+        b.guess = true;
+        return;
+      }
+      if (sawC >= 2 && chorusKey !== null) { b.label = 'B'; b.guess = true; return; }
+      b.label = nextVerse();
+    });
+    return markRefs(blocks);
+  }
+  // 같은 가사 + 같은 이름인 앞 덩어리가 있으면 자리표시로. (expand가 켜진 덩어리는 펼쳐서 넣는다)
+  function markRefs(blocks) {
+    const keys = blocks.map((b) => blockKey(b.lines));
+    blocks.forEach((b, i) => {
+      b.ref = !!b.label && !b.expand && blocks.some((o, j) => j < i && keys[j] === keys[i] && o.label === b.label && !o.ref);
+    });
     return blocks;
   }
-  // 덩어리 목록 → ChordPro 글자. label이 '' 이면 이름표 없이 가사만. 후렴은 {soc}~{eoc}로 감싼다.
+  // 한 덩어리의 이름을 바꾼다. 같은 가사의 다른 덩어리도 같은 이름으로 함께 바뀐다.
+  function renameBlock(blocks, i, id) {
+    const k = blockKey(blocks[i].lines);
+    blocks.forEach((b) => { if (blockKey(b.lines) === k) { b.label = id; b.fixed = true; b.guess = false; b.spread = false; } });
+    blocks.forEach((b) => { if (!b.fixed) b.spread = false; });
+    return autoLabel(blocks.map((b) => (b.fixed ? b : Object.assign({}, b, { label: '', spread: false }))));
+  }
+  function splitBlockAt(blocks, i, at) {
+    const b = blocks[i];
+    if (!b || at <= 0 || at >= b.lines.length) return blocks;
+    const out = blocks.slice();
+    out.splice(i, 1, { lines: b.lines.slice(0, at), label: b.fixed ? b.label : '', fixed: b.fixed, guess: false, ref: false, expand: false }, { lines: b.lines.slice(at), label: '', fixed: false, guess: false, ref: false, expand: false });
+    return autoLabel(out.map((x) => (x.fixed ? x : Object.assign({}, x, { label: '', spread: false }))));
+  }
+  function mergeBlockUp(blocks, i) {
+    if (i <= 0 || !blocks[i]) return blocks;
+    const out = blocks.slice();
+    const up = out[i - 1];
+    out.splice(i - 1, 2, { lines: up.lines.concat(blocks[i].lines), label: up.fixed ? up.label : '', fixed: up.fixed, guess: false, ref: false, expand: false });
+    return autoLabel(out.map((x) => (x.fixed ? x : Object.assign({}, x, { label: '', spread: false }))));
+  }
+  // 추정 송폼 한 줄: 덩어리 순서대로의 이름, 같은 이름이 붙어서 이어지면 C×2. 화면에 보여 주고 복사만 한다(곡에 저장하지 않음).
+  function estimateForm(blocks) {
+    const out = [];
+    for (const b of blocks) {
+      if (!b.label) continue;
+      const last = out[out.length - 1];
+      if (last && last.id === b.label) last.n++;
+      else out.push({ id: b.label, n: 1 });
+    }
+    return out.map((x) => (x.n > 1 ? x.id + '×' + x.n : x.id)).join('-');
+  }
+  // 덩어리 목록 → ChordPro 글자. label이 '' 이면 이름표 없이 가사만. C(후렴)는 {soc}~{eoc}로 감싼다.
+  // 자리표시 덩어리는 {ref: 이름} 한 줄만 쓴다.
   function buildFromBlocks(blocks) {
     const out = [];
     blocks.forEach((b, i) => {
       if (!b.lines.length) return;
       if (i > 0 && out.length) out.push('');
+      if (b.ref && b.label) { out.push('{ref: ' + b.label + '}'); return; }
       if (b.label) out.push('{comment: ' + b.label + '}');
-      if (b.label === '후렴') out.push('{soc}');
+      const ch = b.label === 'C';
+      if (ch) out.push('{soc}');
       out.push(...b.lines);
-      if (b.label === '후렴') out.push('{eoc}');
+      if (ch) out.push('{eoc}');
     });
     return out.join('\n');
   }
+  // 예전 이름 (한글 이름 → 표준 이름)
+  const canonLabel = (s) => labelOfLine(s) || (Sections.canon(s) || {}).id || '';
 
   return {
     SECTION_NAMES,
@@ -488,8 +734,9 @@
     addChord, appendChord, replaceChord, deleteChord, moveChord, reshape,
     insertLines, replaceLine, deleteLine, clearChords, setLyricText, instrumentalRaw,
     insertSection, chorusAround, blockRange, toggleChorus, isInChorus,
+    listSections, sectionAt, sectionRaws, refSource, sectionToRef, refToSection, repeatCandidates, collapseRepeats, insertRef, usedSectionIds, refProblems,
     colBreakAt, setColBreak, clearColBreaks,
     lyricKey, findSameLyric, copyLineChords, bodyBlocks, copyBlock,
-    splitLyrics, buildFromBlocks, canonLabel,
+    splitLyrics, buildFromBlocks, canonLabel, labelOfLine, guessBreaks, autoLabel, markRefs, renameBlock, splitBlockAt, mergeBlockUp, estimateForm,
   };
 });

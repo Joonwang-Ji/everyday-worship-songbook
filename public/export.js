@@ -197,7 +197,7 @@
     const pages = [];
     let cv, g, y, barY = null, inChorus = false;
     const endBar = () => { if (barY !== null) { g.fillStyle = BRAND; g.fillRect(M - 26, barY, 6, Math.max(0, y - barY - 4)); barY = null; } };
-    const newPage = (first) => {
+    let newPage = (first) => {
       cv = mk(W, H); g = cv.getContext('2d'); pages.push(cv);
       y = drawHeader(g, W, n, it, info, keyText, first);
       barY = inChorus ? y : null;
@@ -228,18 +228,30 @@
       return rows;
     }
 
-    for (const ln of parsed.lines) {
-      if (ln.type === 'colbreak') continue; // 단 나누기는 화면(2단 보기)에서만 쓴다
-      if (ln.type === 'blank') { endBar(); inChorus = false; need(24 * scale); y += Math.round(24 * scale); continue; }
+    // 구간 자리표시({ref})는 줄 단위로 그리다가: 원본 구간이 지금 쪽에 이미 그려져 있으면 "↻ Chorus"만, 아니면 원본을 펼쳐서 그린다.
+    // (연주 모드 쪽 넘기기와 같은 규칙. 원본이 다른 쪽에 있으면 보면서 넘겨 다니지 않게 한다)
+    const secAt = (i) => {
+      const ss = parsed.sections || [];
+      for (let k = 0; k < ss.length; k++) if (i >= ss[k].start && i < ss[k].end) return k;
+      return -1;
+    };
+    let pageSecs = new Set();
+    const baseNewPage = newPage;
+    newPage = (first) => { pageSecs = new Set(); baseNewPage(first); };
+    const drawLn = (ln, si) => {
+      if (ln.type === 'colbreak') return; // 단 나누기는 화면(2단 보기)에서만 쓴다
+      if (ln.type === 'blank') { endBar(); inChorus = false; need(24 * scale); y += Math.round(24 * scale); return; }
       if (ln.type === 'comment') {
         endBar(); inChorus = false;
         g.font = font(28 * scale, 700);
-        const ls = wrap(g, ln.text, maxW);
+        const ls = wrap(g, Sections.label(ln.text, 'full'), maxW);
         need(ls.length * Math.round(40 * scale) + 10);
         g.fillStyle = BRAND;
         for (const l of ls) { g.fillText(l, M, y + Math.round(30 * scale)); y += Math.round(40 * scale); }
-        continue;
+        if (si >= 0) pageSecs.add(si);
+        return;
       }
+      if (si >= 0) pageSecs.add(si);
       if (ln.chorus && !inChorus) inChorus = true;
       if (!ln.chorus) { endBar(); inChorus = false; }
       if (!ln.hasChords) {
@@ -249,7 +261,7 @@
           if (inChorus && barY === null) barY = y;
           g.font = font(LYR, 400); g.fillStyle = INK; g.fillText(l, M, y + Math.round(LYR * 1.05)); y += PLAIN_H;
         }
-        continue;
+        return;
       }
       for (const row of pack(ln.segs)) {
         need(CH_H + LY_H + ROW_GAP);
@@ -260,7 +272,25 @@
         }
         y += CH_H + LY_H + ROW_GAP;
       }
-    }
+    };
+    parsed.lines.forEach((ln, i) => {
+      const si = secAt(i);
+      if (ln.type !== 'ref') { drawLn(ln, si); return; }
+      const name = Sections.label(ln.id + (ln.rest ? ' ' + ln.rest : ''), 'full');
+      if (ln.src >= 0 && !pageSecs.has(ln.src)) {
+        // 원본이 이 쪽에 없다 → 펼쳐서 그린다
+        drawLn({ type: 'comment', text: ln.id + (ln.rest ? ' ' + ln.rest : '') }, -1);
+        for (const b of Chord.sectionBody(parsed, ln.src)) drawLn(b, -1);
+        pageSecs.add(ln.src);
+        return;
+      }
+      endBar(); inChorus = false;
+      g.font = font(26 * scale, 700);
+      need(Math.round(40 * scale) + 10);
+      g.fillStyle = BRAND;
+      g.fillText('↻ ' + name + (ln.src >= 0 ? '  (위와 같음)' : ''), M, y + Math.round(30 * scale));
+      y += Math.round(40 * scale);
+    });
     endBar();
     return pages;
   }

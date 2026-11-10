@@ -1,27 +1,13 @@
 // 송폼(구간 순서) 처리 + 카톡용 콘티 텍스트 (브라우저와 Node 테스트 양쪽에서 사용)
-// 송폼은 서버에 "인트로-V1-C-V2-C-B-C" 같은 한 줄 글자로 저장된다. 탭으로 만들든 직접 쓰든 같은 형식.
+// 송폼은 서버에 "Intro-V1-C-V2-C-B-C" 같은 한 줄 글자로 저장된다. 탭으로 만들든 직접 쓰든 같은 형식. 구간 이름은 sections.js(표준 약어)를 따른다.
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory();
-  else root.SongForm = factory();
-})(typeof self !== 'undefined' ? self : this, function () {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./sections.js'));
+  else root.SongForm = factory(root.Sections);
+})(typeof self !== 'undefined' ? self : this, function (Sections) {
   const MAX = 200; // 서버가 받는 최대 글자 수
 
-  // 누르는 버튼. code = 실제로 저장되는 글자, hint = 버튼 아래 작은 설명
-  const PALETTE = [
-    { code: '인트로', hint: '' },
-    { code: 'V1', hint: '1절' },
-    { code: 'V2', hint: '2절' },
-    { code: 'V3', hint: '3절' },
-    { code: 'V4', hint: '4절' },
-    { code: 'V5', hint: '5절' },
-    { code: 'P', hint: '프리' },
-    { code: 'C', hint: '후렴' },
-    { code: 'B', hint: '브릿지' },
-    { code: '간주', hint: '' },
-    { code: '태그', hint: '' },
-    { code: '아웃트로', hint: '' },
-    { code: '엔딩', hint: '' },
-  ];
+  // 누르는 버튼. code = 실제로 저장되는 글자, hint = 버튼 아래 작은 풀네임 (sections.js 한 곳의 표를 쓴다)
+  const PALETTE = Sections.PALETTE;
 
   // "V1-C-V2 C (2번)" → ['V1','C','V2','C','(2번)']  (구분: - – → > , 와 빈칸. 괄호 안은 한 덩어리)
   function parse(str) {
@@ -74,47 +60,55 @@
 
 
   // ---------- 가사 복사 (12차) ----------
-  // 구간 이름 → 표준 이름. 악보의 {comment: 1절} 같은 이름표와 송폼의 V1·C 같은 글자를 같은 이름으로 맞춘다.
+  // 구간 이름 → 표준 이름(V1·C·B …). 악보의 {comment: 1절} 같은 이름표와 송폼의 V1·C 같은 글자를 같은 이름으로 맞춘다.
   function canonSection(s) {
-    const t = String(s || '').toLowerCase().replace(/[\s\[\]\(\)【】<>＜＞\-–—:：]/g, '');
-    if (!t) return '';
-    if (/^인트로|^intro/.test(t)) return '인트로';
-    let m = /^(\d)절/.exec(t);
-    if (m) return m[1] + '절';
-    m = /^(?:verse|v)(\d)$/.exec(t) || /^(?:verse|v)(\d)/.exec(t);
-    if (m) return m[1] + '절';
-    if (/^verse$|^v$/.test(t)) return '1절';
-    if (/^프리|^pre/.test(t)) return '프리코러스';
-    if (/^후렴|^코러스|^chorus$|^c$/.test(t) || /^chorus/.test(t)) return '후렴';
-    if (/^브릿지|^브리지|^bridge$|^b$/.test(t) || /^bridge/.test(t)) return '브릿지';
-    if (/^간주|^interlude/.test(t)) return '간주';
-    if (/^태그|^tag/.test(t)) return '태그';
-    if (/^엔딩|^아웃트로|^ending|^outro/.test(t)) return '엔딩';
-    if (t === 'p') return '프리코러스';
-    return '';
+    const c = Sections.canon(s);
+    return c ? c.id : '';
   }
 
   // 코드 악보(Chord.parseChordPro 결과) → 구간 목록 [{label, canon, paras:[[가사 줄, …], …]}]
   // 코드만 있는 줄(간주 등)은 가사가 없으므로 뺀다. 이름표가 없는 앞부분은 label ''인 구간이 된다.
-  function lyricSections(parsed) {
+  // opt.expandRefs: 자리표시({ref})를 원본 구간의 가사로 채워 그 자리에 넣는다. (악보 순서로 복사할 때)
+  function lyricSections(parsed, opt) {
+    const expand = !!(opt && opt.expandRefs);
     const out = [];
     let cur = { label: '', canon: '', paras: [[]] };
     const hasText = (sec) => sec.paras.some((p) => p.length);
     const flush = () => { if (hasText(cur)) { cur.paras = cur.paras.filter((p) => p.length); out.push(cur); } };
+    const lineText = (ln) => (ln.segs || []).map((x) => x.text).join('').replace(/\s+/g, ' ').trim();
+    const add = (ln) => {
+      if (ln.type === 'blank') { if (cur.paras[cur.paras.length - 1].length) cur.paras.push([]); }
+      else if (ln.type === 'lyric') { const t = lineText(ln); if (t) cur.paras[cur.paras.length - 1].push(t); }
+    };
     for (const ln of (parsed && parsed.lines) || []) {
       if (ln.type === 'comment') {
         flush();
         const label = String(ln.text || '').trim();
         cur = { label, canon: canonSection(label), paras: [[]] };
-      } else if (ln.type === 'blank') {
-        if (cur.paras[cur.paras.length - 1].length) cur.paras.push([]);
-      } else if (ln.type === 'lyric') {
-        const t = (ln.segs || []).map((x) => x.text).join('').replace(/\s+/g, ' ').trim();
-        if (t) cur.paras[cur.paras.length - 1].push(t);
-      }
+      } else if (ln.type === 'ref') {
+        flush();
+        cur = { label: '', canon: '', paras: [[]] };
+        if (expand && ln.src >= 0 && parsed.sections) {
+          cur = { label: ln.id, canon: ln.id, paras: [[]] };
+          for (const b of sectionBodyOf(parsed, ln.src)) add(b);
+          flush();
+          cur = { label: '', canon: '', paras: [[]] };
+        }
+      } else add(ln);
     }
     flush();
     return out;
+  }
+  // Chord.sectionBody와 같은 일을 하되 Chord 없이도 쓸 수 있게 한 사본 (Node 시험에서 Chord 없이 parsed만 넘길 때)
+  function sectionBodyOf(parsed, si) {
+    const s = parsed.sections[si];
+    if (!s) return [];
+    let a = s.start;
+    if (parsed.lines[a] && parsed.lines[a].type === 'comment') a++;
+    const body = parsed.lines.slice(a, s.end).filter((l) => l.type !== 'colbreak' && l.type !== 'ref');
+    while (body.length && body[body.length - 1].type === 'blank') body.pop();
+    while (body.length && body[0].type === 'blank') body.shift();
+    return body;
   }
 
   // 송폼 글자 → 순서 목록 [{canon, n, raw}]. 괄호 메모·알 수 없는 글자는 canon ''로 둔다.
@@ -129,11 +123,14 @@
   }
 
   const sectionText = (sec) => sec.paras.map((p) => p.join('\n')).join('\n\n');
+  // 구간 이름표: 알아보는 이름은 표준 약어([V1]·[C])로, 그 밖의 메모는 적은 그대로
+  const tagOf = (x) => (x.canon || x.label || '');
 
   // 곡 하나의 가사. mode: 'labeled'(구간 이름 + 가사) | 'form'(송폼 순서대로) | 'plain'(가사만)
   // 반환 {text, noForm(송폼이 없어 악보 순서로 대신함), missing(악보에 없어 건너뛴 송폼 글자들), empty(가사가 없음)}
+  // labeled·plain은 악보에 적힌 순서이므로 자리표시를 원본 가사로 채워 그 자리에 넣는다. form은 송폼이 순서를 정한다.
   function songLyrics(parsed, form, mode) {
-    const secs = lyricSections(parsed);
+    const secs = lyricSections(parsed, { expandRefs: mode !== 'form' });
     if (!secs.length) return { text: '', noForm: false, missing: [], empty: true };
     if (mode === 'form') {
       const order = formOrder(form);
@@ -141,9 +138,13 @@
       const missing = [];
       for (const o of order) {
         if (!o.canon) { missing.push(o.raw); continue; }
-        if (['인트로', '간주'].includes(o.canon) && !secs.some((x) => x.canon === o.canon)) continue; // 연주 구간은 없어도 정상
-        const hit = secs.find((x) => x.canon === o.canon);
-        if (!hit) { missing.push(o.raw); continue; }
+        // 같은 이름이 있으면 그것, 없으면 같은 종류(C2→C, End↔Outro)
+        const hit = secs.find((x) => x.canon === o.canon) || secs.find((x) => x.canon && Sections.kindKey(x.canon) === Sections.kindKey(o.canon));
+        if (!hit) {
+          if (['Intro', 'Inter'].includes(Sections.kindKey(o.canon))) continue; // 연주 구간은 없어도 정상
+          missing.push(o.raw);
+          continue;
+        }
         for (let i = 0; i < o.n; i++) parts.push(sectionText(hit));
       }
       if (parts.length) return { text: parts.join('\n\n'), noForm: false, missing, empty: false };
@@ -151,7 +152,7 @@
       return { text: secs.map(sectionText).join('\n\n'), noForm: true, missing: [], empty: false };
     }
     if (mode === 'labeled') {
-      return { text: secs.map((x) => (x.label ? `[${x.label}]\n` : '') + sectionText(x)).join('\n\n'), noForm: false, missing: [], empty: false };
+      return { text: secs.map((x) => (tagOf(x) ? `[${tagOf(x)}]\n` : '') + sectionText(x)).join('\n\n'), noForm: false, missing: [], empty: false };
     }
     return { text: secs.map(sectionText).join('\n\n'), noForm: false, missing: [], empty: false };
   }

@@ -526,7 +526,7 @@
     const files = song.files || [];
     const hasText = /\S/.test(song.chordpro || '');
 
-    const prefs = { cols: ls.get('ews_cols', 'auto') === '1' ? '1' : 'auto', size: +ls.get('ews_size', '18'), chords: ls.get('ews_chords', '1') === '1', acc: ls.get('ews_acc', 'auto') };
+    const prefs = { cols: ls.get('ews_cols', 'auto') === '1' ? '1' : 'auto', size: +ls.get('ews_size', '18'), chords: ls.get('ews_chords', '1') === '1', acc: ls.get('ews_acc', 'auto'), names: ls.get('ews_names', 'full') === 'abbr' ? 'abbr' : 'full', refs: ls.get('ews_refs', 'mark') === 'all' ? 'all' : 'mark' };
     let saved = {};
     try { saved = JSON.parse(ls.get('ews_song_' + id, '{}')) || {}; } catch {}
     const st = { shift: Number.isInteger(saved.shift) ? saved.shift : 0, capo: Number.isInteger(saved.capo) ? saved.capo : 0 };
@@ -623,6 +623,11 @@
               <button class="btn small" id="chtoggle"></button>
               <button class="btn small" id="coltoggle"></button>
             </div>
+            <div class="row">
+              <span class="ctl-label">구간</span>
+              <button class="btn small" id="nametoggle"></button>
+              <button class="btn small" id="reftoggle"></button>
+            </div>
             <div class="capo-note" id="note"></div>
           </div>
           <p class="hint">키 변경은 이 기기에만 저장됩니다.</p>
@@ -669,13 +674,16 @@
     }
     const onWinResize = () => { if (document.body.contains($score)) applyCols(); else window.removeEventListener('resize', onWinResize); };
     window.addEventListener('resize', onWinResize);
+    const viewOpen = new Set(); // 탭해서 펼친 자리표시({ref}) 줄 번호
     function draw() {
       document.documentElement.style.setProperty('--song-size', prefs.size + 'px');
       $chtoggle.textContent = prefs.chords ? '코드 숨기기' : '코드 보기';
       document.getElementById('coltoggle').textContent = prefs.cols === 'auto' ? '2단: 자동' : '2단: 끔';
+      document.getElementById('nametoggle').textContent = prefs.names === 'full' ? '이름: 풀네임' : '이름: 약어';
+      document.getElementById('reftoggle').textContent = prefs.refs === 'all' ? '반복 구간: 모두 펼침' : '반복 구간: 표시만';
       applyCols();
       const p = Chord.plan(origKey, st.shift, st.capo, prefs.acc);
-      $score.innerHTML = Chord.renderHTML(parsed, { originalKey: origKey, shift: st.shift, capo: st.capo, acc: prefs.acc, showChords: prefs.chords });
+      $score.innerHTML = Chord.renderHTML(parsed, { originalKey: origKey, shift: st.shift, capo: st.capo, acc: prefs.acc, showChords: prefs.chords, names: prefs.names, refs: prefs.refs === 'all' ? 'all' : viewOpen });
       if (hasKey) {
         $key.value = p.soundKey;
         $note.textContent = st.capo ? `카포 ${st.capo}프렛 · 실제 키 ${p.soundKey} · ${p.shapeKey} 코드로 연주` : '';
@@ -736,6 +744,16 @@
     document.getElementById('fdown').onclick = () => { prefs.size = Math.max(12, prefs.size - 2); ls.set('ews_size', prefs.size); draw(); };
     document.getElementById('coltoggle').onclick = () => { prefs.cols = prefs.cols === 'auto' ? '1' : 'auto'; ls.set('ews_cols', prefs.cols); draw(); };
     $chtoggle.onclick = () => { prefs.chords = !prefs.chords; ls.set('ews_chords', prefs.chords ? '1' : '0'); draw(); };
+    document.getElementById('nametoggle').onclick = () => { prefs.names = prefs.names === 'full' ? 'abbr' : 'full'; ls.set('ews_names', prefs.names); draw(); };
+    document.getElementById('reftoggle').onclick = () => { prefs.refs = prefs.refs === 'all' ? 'mark' : 'all'; ls.set('ews_refs', prefs.refs); viewOpen.clear(); draw(); };
+    // 자리표시("↻ Chorus")를 탭하면 그 자리에서 원본을 펼치고, 펼쳐진 구간 이름을 탭하면 다시 접는다
+    $score.addEventListener('click', (ev) => {
+      const t = ev.target.closest && ev.target.closest('[data-ri]');
+      if (!t || !$score.contains(t) || t.classList.contains('orphan') || prefs.refs === 'all') return;
+      const ri = +t.dataset.ri;
+      if (viewOpen.has(ri)) viewOpen.delete(ri); else viewOpen.add(ri);
+      draw();
+    });
     draw();
 
     // 코드 악보 / 이미지 악보 전환 (둘 다 있을 때만 탭 표시, 선택은 이 기기에 기억)
@@ -773,11 +791,13 @@
   // ---------- 곡 편집 ----------
   const SAMPLE = `{title: 곡 제목}
 {key: G}
-{comment: 1절}
+{comment: V1}
 [G]주님은 [C]나의 [G]목자
 [Em]부족함이 [D]없으리
-{comment: 후렴}
-[C]찬양해 [D]찬양해 [G]주님을`;
+{comment: C}
+{soc}
+[C]찬양해 [D]찬양해 [G]주님을
+{eoc}`;
 
   async function viewEdit(id, q) {
     if (!me.canEdit) {
@@ -823,7 +843,7 @@
           <div class="card">
             <div id="draftbar" class="draftbar" hidden></div>
             <div class="row between" style="margin-bottom:8px"><span class="lbl-like">악보 본문</span></div>
-            <div class="row" style="margin:0 0 8px"><button type="button" class="btn small" id="pastebtn">📋 가사 붙여넣기로 시작</button></div>
+            <div class="row" style="margin:0 0 8px;flex-wrap:wrap"><button type="button" class="btn small" id="pastebtn">📋 가사 붙여넣기로 시작</button><button type="button" class="btn small" id="repbtn">↻ 반복 구간 정리</button></div>
             <div id="tabpane" class="te">
               <div id="te-lines" class="te-lines"></div>
               <div class="te-pal" id="te-pal"></div>
@@ -858,7 +878,7 @@
       document.documentElement.style.setProperty('--song-size', '17px');
       const parsed = Chord.parseChordPro($('cp').value);
       const gk = Chord.guessKey(parsed, pvKey());
-      $('pv').innerHTML = Chord.renderHTML(parsed, { originalKey: gk.key, showChords: true }) || '<p class="muted">본문을 입력하면 여기에 악보가 나타납니다.</p>';
+      $('pv').innerHTML = Chord.renderHTML(parsed, { originalKey: gk.key, showChords: true, names: 'full', refs: 'mark' }) || '<p class="muted">본문을 입력하면 여기에 악보가 나타납니다.</p>';
     }
     $('cp').addEventListener('input', preview);
     $('key').addEventListener('change', preview);
@@ -943,7 +963,12 @@
             cells += cell(l.text.length, '＋', ' tend');
             body = `<div class="te-ln">${cells}</div>`;
           } else if (l.kind === 'comment') {
-            body = `<div class="te-lab">${esc(l.label || '(이름 없음)')}</div>`;
+            const lc = Sections.canon(l.label);
+            body = `<div class="te-lab">${lc ? `${esc(Sections.display(lc.id, 'full'))}${lc.rest ? ' ' + esc(lc.rest) : ''}<small>${esc(lc.id)}</small>` : esc(l.label || '(이름 없음)')}</div>`;
+          } else if (l.kind === 'ref') {
+            const rc = Sections.canon(l.id);
+            const ok = !!rc && !!TabEdit.refSource(tm, li);
+            body = `<div class="te-ref${ok ? '' : ' orphan'}">↻ ${esc(rc ? Sections.display(rc.id, 'full') : l.id || '(이름 없음)')}${l.rest ? ' ' + esc(l.rest) : ''}<small>${ok ? '위와 같음 · ⋯에서 펼쳐서 따로 쓸 수 있어요' : rc ? '같은 이름의 구간이 없어요' : '이름을 알아볼 수 없어요'}</small></div>`;
           } else if (l.kind === 'soc' || l.kind === 'eoc') {
             body = `<div class="te-soc">${l.kind === 'soc' ? '후렴 시작' : '후렴 끝'}</div>`;
           } else if (l.kind === 'colb') {
@@ -1121,7 +1146,14 @@
     function lineSheet(li) {
       const l = tm.lines[li];
       if (!l) return;
-      const secChips = (skipChorus) => `<div class="te-pal-row wrap">${TabEdit.SECTION_NAMES.filter((n) => !(skipChorus && n === '후렴')).map((n) => `<button type="button" class="chip ctb sm" data-sec="${esc(n)}">${esc(n)}</button>`).join('')}</div>`;
+      const secChips = () => `<div class="te-pal-row wrap">${TabEdit.SECTION_NAMES.map((n) => `<button type="button" class="chip ctb sm" data-sec="${esc(n)}">${esc(n)}${Sections.display(n, 'full') !== n ? `<small>${esc(Sections.display(n, 'full'))}</small>` : ''}</button>`).join('')}</div>`;
+      // 앞 구간 자리표시 칩: 이미 나온 구간 이름 중에서 고른다
+      const refChips = () => {
+        const used = TabEdit.usedSectionIds(tm);
+        return used.length ? `<p class="mlabel">↻ 앞 구간 자리표시 <small class="muted">(같은 구간을 다시 쓰지 않고 위치만 표시)</small></p><div class="te-pal-row wrap">${used.map((n) => `<button type="button" class="chip ctb sm" data-refsec="${esc(n)}">↻ ${esc(n)}</button>`).join('')}</div>` : '';
+      };
+      // "이 구간을 자리표시로": 같은 이름의 구간이 앞에 있을 때만
+      const toRefOk = (() => { const r = TabEdit.sectionToRef(tm, li); return !!(r && (r.model || r.diff)); })();
       const inCh = TabEdit.isInChorus(tm, li);
       // 반복 구간 코드 복사: 같은 가사 줄이 있으면 줄 복사, 코드가 달린 다른 구간이 있으면 구간 복사를 보여 준다
       const sameLi = TabEdit.findSameLyric(tm, li);
@@ -1147,22 +1179,29 @@
           ${T('instr-dn', '🎸', '아래에 코드 줄<small>간주·인트로</small>')}
           ${colTile(T)}
         </div>
-        <details class="mdet"><summary>구간 이름 넣기 (1절·후렴 …)</summary>${secChips(true)}</details>
+        ${toRefOk ? `<div class="mgrid">${T('to-ref', '↻', '이 구간을 자리표시로<small>앞 구간과 같을 때</small>')}</div>` : ''}
+        <details class="mdet"><summary>구간 이름 넣기 (V1 · C · B …)</summary>${secChips()}${refChips()}</details>
         <p class="mlabel">정리</p>
         <div class="mgrid">
           ${l.chords.length ? T('clear', '🧹', '코드 모두 지우기') : ''}
           ${T('del', '🗑', '이 줄 삭제', 'danger')}
         </div>`;
       } else if (l.kind === 'comment') {
-        h += `<p class="hint" style="margin:0 0 4px">이름 바꾸기</p>${secChips(false)}
+        h += `<p class="hint" style="margin:0 0 4px">이름 바꾸기</p>${secChips()}
+          ${toRefOk ? `<div class="mgrid" style="margin-top:6px">${(() => { const T = (op, ic, txt) => `<button type="button" class="btn mtile" data-op="${op}"><span class="mi">${ic}</span><span>${txt}</span></button>`; return T('to-ref', '↻', '이 구간을 자리표시로<small>앞 구간과 같을 때</small>'); })()}</div>` : ''}
           <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn" data-op="${colAt >= 0 ? 'colb-off' : 'colb'}">${colAt >= 0 ? '↤ 단 나누기 지우기' : '↦ 이 구간부터 다음 단'}</button><button type="button" class="btn danger" data-op="del">이 이름표 삭제</button></div>`;
       } else if (l.kind === 'colb') {
         h += `<p class="hint">2단 보기에서 이 줄 아래부터 오른쪽 단에 나와요. 1단으로 볼 때는 보이지 않아요.</p>
           <div class="menu-col"><button type="button" class="btn danger" data-op="del">단 나누기 지우기</button></div>`;
       } else if (l.kind === 'soc' || l.kind === 'eoc') {
         h += `<div class="menu-col"><button type="button" class="btn" data-op="chorus">후렴 표시 끄기</button><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button></div>`;
+      } else if (l.kind === 'ref') {
+        const hasSrc = !!TabEdit.refSource(tm, li);
+        h += `<p class="hint" style="margin:0 0 6px">앞에 나온 <b>${esc(l.id)}</b> 구간을 여기서 다시 보여 주는 자리표시예요. 원본을 고치면 여기도 함께 바뀌어요.</p>
+          <div class="menu-col">${hasSrc ? '<button type="button" class="btn" data-op="ref-expand">✂ 펼쳐서 따로 쓰기 (원본과 따로 고치기)</button>' : ''}<button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">자리표시 삭제</button></div>
+          <p class="hint" style="margin:8px 0 4px">다른 구간 이름으로 바꾸기</p>${secChips()}`;
       } else if (l.kind === 'blank') {
-        h += `<p class="hint" style="margin:0 0 4px">여기 아래에 구간 이름 넣기</p>${secChips(true)}
+        h += `<p class="hint" style="margin:0 0 4px">여기 아래에 구간 이름 넣기</p>${secChips()}${refChips()}
           <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 빈 줄 삭제</button></div>`;
       } else {
         h += `<p class="hint">앱이 모르는 모양의 줄이라 그대로 두었어요. 글자를 직접 고칠 수 있어요.</p>
@@ -1173,10 +1212,17 @@
       sh.wrap.addEventListener('click', (ev) => {
         const b = ev.target.closest('button');
         if (!b) return;
+        const refsec = b.dataset.refsec;
+        if (refsec !== undefined) {
+          sh.close();
+          apply(TabEdit.insertRef(tm, l.kind === 'blank' ? li + 1 : li, refsec));
+          return;
+        }
         const sec = b.dataset.sec;
         if (sec !== undefined) {
           sh.close();
           if (l.kind === 'comment') apply(TabEdit.replaceLine(tm, li, '{comment: ' + sec + '}'));
+          else if (l.kind === 'ref') apply(TabEdit.replaceLine(tm, li, '{ref: ' + sec + '}'));
           else {
             const at = l.kind === 'blank' ? li + 1 : li;
             const r = TabEdit.insertSection(tm, at, sec);
@@ -1196,6 +1242,8 @@
           if (r) { apply(r); toast('코드를 복사했어요.'); }
         } else if (op === 'copy-block') blockCopySheet(li);
         else if (op === 'del') apply(TabEdit.deleteLine(tm, li));
+        else if (op === 'to-ref') toRefSheet(li);
+        else if (op === 'ref-expand') { const r = TabEdit.refToSection(tm, li); if (r) { apply(r); toast('펼쳐서 따로 쓸 수 있게 했어요. 이제 이 구간은 원본과 따로 고쳐져요.'); } }
         else if (op === 'clear') apply(TabEdit.clearChords(tm, li));
         else if (op === 'colb') { apply(TabEdit.setColBreak(tm, li)); toast('2단 보기에서 여기부터 오른쪽 단으로 넘어가요. (한 곡에 한 곳만 적용돼요)'); }
         else if (op === 'colb-off') { const ci = TabEdit.colBreakAt(tm, li); if (ci >= 0) apply(TabEdit.deleteLine(tm, ci)); }
@@ -1209,6 +1257,37 @@
         }
       });
     }
+    // 이 구간을 자리표시로: 코드·가사가 같으면 바로, 다르면 무엇이 사라지는지 알려 주고 확인받는다
+    function toRefSheet(li) {
+      const r = TabEdit.sectionToRef(tm, li);
+      if (r.model) { apply(r); toast('자리표시로 바꿨어요. 되돌리기(↶)로 취소할 수 있어요.'); return; }
+      if (r.need === 'name') { toast('구간 이름(V1·C·B …)을 먼저 붙여 주세요.'); return; }
+      if (r.need) { toast('앞에 같은 이름의 구간이 없어서 바꿀 수 없어요.'); return; }
+      const sh = showSheet(`<h2 style="margin-top:0">자리표시로 바꿀까요?</h2>
+        <p class="hint" style="margin:0 0 8px">이 구간의 코드·가사가 앞의 같은 이름 구간(${r.srcA + 1}번째 줄)과 달라요. 바꾸면 <b>이 구간에만 있는 코드·가사는 사라지고</b> 앞 구간과 같게 보여요. (되돌리기 ↶ 가능)</p>
+        <div class="row"><button type="button" class="btn danger" id="tr-ok">그래도 바꾸기</button><button type="button" class="btn" id="tr-no">취소</button></div>`);
+      sh.q('#tr-no').onclick = () => sh.close();
+      sh.q('#tr-ok').onclick = () => { sh.close(); const r2 = TabEdit.sectionToRef(tm, li, { force: true }); if (r2.model) apply(r2); };
+    }
+    // 반복 구간 정리: 같은 이름 구간이 또 나오면 두 번째부터 자리표시로 바꾸자고 제안한다. 바뀔 곳을 미리 보여 준다.
+    function repeatSheet() {
+      const rows = TabEdit.repeatCandidates(tm);
+      if (!rows.length) { toast('앞 구간과 이름이 같은 반복 구간이 없어요. (구간 이름이 있어야 찾을 수 있어요)'); return; }
+      const sh = showSheet(`<h2 style="margin-top:0">반복 구간 정리</h2>
+        <p class="hint" style="margin:0 0 8px">앞에 나온 구간과 이름이 같은 구간이에요. <b>두 번째부터 자리표시로 바꾸면</b> 한 번만 쓰고 고치면 돼요. 코드·가사가 달라 바꾸면 내용이 사라지는 곳은 처음엔 꺼져 있어요.</p>
+        <div class="ps-blocks">${rows.map((r, i) => `<label class="ps-block rep"><input type="checkbox" data-i="${i}" ${r.same ? 'checked' : ''}><span class="grow"><b>${esc(Sections.display(r.id, 'full'))}</b> · ${r.a + 1}번째 줄 ${r.same ? '<span class="muted small">앞 구간과 똑같아요</span>' : `<span class="error small" style="margin:0">${esc(r.why)}</span>`}</span></label>`).join('')}</div>
+        <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="rp-ok">선택한 구간을 자리표시로</button><button type="button" class="btn" id="rp-no">닫기</button></div>`);
+      sh.q('#rp-no').onclick = () => sh.close();
+      sh.q('#rp-ok').onclick = () => {
+        const pick = [...sh.wrap.querySelectorAll('input[data-i]:checked')].map((c) => rows[+c.dataset.i]);
+        sh.close();
+        if (!pick.length) return;
+        const r = TabEdit.collapseRepeats(tm, pick);
+        apply(r);
+        toast(`${r.n}곳을 자리표시로 바꿨어요. 되돌리기(↶)로 취소할 수 있어요.`);
+      };
+    }
+
     // 구간 코드 복사: 이 줄이 들어 있는 구간(덩어리)에, 코드가 달린 다른 구간의 코드를 줄 순서대로 복사한다
     function blockCopySheet(li) {
       const bl = TabEdit.bodyBlocks(tm);
@@ -1273,11 +1352,14 @@
       };
     }
 
-    // 가사 붙여넣기: 빈 줄 기준으로 구간을 나누고, 구간 이름을 고른 뒤 악보에 넣는다
+    // 가사 붙여넣기 (19차): 구간을 나누고 이름을 추측한 뒤 한 화면에서 확인한다.
+    //  · 이름 바꾸기 = 이름 칩을 탭 → 아래에 뜨는 이름 칩 하나 탭. 같은 가사의 다른 덩어리도 같은 이름으로 함께 바뀐다.
+    //  · 같은 가사가 반복되면 자동으로 자리표시(↻ Chorus · 위와 같음). 카드마다 "펼쳐서 넣기"로 바꿀 수 있다.
+    //  · 경계가 틀리면 카드 ⋯에서 줄 사이를 탭해 나누거나 위와 합친다. 위 "추정 송폼"은 보여 주고 복사만 한다.
     function pasteSheet() {
       const sh = showSheet(`<h2 style="margin-top:0">가사 붙여넣기</h2>
         <div id="ps-step1">
-          <p class="hint" style="margin:0 0 6px">가사를 통째로 붙여넣으세요. 빈 줄을 기준으로 구간을 나누고, 이름은 다음 화면에서 고칠 수 있어요. <b>[1절] [후렴]</b> 같은 이름표 줄이 있으면 알아서 읽어요.</p>
+          <p class="hint" style="margin:0 0 6px">가사를 통째로 붙여넣으세요. 빈 줄을 기준으로 구간을 나누고, <b>V1 · Chorus · 1절 · [후렴]</b> 같은 이름만 적힌 줄이 있으면 이름표로 읽어요. 빈 줄이 없어도 반복되는 줄을 보고 나눠 봐요.</p>
           <textarea id="ps-in" rows="8" spellcheck="false" placeholder="여기에 가사를 붙여넣기"></textarea>
           <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="ps-next">구간 나누기</button><button type="button" class="btn" id="ps-no">닫기</button></div>
         </div>
@@ -1285,29 +1367,72 @@
       const inp = sh.q('#ps-in');
       sh.q('#ps-no').onclick = () => sh.close();
       let blocks = [];
+      let selI = -1; // 이름을 바꾸려고 누른 카드
+      let cutI = -1; // 줄 나누기를 열어 둔 카드
+      let brkNote = false;
+      const s2 = sh.q('#ps-step2');
+      const nameOf = (id) => (id ? Sections.display(id, 'full') : '이름 없음');
+      function render2() {
+        const keep = s2.querySelector('.ps-blocks');
+        const sc = keep ? keep.scrollTop : 0;
+        const form = TabEdit.estimateForm(blocks);
+        const nref = blocks.filter((b) => b.ref).length;
+        s2.innerHTML = `
+          <div class="ps-form"><span class="small"><b>추정 송폼</b></span> <code>${esc(form) || '(이름이 없어요)'}</code> ${form ? '<button type="button" class="btn small" id="ps-fcopy">복사</button>' : ''}</div>
+          <p class="hint" style="margin:4px 0 6px">${brkNote ? '빈 줄이 없어서 <b>반복되는 줄로 나눠 봤어요.</b> ' : ''}${blocks.length}개 구간${nref ? ` · 반복 ${nref}곳은 자리표시(↻)로 넣어요` : ''}. 노란 이름은 추측이라 한 번 확인해 주세요. 이름 칩을 누르면 바꿀 수 있어요.</p>
+          <div class="ps-blocks">${blocks
+            .map((b, i) => {
+              const prev = b.lines.slice(0, 2).join(' / ') + (b.lines.length > 2 ? ` … (${b.lines.length}줄)` : '');
+              const cut = cutI === i
+                ? `<div class="ps-lines">${b.lines.map((ln, k) => `${k > 0 ? `<button type="button" class="ps-cut" data-a="cut" data-i="${i}" data-k="${k}">✂ 여기서 나누기</button>` : ''}<div class="ps-ln">${esc(ln)}</div>`).join('')}</div>`
+                : '';
+              return `<div class="ps-card ${b.guess ? 'guess' : ''} ${b.ref ? 'isref' : ''} ${selI === i ? 'sel' : ''}">
+                <div class="ps-head"><button type="button" class="ps-chip" data-a="name" data-i="${i}" aria-label="${i + 1}번째 구간 이름 바꾸기">${esc(b.label || '이름 없음')}</button><span class="ps-nm">${esc(nameOf(b.label))}${b.ref ? ' <small>↻ 위와 같음</small>' : ''}</span><button type="button" class="btn small" data-a="more" data-i="${i}" aria-label="줄 나누기·합치기">⋯</button></div>
+                <div class="ps-prev">${esc(prev)}</div>
+                ${b.ref || b.expand ? `<label class="chk-row small"><input type="checkbox" data-a="expand" data-i="${i}" ${b.expand ? 'checked' : ''}> 자리표시 말고 펼쳐서 넣기</label>` : ''}
+                ${cutI === i ? `${cut}${i > 0 ? `<button type="button" class="btn small" data-a="merge" data-i="${i}">↑ 위 구간과 합치기</button>` : ''}` : ''}
+              </div>`;
+            })
+            .join('')}</div>
+          <div class="ps-pal" id="ps-pal" ${selI >= 0 ? '' : 'hidden'}><div class="small" style="margin-bottom:4px">${selI >= 0 ? `${selI + 1}번째 구간 이름` : ''}</div><div class="te-pal-row wrap">${['', ...Sections.PICKS].map((n) => `<button type="button" class="chip ctb sm" data-a="pick" data-v="${esc(n)}">${n ? esc(n) : '이름 없음'}${n && Sections.display(n, 'full') !== n ? `<small>${esc(Sections.display(n, 'full'))}</small>` : ''}</button>`).join('')}</div></div>
+          <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="ps-ok">악보에 넣기</button><button type="button" class="btn" id="ps-back">← 다시 붙여넣기</button></div>`;
+        const nb = s2.querySelector('.ps-blocks');
+        if (nb) nb.scrollTop = sc;
+      }
       sh.q('#ps-next').onclick = () => {
         blocks = TabEdit.splitLyrics(inp.value);
         if (!blocks.length) { toast('가사가 비어 있어요.'); return; }
-        const names = ['', ...TabEdit.SECTION_NAMES];
-        const s2 = sh.q('#ps-step2');
+        brkNote = !!blocks.guessedBreaks;
+        selI = -1; cutI = -1;
         s2.hidden = false;
         sh.q('#ps-step1').hidden = true;
-        s2.innerHTML = `<p class="hint" style="margin:0 0 8px">${blocks.length}개 구간으로 나눴어요. 이름이 맞는지 확인하세요. (이름 없음 = 이름표 없이 가사만)</p>
-          <div class="ps-blocks">${blocks
-            .map((b, i) => `<div class="ps-block"><select data-i="${i}" aria-label="${i + 1}번째 구간 이름">${names.map((n) => `<option value="${esc(n)}" ${n === b.label ? 'selected' : ''}>${n || '(이름 없음)'}</option>`).join('')}</select><div class="ps-prev">${esc(b.lines.slice(0, 2).join(' / '))}${b.lines.length > 2 ? ` … (${b.lines.length}줄)` : ''}</div></div>`)
-            .join('')}</div>
-          <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="ps-ok">악보에 넣기</button><button type="button" class="btn" id="ps-back">← 다시 붙여넣기</button></div>`;
-        s2.querySelectorAll('select').forEach((sel) => (sel.onchange = () => { blocks[+sel.dataset.i].label = sel.value; }));
-        sh.q('#ps-back').onclick = () => { s2.hidden = true; sh.q('#ps-step1').hidden = false; };
-        sh.q('#ps-ok').onclick = () => {
+        render2();
+      };
+      s2.addEventListener('click', (ev) => {
+        const t = ev.target.closest('[data-a], #ps-ok, #ps-back, #ps-fcopy');
+        if (!t) return;
+        if (t.id === 'ps-back') { s2.hidden = true; sh.q('#ps-step1').hidden = false; return; }
+        if (t.id === 'ps-fcopy') { copyText(TabEdit.estimateForm(blocks)); return; }
+        if (t.id === 'ps-ok') {
           const built = TabEdit.buildFromBlocks(blocks);
           const cur = ta.value.replace(/\s+$/, '');
           sh.close();
           setBody(cur ? cur + '\n\n' + built : built);
           toast('가사를 넣었습니다. 글자를 탭해서 코드를 얹어 보세요.');
-        };
-      };
+          return;
+        }
+        const a = t.dataset.a;
+        const i = +t.dataset.i;
+        if (a === 'name') { selI = selI === i ? -1 : i; render2(); }
+        else if (a === 'pick') {
+          if (selI >= 0) { blocks = TabEdit.renameBlock(blocks, selI, t.dataset.v); selI = -1; render2(); }
+        } else if (a === 'more') { cutI = cutI === i ? -1 : i; render2(); }
+        else if (a === 'cut') { blocks = TabEdit.splitBlockAt(blocks, i, +t.dataset.k); cutI = -1; render2(); }
+        else if (a === 'merge') { blocks = TabEdit.mergeBlockUp(blocks, i); cutI = -1; render2(); }
+        else if (a === 'expand') { blocks[i].expand = t.checked; TabEdit.markRefs(blocks); render2(); }
+      });
     }
+    $('repbtn').onclick = repeatSheet;
     $('pastebtn').onclick = pasteSheet;
     // 키(원래 키)를 바꾸면 코드 칩도 그 키에 맞춰 다시 그린다
     $('key').addEventListener('change', tePalette);
@@ -2554,6 +2679,7 @@
       wake: ls.get('ews_play_wake', '1') === '1',
       cols: ['auto', '1', '2'].includes(ls.get('ews_play_cols', 'auto')) ? ls.get('ews_play_cols', 'auto') : 'auto',
       pages: ls.get('ews_play_pages', '1') !== '0', // 긴 코드 악보: 쪽 넘기기(기본) / 세로 스크롤
+      names: ls.get('ews_names', 'full') === 'abbr' ? 'abbr' : 'full', // 구간 이름: 풀네임 / 약어
     };
     const exitHref = src.sl ? '#/setlist/' + src.sl : '#/song/' + src.songId + (q.toString() ? '?' + q.toString() : '');
 
@@ -2677,7 +2803,7 @@
       ].join('');
       $pb.classList.toggle('img', isImg);
       if (!isImg) {
-        $pb.innerHTML = `<div class="score">${Chord.renderHTML(parsed, { originalKey: origKey, shift: cur.shift, capo: cur.capo, acc: P.acc, showChords: P.chords, parts: true })}</div>`;
+        $pb.innerHTML = '<div class="score"></div>'; // 코드 악보는 아래 drawChord가 그리고 배치한다
         $pb.scrollTop = top;
       } else if (pages.length) {
         $pb.innerHTML = `<img class="sheet" src="${esc(pages[cur.page].url)}" alt="악보 ${cur.page + 1}">`;
@@ -2690,7 +2816,7 @@
       if (cur.tab === 'chord') {
         const want = cur.wantLast ? Infinity : cur.page;
         delete cur.wantLast;
-        const info = fitCols($pb, $play, want);
+        const info = drawChord($pb, $play, cur, want);
         if (info && anchor !== null && anchor !== undefined) setChordPage($pb, pageOfAnchor($pb, anchor));
         syncChordPage(info);
       } else {
@@ -2709,6 +2835,44 @@
     // body/varEl을 바꿔 쓰면 옆으로 밀려 들어오는 이웃 화면(ghost)도 같은 규칙으로 맞출 수 있다.
     // 쪽 넘기기로 배치했으면 {pages, page, step, v}를 돌려준다(아니면 null). wantPage는 보여 줄 쪽(Infinity=마지막 쪽).
     const COL_GAP = 36;
+    // 코드 악보를 그리고 배치한다. 구간 자리표시({ref})는 먼저 "↻ Chorus"로만 놓고,
+    //  · 쪽 넘기기: 자리표시가 놓인 쪽에 원본 구간이 안 보이면 그 자리표시만 펼친다. 펼치면 뒤가 밀리므로 다시 배치해 보되,
+    //    한 번 펼친 것은 접지 않아서 최대 4번 안에 끝난다.
+    //  · 세로 스크롤: 곡이 한 화면에 들어가면 표시만, 아니면 모두 펼친다.
+    // st = {parsed, origKey, shift, capo}
+    function pageOfEl(sc, el) {
+      return Math.floor((el.getBoundingClientRect().left - sc.getBoundingClientRect().left + 2) / (+sc.dataset.step || 1));
+    }
+    function drawChord(body, varEl, st, wantPage) {
+      const base = { originalKey: st.origKey, shift: st.shift, capo: st.capo, acc: P.acc, showChords: P.chords, parts: true, names: P.names };
+      const refLines = st.parsed.lines.map((l, i) => (l.type === 'ref' && l.src >= 0 ? i : -1)).filter((i) => i >= 0);
+      const open = new Set();
+      let info = null;
+      for (let pass = 0; pass < 4; pass++) {
+        body.innerHTML = `<div class="score">${Chord.renderHTML(st.parsed, Object.assign({ refs: open }, base))}</div>`;
+        info = fitCols(body, varEl, wantPage);
+        if (!refLines.length) break;
+        const sc = body.querySelector('.score');
+        let fresh = [];
+        if (info && sc && sc.dataset.step) {
+          if (info.pages > 1) {
+            sc.querySelectorAll('.part.refp').forEach((rp) => {
+              const src = sc.querySelector('.part[data-s="' + rp.dataset.src + '"]:not(.refp):not([data-ri])');
+              if (!src || pageOfEl(sc, src) !== pageOfEl(sc, rp)) fresh.push(+rp.dataset.ri);
+            });
+          }
+        } else if (!P.pages) {
+          const fits = body.classList.contains('cols') || body.scrollHeight <= body.clientHeight + 2;
+          if (!fits) fresh = refLines.filter((i) => !open.has(i));
+        } else if (sc && !body.classList.contains('paged')) {
+          // 쪽 넘기기인데 쪽 배치가 안 된 좁은 칸(대기 화면 등): 펼치지 않는다
+        }
+        fresh = fresh.filter((i) => !open.has(i));
+        if (!fresh.length) break;
+        fresh.forEach((i) => open.add(i));
+      }
+      return info;
+    }
     function fitCols(body, varEl, wantPage) {
       body = body || $pb;
       varEl = varEl || $play;
@@ -2902,14 +3066,14 @@
       } else if (st.tab === 'img') {
         el.innerHTML = Files.renderPane(st.files);
       } else if (st.tab === 'chord') {
-        el.innerHTML = `<div class="score">${Chord.renderHTML(st.parsed, { originalKey: st.origKey, shift: st.shift, capo: st.capo, acc: P.acc, showChords: P.chords, parts: true })}</div>`;
+        el.innerHTML = '<div class="score"></div>';
         chordShown = true;
         chordPage = tg.type === 'page' ? tg.page : tg.start === 'last' ? Infinity : 0;
       } else {
         el.innerHTML = '<p class="muted center" style="margin-top:40px">등록된 악보가 아직 없습니다.</p>';
       }
       g('pbody').parentNode.insertBefore(el, g('pel'));
-      if (chordShown) fitCols(el, el, chordPage);
+      if (chordShown) drawChord(el, el, st, chordPage);
       else el.style.setProperty('--song-size', P.size + 'px');
       return el;
     }
@@ -3059,6 +3223,7 @@
           <div class="srow"><span>글자 크기</span><span class="row"><button type="button" class="seg" data-a="fdown">가−</button><b>${P.size}</b><button type="button" class="seg" data-a="fup">가+</button></span></div>
           <div class="srow"><span>2단 보기</span><span class="row">${seg('cols', [['auto', '자동'], ['1', '1단'], ['2', '2단']], P.cols)}</span></div>
           <div class="srow"><span>긴 악보</span><span class="row">${seg('pages', [['1', '쪽 넘기기'], ['0', '세로 스크롤']], P.pages ? '1' : '0')}</span></div>
+          <div class="srow"><span>구간 이름</span><span class="row">${seg('names', [['full', '풀네임'], ['abbr', '약어']], P.names)}</span></div>
           <div class="srow"><span>코드 표시</span><span class="row">${seg('chords', [['1', '보기'], ['0', '숨기기']], P.chords ? '1' : '0')}</span></div>
           <div class="srow"><span>코드 표기</span><span class="row">${seg('acc', [['auto', '자동'], ['sharp', '♯'], ['flat', '♭']], P.acc)}</span></div>
           <p class="hint">키 변경은 곡 보기 화면에서 하세요. 콘티에서 정한 키로 열립니다.</p>
@@ -3094,6 +3259,7 @@
       else if (a === 'fdown') P.size = Math.max(14, P.size - 2);
       else if (a === 'chords') { P.chords = v === '1'; ls.set('ews_chords', v); }
       else if (a === 'acc') { P.acc = v; ls.set('ews_acc', v); }
+      else if (a === 'names') { P.names = v; ls.set('ews_names', v); }
       else if (a === 'cols') { P.cols = v; ls.set('ews_play_cols', v); }
       else if (a === 'pages') { P.pages = v === '1'; ls.set('ews_play_pages', v); }
       else if (a === 'theme') { P.theme = v; ls.set('ews_play_theme', v); }
@@ -3123,7 +3289,7 @@
       $play.style.display = '';
       if (cur && cur.tab === 'chord') {
         const a = anchorOf($pb);
-        const info = fitCols($pb, $play, cur.page);
+        const info = drawChord($pb, $play, cur, cur.page);
         if (info && a !== null) setChordPage($pb, pageOfAnchor($pb, a));
         syncChordPage(info);
         updateEdges();
@@ -3184,8 +3350,8 @@
   function lyricsSheet(heading, getEntries, opt) {
     opt = opt || {};
     const FMT = [
-      ['labeled', '제목 + 가사', '곡 제목 아래에 구간 이름([1절]·[후렴])과 가사가 나와요.'],
-      ['form', '송폼 순서대로', '콘티에 적은 송폼(V1-C-V2-C…) 순서대로 가사를 펼쳐요. 후렴이 반복되면 그만큼 다시 나와요.'],
+      ['labeled', '제목 + 가사', '곡 제목 아래에 구간 이름([V1]·[C])과 가사가 나와요. 반복 구간(자리표시)은 가사로 채워져요.'],
+      ['form', '송폼 순서대로', '콘티에 적은 송폼(V1-C-V2-C…) 순서대로 가사를 펼쳐요. 반복되는 구간은 그만큼 다시 나와요.'],
       ['plain', '가사만', '제목·구간 이름 없이 가사만 이어서 나와요. 곡 사이는 빈 줄 두 개예요.'],
     ].filter((f) => !(opt.noForm && f[0] === 'form'));
     let fmt = ls.get('ews_lyr_fmt', 'labeled');
@@ -3776,6 +3942,12 @@
         <p class="error" id="nerr"></p>
         <p><button class="btn">팀 만들기</button></p>
       </form></details>
+      <h2>구간 이름 영어 통일</h2>
+      <div class="card">
+        <p class="hint" style="margin-top:0">악보 구간 이름표와 콘티 송폼의 한글 이름(1절·후렴·간주 …)을 영어 약어(V1 · C · Inter …)로 바꿉니다. 곡은 바꾸기 전 내용이 <b>수정 이력</b>에 남고, 콘티 송폼은 이전 글자를 따로 보관해요. 몇 번 눌러도 결과는 같아요. 알아보지 못하는 이름(예: Hook)은 건드리지 않고 목록으로 보여 드려요.</p>
+        <div id="mgres" class="small"></div>
+        <div class="row"><button class="btn small" id="mgbak" type="button">① 백업 받기</button><button class="btn small" id="mgprev" type="button">② 미리 보기</button><button class="btn small danger" id="mgrun" type="button" disabled>③ 변환 실행</button></div>
+      </div>
       <h2>추천 태그 (주제 · 빠르기 · 절기)</h2>
       <div class="card">
         <p class="hint" style="margin-top:0">곡 편집 화면과 곡 목록 필터에 칩으로 나오는 목록입니다. 곡에는 이 목록에 없는 태그도 자유롭게 쓸 수 있어요. ◀ ▶ ▲ ▼ 로 순서를 바꾸면 곡에 표시되는 태그 순서도 이 순서를 따릅니다. 고친 뒤 <b>추천 목록 저장</b>을 눌러야 반영됩니다.</p>
@@ -3798,6 +3970,37 @@
         toast(e.message);
       }
     };
+    // 구간 이름 영어 통일: 백업 → 미리 보기 → 실행
+    {
+      const box = el('mgres');
+      const show = (r) => {
+        const un = r.unknown.length ? `<div style="margin-top:6px">알아보지 못한 이름(그대로 둠): ${r.unknown.map((u) => `<code>${esc(u.name)}</code>×${u.count}`).join(' ')}</div>` : '';
+        box.innerHTML = `<div>곡 <b>${r.songs.changed}</b>곡 / ${r.songs.total}곡에서 이름표 ${r.lines}줄이 바뀌어요 · 콘티 송폼 <b>${r.items.changed}</b>칸 / ${r.items.total}칸</div>${un}${r.done_at ? `<div class="muted" style="margin-top:6px">마지막 변환: ${esc(String(r.done_at).replace('T', ' ').slice(0, 16))} (UTC)</div>` : ''}`;
+        el('mgrun').disabled = !(r.songs.changed || r.items.changed);
+      };
+      el('mgbak').onclick = async () => {
+        try {
+          const d = await api('/admin/backup');
+          const blob = new Blob([JSON.stringify(d)], { type: 'application/json' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'everyday-worship-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => { a.remove(); URL.revokeObjectURL(a.href); }, 1500);
+          toast(`백업을 내려받았어요. (곡 ${d.songs.length}개 · 콘티 ${d.setlists.length}개)`);
+        } catch (e) { toast(e.message); }
+      };
+      el('mgprev').onclick = async () => { try { show(await api('/admin/migrate-sections')); } catch (e) { toast(e.message); } };
+      el('mgrun').onclick = async () => {
+        if (!confirm('구간 이름을 영어로 변환할까요?\n(곡은 수정 이력에 이전 내용이 남아요. 백업을 먼저 받아 두면 더 안전해요.)')) return;
+        try {
+          const r = await api('/admin/migrate-sections', { method: 'POST' });
+          show(await api('/admin/migrate-sections'));
+          toast(`변환했어요. 곡 ${r.songs.changed}곡 · 콘티 송폼 ${r.items.changed}칸`);
+        } catch (e) { toast(e.message); }
+      };
+    }
     if (inv.code) el('invcopy').onclick = () => copyText(inv.code);
     el('invnew').onclick = () => {
       if (inv.code && !confirm('초대코드를 다시 발급할까요?\n이전 코드는 바로 쓸 수 없게 됩니다.')) return;

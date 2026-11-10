@@ -1,9 +1,9 @@
 // 코드 악보 입력 도우미 (7차 A단계) — 화면과 무관한 순수 함수 모음. 브라우저와 Node 테스트 양쪽에서 사용.
 // 저장 형식(ChordPro 글자)은 바꾸지 않는다. 여기 함수들은 "글자를 어떻게 고칠지"만 계산한다.
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./chord.js'));
-  else root.ChordEdit = factory(root.Chord);
-})(typeof self !== 'undefined' ? self : this, function (Chord) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./chord.js'), require('./sections.js'));
+  else root.ChordEdit = factory(root.Chord, root.Sections);
+})(typeof self !== 'undefined' ? self : this, function (Chord, Sections) {
   const LETTER = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
   const mod12 = (n) => ((n % 12) + 12) % 12;
 
@@ -77,7 +77,7 @@
   }
 
   // ---------- 구간 버튼 ----------
-  const SECTION_NAMES = ['인트로', '1절', '2절', '3절', '4절', '5절', '프리코러스', '후렴', '브릿지', '간주', '엔딩'];
+  const SECTION_NAMES = Sections.PICKS; // Intro V1~V5 PC C B Inter Tag Outro End
   function prevLineBlank(text, from) {
     if (from <= 0) return true;
     const before = text.slice(0, from - 1);
@@ -88,11 +88,11 @@
     const a = Math.min(selStart, selEnd), b = Math.max(selStart, selEnd);
     const from = text.lastIndexOf('\n', a - 1) + 1;
     const gap = prevLineBlank(text, from) ? '' : '\n';
-    if (name !== '후렴') {
+    if (name !== 'C') {
       const insert = gap + '{comment: ' + name + '}\n';
       return { from, to: from, insert, cursor: from + insert.length };
     }
-    const head = gap + '{comment: 후렴}\n{soc}\n';
+    const head = gap + '{comment: C}\n{soc}\n';
     if (a === b) {
       const insert = head + '\n{eoc}\n';
       return { from, to: from, insert, cursor: from + head.length };
@@ -106,7 +106,7 @@
   }
 
   // ---------- 저장 전 점검 ----------
-  const KNOWN_DIRECTIVES = new Set(['title', 't', 'subtitle', 'st', 'artist', 'key', 'tempo', 'capo', 'comment', 'c', 'comment_italic', 'ci', 'soc', 'start_of_chorus', 'eoc', 'end_of_chorus']);
+  const KNOWN_DIRECTIVES = new Set(['title', 't', 'subtitle', 'st', 'artist', 'key', 'tempo', 'capo', 'comment', 'c', 'comment_italic', 'ci', 'soc', 'start_of_chorus', 'eoc', 'end_of_chorus', 'column_break', 'colb', 'ref', 'chorus']);
   // 반환: [{level:'warn'|'info', line:번호(1부터, 0=전체), msg}]
   // warn = 저장 전에 한 번 더 알려 줄 문제 / info = 참고
   function check(text, keyStr) {
@@ -114,6 +114,7 @@
     const src = String(text || '').replace(/\r\n?/g, '\n');
     const lines = src.split('\n');
     const chords = [];
+    const refs = []; // {ref} 자리표시
     let inChorus = 0; // 열려 있는 {soc}의 줄 번호(없으면 0)
     const add = (level, line, msg) => out.push({ level, line, msg });
     for (let i = 0; i < lines.length; i++) {
@@ -128,6 +129,8 @@
         } else if (name === 'eoc' || name === 'end_of_chorus') {
           if (!inChorus) add('warn', n, '{eoc}가 있는데 시작({soc})이 없습니다.');
           inChorus = 0;
+        } else if (name === 'ref' || name === 'chorus') {
+          refs.push({ line: n, val: (d[2] || '').trim(), std: name === 'chorus' });
         } else if (!KNOWN_DIRECTIVES.has(name)) {
           add('info', n, '{' + name + '}는 모르는 지시어라 화면에 나오지 않습니다.');
         }
@@ -160,6 +163,18 @@
       if (open >= 0) add('warn', n, '[ 가 닫히지 않았습니다. 이 줄은 가사로 보일 수 있어요.');
     }
     if (inChorus) add('warn', inChorus, '{soc}에 맞는 {eoc}가 없습니다.');
+
+    // 구간 자리표시: 이름을 알아보는지, 앞(또는 곡 안)에 같은 이름의 구간이 있는지
+    if (refs.length) {
+      const parsed = Chord.parseChordPro(src);
+      parsed.lines.forEach((ln, i) => {
+        if (ln.type !== 'ref') return;
+        const r = refs.shift();
+        if (!r) return;
+        if (!Sections.canon(ln.id)) add('warn', r.line, '{ref: ' + (r.val || '') + '}의 이름을 알아볼 수 없어요. (예: C, V1, B)');
+        else if (!(ln.src >= 0)) add('warn', r.line, '{ref: ' + ln.id + '}: 같은 이름(' + ln.id + ')의 구간이 악보에 없어요. 처음 한 번은 가사·코드를 직접 써야 해요.');
+      });
+    }
 
     if (src.trim() && !chords.length) add('info', 0, '코드가 하나도 없습니다. (가사만 있는 악보면 괜찮아요)');
 

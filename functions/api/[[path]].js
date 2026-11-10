@@ -3,6 +3,8 @@
 // 필요한 설정: D1 바인딩 DB, R2 바인딩 BUCKET(이미지 악보용), 환경변수 CHURCH_CODE (필수), ADMIN_PIN (필수에 가까움: 관리자 화면·악보 편집),
 //              INVITE_CODE (선택: 처음 쓰는 팀 생성용 초대코드. 이후엔 관리자 화면에서 바꿀 수 있음)
 
+import Sections from '../../public/sections.js'; // 구간 이름 사전 (화면과 같은 파일을 쓴다)
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -313,6 +315,8 @@ async function ensureSchema(db) {
   await ensureColumn(db, 'setlist_items', 'view', `"view" TEXT NOT NULL DEFAULT 'auto'`);
   // 콘티 곡 한 칸의 고유 번호 (콘티용 필기가 이 번호에 붙는다)
   await ensureColumn(db, 'setlist_items', 'uid', `uid TEXT`);
+  // 17차: 구간 용어를 영어로 통일(관리자 이관)할 때 바꾸기 전 송폼 글자를 한 번 보관한다
+  await ensureColumn(db, 'setlist_items', 'form_prev', `form_prev TEXT`);
   // 원곡이 영어 등일 때 적어 두는 원제 / 이미지·PDF 악보 곡을 위한 "검색용 가사(후렴 등)"
   await ensureColumn(db, 'songs', 'orig_title', `orig_title TEXT NOT NULL DEFAULT ''`);
   await ensureColumn(db, 'songs', 'lyrics_extra', `lyrics_extra TEXT NOT NULL DEFAULT ''`);
@@ -530,7 +534,7 @@ function lyricLines(chordpro) {
       const name = d[1].toLowerCase();
       if (name === 'soc' || name === 'start_of_chorus') inChorus = true;
       else if (name === 'eoc' || name === 'end_of_chorus') inChorus = false;
-      else if (['comment', 'c', 'comment_italic', 'ci'].includes(name)) commentChorus = /후렴|코러스|chorus/i.test(d[2] || '');
+      else if (['comment', 'c', 'comment_italic', 'ci'].includes(name)) commentChorus = (Sections.canon(d[2] || '') || {}).kind === 'C';
       continue;
     }
     if (/^\s*#/.test(raw)) continue;
@@ -934,6 +938,59 @@ export async function onRequest({ request, env }) {
           await db.prepare(`INSERT INTO settings (k,v) VALUES ('invite_code',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).bind(code).run();
           return json({ code, source: 'app' });
         }
+      }
+
+      // 백업 내려받기 (17차): 곡 전체와 콘티·콘티 곡(송폼 포함)을 JSON으로. 대량 변환(이관) 전에 받아 두는 용도.
+      if (parts[1] === 'backup' && method === 'GET') {
+        const songs = (await db.prepare('SELECT * FROM songs ORDER BY id').all()).results;
+        const setlists = (await db.prepare('SELECT * FROM setlists ORDER BY id').all()).results;
+        const setlist_items = (await db.prepare('SELECT * FROM setlist_items ORDER BY setlist_id, position').all()).results;
+        return json({ exported_at: new Date().toISOString(), songs, setlists, setlist_items });
+      }
+      // 구간 용어 영어 통일 이관 (17차). GET = 미리 보기(바뀔 곡·콘티 수, 알아보지 못한 이름), POST = 실행.
+      // 곡은 바꾸기 전 본문을 수정 이력 한 건으로 남기고, 콘티 송폼은 form_prev에 한 번 보관한다. 몇 번 눌러도 결과가 같다.
+      if (parts[1] === 'migrate-sections' && (method === 'GET' || method === 'POST')) {
+        const run = method === 'POST';
+        const songRows = (await db.prepare('SELECT id,title,chordpro FROM songs').all()).results;
+        const itemRows = (await db.prepare(`SELECT id,form FROM setlist_items WHERE form <> ''`).all()).results;
+        const unknown = new Map();
+        const addUnknown = (name) => unknown.set(name, (unknown.get(name) || 0) + 1);
+        const songChanges = [];
+        let lines = 0;
+        for (const r of songRows) {
+          const m = Sections.migrateChordPro(r.chordpro);
+          m.unknown.forEach(addUnknown);
+          if (m.changed) { songChanges.push({ id: r.id, old: r.chordpro, text: m.text }); lines += m.changed; }
+        }
+        const itemChanges = [];
+        for (const r of itemRows) {
+          const m = Sections.migrateForm(r.form);
+          m.unknown.forEach(addUnknown);
+          if (m.changed) itemChanges.push({ id: r.id, old: r.form, form: m.form });
+        }
+        const info = {
+          songs: { total: songRows.length, changed: songChanges.length },
+          items: { total: itemRows.length, changed: itemChanges.length },
+          lines,
+          unknown: [...unknown.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([name, count]) => ({ name, count })),
+        };
+        if (!run) {
+          const row = await db.prepare(`SELECT v FROM settings WHERE k='sections_migrated'`).first();
+          return json({ ...info, done_at: row ? row.v : '' });
+        }
+        const now = new Date().toISOString();
+        const stmts = [];
+        for (const c of songChanges) {
+          stmts.push(db.prepare('INSERT INTO song_versions (song_id,chordpro,edited_by_team,created_at) VALUES (?,?,NULL,?)').bind(c.id, c.old, now));
+          stmts.push(db.prepare('UPDATE songs SET chordpro=? WHERE id=?').bind(c.text, c.id));
+          stmts.push(pruneVersions(db, c.id));
+        }
+        for (const c of itemChanges) {
+          stmts.push(db.prepare('UPDATE setlist_items SET form_prev=COALESCE(form_prev,form), form=? WHERE id=?').bind(c.form, c.id));
+        }
+        for (let i = 0; i < stmts.length; i += 40) await db.batch(stmts.slice(i, i + 40));
+        await db.prepare(`INSERT INTO settings (k,v) VALUES ('sections_migrated',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).bind(now).run();
+        return json({ ...info, done_at: now, ran: true });
       }
 
       // 추천 태그 목록 저장 (관리자만)

@@ -540,3 +540,34 @@ html { background: var(--card); }
 body { min-height: 100vh; }
 @media (display-mode: standalone) { main { min-height: calc(100vh - 20px); } }
 html:has(body.ink-open) { background: #2b2b2b; }
+
+/* ---------- 17~19차: 구간 이름(영어 통일) · 구간 자리표시({ref}) · 가사 붙여넣기 ---------- */
+.te-lab small { margin-left: 8px; opacity: .75; font-weight: 600; font-size: 11px; }
+.chip small { display: block; font-size: 10px; font-weight: 500; opacity: .7; line-height: 1.1; }
+.te-ref { align-self: center; margin: 4px 0; padding: 5px 14px; border: 1.5px dashed var(--brand); border-radius: 10px; color: var(--brand); font-size: 14px; font-weight: 700; }
+.te-ref small { display: block; font-size: 11px; font-weight: 500; color: var(--muted); }
+.te-ref.orphan { border-color: var(--danger); color: var(--danger); }
+.ref { margin: 8px 0 4px; padding: 6px 12px; border: 1.5px dashed var(--brand); border-radius: 10px; color: var(--brand); font-size: .9em; font-weight: 700; cursor: pointer; display: block; width: fit-content; max-width: 100%; }
+.ref small { display: block; font-size: .72em; font-weight: 500; color: var(--muted); }
+.ref.orphan { border-color: var(--danger); color: var(--danger); cursor: default; }
+.cm.refopen { cursor: pointer; }
+.cm.refopen::after { content: ' ↻'; opacity: .6; }
+.score .part.refp { break-inside: avoid; }
+.score .ref { break-inside: avoid; }
+.ps-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.ps-form code { font-size: 14px; font-weight: 700; color: var(--brand); overflow-wrap: anywhere; }
+.ps-card { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+.ps-card.guess { border-color: #d7a400; background: rgba(215, 164, 0, .10); }
+.ps-card.isref { border-style: dashed; }
+.ps-card.sel { box-shadow: 0 0 0 2px var(--brand); }
+.ps-head { display: flex; align-items: center; gap: 8px; }
+.ps-nm { flex: 1 1 auto; font-size: 13px; color: var(--muted); }
+.ps-nm small { color: var(--brand); font-weight: 700; }
+.ps-chip { min-width: 3.4em; min-height: 40px; padding: 0 12px; border-radius: 999px; border: 0; background: var(--brand); color: var(--brand-text); font-size: 15px; font-weight: 800; }
+.ps-card.guess .ps-chip { background: #d7a400; color: #1d2430; }
+.ps-lines { margin: 6px 0; font-size: 14px; }
+.ps-ln { padding: 2px 4px; overflow-wrap: anywhere; }
+.ps-cut { display: block; width: 100%; min-height: 34px; margin: 2px 0; border: 1px dashed var(--line); background: transparent; color: var(--brand); border-radius: 8px; font-size: 12px; }
+.ps-pal { position: sticky; bottom: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 6px 8px; margin-top: 8px; box-shadow: 0 -4px 14px rgba(0, 0, 0, .12); }
+.ps-block.rep { cursor: pointer; }
+.chk-row.small { font-size: 12px; margin: 4px 0 0; }
