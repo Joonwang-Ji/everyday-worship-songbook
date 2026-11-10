@@ -107,6 +107,7 @@
   function clearSession() {
     ['ews_token', 'ews_admin', 'ews_teams', 'ews_team_active', 'ews_team', 'ews_leader', 'ews_team_skip'].forEach((k) => ls.del(k));
     // 오프라인용으로 저장해 둔 악보·콘티도 이 기기에서 지운다 (다른 사람이 같은 기기를 쓸 때를 위해)
+    try { if (window.Ink) Ink.wipeLocal(); } catch {}
     try { if (window.caches) caches.keys().then((ks) => ks.filter((k) => k.startsWith('ews-data') || k.startsWith('ews-img')).forEach((k) => caches.delete(k))); } catch {}
   }
   // 검색: 띄어쓰기·기호·대소문자를 무시하고 비교 (서버의 검색과 같은 규칙)
@@ -145,6 +146,7 @@
     return data;
   }
   let servedFromCache = false;
+  if (window.Ink) Ink.init({ headers: () => authHeaders(), toast });
 
   // 이미지·PDF 한 장 올리기 (사진은 먼저 줄인다)
   async function uploadFile(songId, file) {
@@ -662,8 +664,15 @@
     // 콘티에서 열었는데 이미지 악보의 원래 키와 부르는 키가 다르면, 이미지 위에 알려 준다.
     const wantKey = q.get('key') || '';
     const keyBanner = wantKey && origKey && wantKey !== origKey ? `<div class="memo" style="margin-bottom:10px">이 콘티에서는 <b>${esc(wantKey)}</b> 키로 부릅니다. 이미지 악보는 원래 키(<b>${esc(origKey)}</b>) 기준입니다.</div>` : '';
-    $pi.innerHTML = (files.length ? keyBanner : '') + Files.renderPane(files);
+    const hasImgFile = files.some((f) => f.kind === 'image');
+    $pi.innerHTML = (files.length ? keyBanner : '') + (hasImgFile ? '<div class="row ink-entry"><button class="btn small" id="inkbtn" type="button">✎ 필기하기</button><span class="muted small">내 필기는 나만 보여요</span></div>' : '') + Files.renderPane(files);
     Files.bindPane($pi, files);
+    if (hasImgFile) {
+      Ink.decorate($pi, files);
+      Ink.pull(song.id);
+      const ib = document.getElementById('inkbtn');
+      if (ib) ib.onclick = () => Ink.edit({ files, start: 0, songId: song.id, title: song.title });
+    }
     function showTab(t, remember) {
       $pc.hidden = t !== 'chord';
       $pi.hidden = t !== 'img';
@@ -1990,6 +1999,7 @@
         ${me.canEdit ? `<li class="song-item"><a href="#/status"><div class="song-title">악보 현황</div><div class="song-meta">코드·이미지 악보가 빠진 곡 보기</div></a></li>` : ''}
         ${me.adminRequired ? `<li class="song-item"><a href="#/admin"><div class="song-title">앱 관리</div><div class="song-meta">${me.isAdmin ? '초대코드 · 팀 목록 · 추천 태그' : '관리자 PIN 필요'}</div></a></li>` : ''}
       </ul>
+      <div class="card" id="vaultcard"></div>
       <div class="footer"><button id="logout" type="button">로그아웃</button></div>
       <p class="muted small">교회 내부용 악보집입니다. 저작권 보호를 위해 외부 공유를 삼가 주세요.</p>
       <p class="muted small" id="persistnote"></p>`;
@@ -2001,6 +2011,7 @@
           : '이 기기의 저장 공간 보호: 꺼짐 — 기기 공간이 부족하면 브라우저가 오프라인 악보와 곡별 키 설정을 지울 수 있어요. 홈 화면에 추가해서 쓰면 더 안전합니다.';
       }).catch(() => {});
     }
+    if (window.Ink) Ink.mountVaultCard(el('vaultcard'));
     const cp = el('closeperm');
     if (cp) cp.onclick = () => {
       ls.del('ews_admin');
@@ -2441,6 +2452,7 @@
             <a class="pbtn" id="pexit" href="${exitHref}" aria-label="연주 모드 나가기">✕</a>
             <button class="play-title" id="ptitle" type="button"></button>
             <span class="play-off" id="poff" hidden>오프라인</span>
+            <button class="pbtn" id="pink" type="button" aria-label="악보에 필기" hidden>✎</button>
             <button class="pbtn" id="pgear" type="button" aria-label="설정">⚙</button>
           </div>
           <div class="play-info" id="pinfo"></div>
@@ -2459,6 +2471,10 @@
     const $pb = g('pbody');
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    g('pink').onclick = () => {
+      if (!cur || !cur.pages.length) return;
+      Ink.edit({ files: cur.pages, start: cur.page, songId: cur.song.id, title: cur.song.title, onClose: (pg) => { if (cur) { cur.page = Math.min(pg, cur.pages.length - 1); draw(); } } });
+    };
 
     // ----- 곡 불러오기 (한 번 불러온 곡은 이 화면 안에서 다시 쓴다. 악보 이미지 주소는 오래되면 만료되니 40분 뒤엔 새로 받는다) -----
     const songCache = new Map();
@@ -2466,7 +2482,7 @@
     function loadSong(sid) {
       const hit = songCache.get(sid);
       if (hit && Date.now() - hit.t < 40 * 60 * 1000) return hit.p;
-      const p = api('/songs/' + sid).then((r) => { readySongs.set(sid, r.song); return r.song; });
+      const p = api('/songs/' + sid).then((r) => { readySongs.set(sid, r.song); if (window.Ink) Ink.pull(sid); return r.song; });
       songCache.set(sid, { t: Date.now(), p });
       p.catch(() => songCache.delete(sid));
       return p;
@@ -2550,6 +2566,7 @@
         $pb.scrollTop = top;
       } else if (pages.length) {
         $pb.innerHTML = `<img class="sheet" src="${esc(pages[cur.page].url)}" alt="악보 ${cur.page + 1}">`;
+        if (window.Ink) Ink.attachImg($pb.querySelector('img.sheet'), pages[cur.page].id);
         if (pages[cur.page + 1]) new Image().src = pages[cur.page + 1].url;
       } else {
         $pb.innerHTML = Files.renderPane(files); // PDF만 있는 곡: 열기 링크
@@ -2565,6 +2582,7 @@
         fitCols();
         cur.pageCount = cur.tab === 'img' ? Math.max(1, pages.length) : 1;
       }
+      g('pink').hidden = !(cur.tab === 'img' && pages.length);
       updateEdges();
       updateDots();
     }

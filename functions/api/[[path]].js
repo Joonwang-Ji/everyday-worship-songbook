@@ -121,6 +121,55 @@ function randomCode(len = 8) {
 }
 const normCode = (s) => String(s || '').toUpperCase().replace(/[\s-]/g, '');
 
+// ---------- 개인 보관함 · 필기 ----------
+const VAULT_CODE_LEN = 12; // 31^12 가지 (화면에는 4자씩 끊어 보여 준다)
+const MAX_INK_BYTES = 400000; // 악보 한 장의 필기 최대 크기
+const MAX_INK_ITEMS = 3000;
+const MAX_VAULT_PAGES = 1500; // 보관함 하나에 필기를 둘 수 있는 악보 장 수
+async function vaultHash(code) {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode('ews-vault|' + normCode(code))));
+  return [...h].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+const fmtVaultCode = (c) => String(c).replace(/(.{4})(?=.)/g, '$1-');
+// 필기 덩어리를 받아 허용된 모양만 남긴다.
+//  획: {id,t:'s'|'h',c:색,w:굵기(가로폭 대비 만분율),p:[x,y,x,y…](0~10000 정수)}
+//  글자: {id,t:'x',x,y,c,z:글자 크기(만분율),s:내용}
+function cleanInk(raw) {
+  const inum = (v, lo, hi) => Math.max(lo, Math.min(hi, Math.round(Number(v) || 0)));
+  const items = [];
+  const seen = new Set();
+  for (const it of Array.isArray(raw && raw.items) ? raw.items.slice(0, MAX_INK_ITEMS) : []) {
+    if (!it || typeof it.id !== 'string' || !/^[A-Za-z0-9_-]{1,24}$/.test(it.id) || seen.has(it.id)) continue;
+    const c = /^#[0-9a-fA-F]{6}$/.test(it.c) ? it.c : '#222222';
+    if (it.t === 's' || it.t === 'h') {
+      if (!Array.isArray(it.p) || it.p.length < 2 || it.p.length > 6000 || it.p.length % 2) continue;
+      items.push({ id: it.id, t: it.t, c, w: inum(it.w, 1, 400), p: it.p.map((n) => inum(n, 0, 10000)) });
+    } else if (it.t === 'x') {
+      const s = String(it.s == null ? '' : it.s).slice(0, 300);
+      if (!s.trim()) continue;
+      items.push({ id: it.id, t: 'x', c, x: inum(it.x, 0, 10000), y: inum(it.y, 0, 10000), z: inum(it.z, 60, 600), s });
+    } else continue;
+    seen.add(it.id);
+  }
+  const del = (Array.isArray(raw && raw.del) ? raw.del : []).filter((d) => typeof d === 'string' && /^[A-Za-z0-9_-]{1,24}$/.test(d)).slice(-2000);
+  return { v: 1, items, del };
+}
+// 다른 기기에서 먼저 저장된 필기와 합친다: 지운 것은 계속 지운 채로, 같은 번호면 새로 온 것을 쓴다.
+function mergeInk(a, b) {
+  const del = new Set([...(a.del || []), ...(b.del || [])]);
+  const map = new Map();
+  for (const it of [...(a.items || []), ...(b.items || [])]) if (!del.has(it.id)) map.set(it.id, it);
+  return { v: 1, items: [...map.values()].slice(0, MAX_INK_ITEMS), del: [...del].slice(-2000) };
+}
+async function vaultFromRequest(env, request) {
+  const t = await readToken(env, request.headers.get('X-Vault-Token') || '');
+  if (!t || t.r !== 'vault') return null;
+  const row = await env.DB.prepare('SELECT id, code_hash FROM vaults WHERE id=?').bind(t.v).first();
+  if (!row || t.h !== (await shortHash(row.code_hash))) return null;
+  return row;
+}
+const vaultToken = async (env, row) => signToken(env, 'vault', 400, { v: row.id, h: await shortHash(row.code_hash) });
+
 // ---------- DB 초기화 (처음 한 번 자동으로 표 생성, 필요한 칸은 안전하게 추가) ----------
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS songs (
@@ -206,6 +255,27 @@ const SCHEMA = [
     n INTEGER NOT NULL DEFAULT 0,
     until INTEGER NOT NULL DEFAULT 0
   )`,
+  // 개인 보관함(15차): 코드를 아는 기기끼리 필기를 나눠 쓴다. 코드는 해시로만 저장한다.
+  `CREATE TABLE IF NOT EXISTS vaults (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+  )`,
+  // 이미지 악보 한 장(file_id)당 필기 한 덩어리. rev는 저장할 때마다 1씩 늘어 기기 간 충돌을 알아챈다.
+  `CREATE TABLE IF NOT EXISTS vault_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vault_id INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'ink',
+    song_id INTEGER NOT NULL,
+    file_id INTEGER NOT NULL,
+    rev INTEGER NOT NULL DEFAULT 1,
+    data TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (vault_id, kind, file_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_vault_items_song ON vault_items(vault_id, song_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_vault_items_file ON vault_items(file_id)`,
 ];
 // 이미 운영 중인 표에는 CREATE TABLE IF NOT EXISTS 로 칸이 늘지 않으므로, 없는 칸만 ALTER 로 추가한다.
 async function ensureColumn(db, table, column, ddl) {
@@ -660,12 +730,93 @@ export async function onRequest({ request, env }) {
     const ctx = await getCtx(env, request);
     if (!ctx.member) throw new HttpError(401, '로그인이 필요합니다.');
 
+    // ----- 개인 보관함(15차): 필기를 기기 사이에 나눠 쓴다. 교회 접속암호 로그인 + 보관함 코드가 모두 필요 -----
+    if (parts[0] === 'vault') {
+      // 새 보관함 만들기: 코드를 한 번만 보여 준다(서버에는 해시만 남는다)
+      if (!parts[1] && method === 'POST') {
+        for (let i = 0; i < 5; i++) {
+          const code = randomCode(VAULT_CODE_LEN);
+          const h = await vaultHash(code);
+          try {
+            const r = await db.prepare('INSERT INTO vaults (code_hash,created_at,last_seen) VALUES (?,?,?)').bind(h, nowIso(), nowIso()).run();
+            const row = { id: r.meta.last_row_id, code_hash: h };
+            return json({ code: fmtVaultCode(code), token: await vaultToken(env, row) }, 201);
+          } catch (e) {
+            if (!/unique|constraint/i.test(String((e && e.message) || e))) throw e;
+          }
+        }
+        throw new HttpError(500, '보관함 코드를 만들지 못했습니다. 다시 시도해 주세요.');
+      }
+      // 다른 기기에서 코드로 들어오기
+      if (parts[1] === 'join' && method === 'POST') {
+        const { code } = await readBody();
+        await throttleCheck(db, 'vault-join');
+        const row = normCode(code).length === VAULT_CODE_LEN ? await db.prepare('SELECT id, code_hash FROM vaults WHERE code_hash=?').bind(await vaultHash(code)).first() : null;
+        if (!row) {
+          await throttleFail(db, 'vault-join');
+          throw new HttpError(401, '보관함 코드가 맞지 않습니다. 글자를 다시 확인해 주세요.');
+        }
+        await throttleOk(db, 'vault-join');
+        await db.prepare('UPDATE vaults SET last_seen=? WHERE id=?').bind(nowIso(), row.id).run();
+        return json({ token: await vaultToken(env, row) });
+      }
+      const vault = await vaultFromRequest(env, request);
+      if (!vault) throw new HttpError(401, '보관함에 들어가 있지 않습니다. 더보기에서 보관함 코드를 다시 입력해 주세요.', { vaultExpired: true });
+      if (parts[1] === 'me' && method === 'GET') {
+        const n = await db.prepare('SELECT COUNT(*) AS n, COUNT(DISTINCT song_id) AS songs FROM vault_items WHERE vault_id=?').bind(vault.id).first();
+        return json({ ok: true, pages: n.n, songs: n.songs });
+      }
+      // 보관함 지우기: 이 보관함의 필기가 서버에서 모두 사라진다
+      if (!parts[1] && method === 'DELETE') {
+        await db.batch([db.prepare('DELETE FROM vault_items WHERE vault_id=?').bind(vault.id), db.prepare('DELETE FROM vaults WHERE id=?').bind(vault.id)]);
+        return json({ ok: true });
+      }
+      // 곡 하나의 필기 목록 (또는 ?all=1 로 전부)
+      if (parts[1] === 'ink' && !parts[2] && method === 'GET') {
+        const url2 = new URL(request.url);
+        const sid = parseInt(url2.searchParams.get('song') || '', 10);
+        const q = Number.isInteger(sid)
+          ? db.prepare('SELECT file_id, song_id, rev, data FROM vault_items WHERE vault_id=? AND song_id=?').bind(vault.id, sid)
+          : db.prepare('SELECT file_id, song_id, rev, data FROM vault_items WHERE vault_id=? ORDER BY id LIMIT 400').bind(vault.id);
+        const { results } = await q.all();
+        return json({ items: results.map((r) => ({ file_id: r.file_id, song_id: r.song_id, rev: r.rev, data: JSON.parse(r.data) })) });
+      }
+      // 악보 한 장의 필기 저장 (base_rev가 서버와 다르면 다른 기기에서 먼저 저장된 것이므로 합쳐서 돌려준다)
+      if (parts[1] === 'ink' && parts[2] && method === 'PUT') {
+        const fid = parseInt(parts[2], 10);
+        const body = await readBody();
+        const file = Number.isInteger(fid) && (await db.prepare(`SELECT id, song_id FROM song_files WHERE id=? AND kind='image'`).bind(fid).first());
+        if (!file) throw new HttpError(404, '악보 이미지를 찾을 수 없습니다. (지워졌거나 PDF입니다)');
+        const mine = cleanInk(body.data);
+        const cur = await db.prepare(`SELECT rev, data FROM vault_items WHERE vault_id=? AND kind='ink' AND file_id=?`).bind(vault.id, fid).first();
+        let data = mine;
+        let rev = 1;
+        if (cur) {
+          rev = cur.rev + 1;
+          if (Number(body.base_rev) !== cur.rev) data = mergeInk(JSON.parse(cur.data), mine);
+        } else {
+          const n = await db.prepare('SELECT COUNT(*) AS n FROM vault_items WHERE vault_id=?').bind(vault.id).first();
+          if (n.n >= MAX_VAULT_PAGES) throw new HttpError(400, '보관함에 둘 수 있는 필기 장 수를 넘었습니다.');
+        }
+        const text = JSON.stringify(data);
+        if (text.length > MAX_INK_BYTES) throw new HttpError(413, '이 악보 한 장에 필기가 너무 많습니다. 일부를 지우고 다시 저장해 주세요.');
+        await db
+          .prepare(`INSERT INTO vault_items (vault_id,kind,song_id,file_id,rev,data,updated_at) VALUES (?,'ink',?,?,?,?,?)
+                    ON CONFLICT(vault_id,kind,file_id) DO UPDATE SET rev=excluded.rev, data=excluded.data, updated_at=excluded.updated_at, song_id=excluded.song_id`)
+          .bind(vault.id, file.song_id, fid, rev, text, nowIso())
+          .run();
+        await db.prepare('UPDATE vaults SET last_seen=? WHERE id=?').bind(nowIso(), vault.id).run();
+        return json({ rev, data });
+      }
+      throw new HttpError(404, '요청한 주소를 찾을 수 없습니다.');
+    }
+
     if (parts[0] === 'files' && parts[1] && method === 'DELETE') {
       requireEdit(env, ctx);
       const fid = parseInt(parts[1], 10);
       const row = Number.isInteger(fid) && (await db.prepare('SELECT r2_key FROM song_files WHERE id=?').bind(fid).first());
       if (!row) throw new HttpError(404, '파일을 찾을 수 없습니다.');
-      await db.prepare('DELETE FROM song_files WHERE id=?').bind(fid).run();
+      await db.batch([db.prepare('DELETE FROM song_files WHERE id=?').bind(fid), db.prepare('DELETE FROM vault_items WHERE file_id=?').bind(fid)]);
       if (env.BUCKET) await env.BUCKET.delete(row.r2_key).catch(() => {});
       return json({ ok: true });
     }
@@ -1289,6 +1440,7 @@ export async function onRequest({ request, env }) {
         await db.batch([
           db.prepare('DELETE FROM song_versions WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM song_files WHERE song_id=?').bind(id),
+          db.prepare('DELETE FROM vault_items WHERE song_id=?').bind(id),
           // 콘티·팀 기본 키에 남은 흔적도 함께 정리한다
           db.prepare('DELETE FROM setlist_items WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM team_song_keys WHERE song_id=?').bind(id),

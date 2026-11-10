@@ -480,3 +480,36 @@ body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 
 .bar > span { display: block; height: 100%; background: var(--brand); border-radius: 999px; }
 .fixflash { animation: fixflash 2s ease-out; }
 @keyframes fixflash { 0%, 40% { box-shadow: 0 0 0 3px var(--brand); } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+/* ---------- 15차: 이미지 악보 필기 ---------- */
+.ink-ov { position: absolute; pointer-events: none; z-index: 2; overflow: hidden; }
+.ink-ov .hl, .ink-svg .hl { mix-blend-mode: multiply; stroke-opacity: .5; }
+.ink-ov .itx, .ink-svg .itx { font-family: -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; font-weight: 600; paint-order: stroke; stroke: rgba(255, 255, 255, .85); stroke-linejoin: round; white-space: pre; }
+.ink-entry { margin: 4px 0 10px; align-items: center; }
+.ink-ed { position: fixed; inset: 0; z-index: 90; background: #2b2b2b; display: flex; flex-direction: column; color: #fff; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.ink-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: calc(8px + env(safe-area-inset-top)) 10px 8px; background: #1b1b1b; }
+.ink-top button { background: #3a3a3a; color: #fff; border: 0; border-radius: 8px; min-width: 40px; height: 36px; padding: 0 10px; font-size: 17px; margin-left: 4px; }
+.ink-top .ink-done { background: var(--primary, #1f3a5f); font-size: 15px; font-weight: 700; margin-left: 0; }
+.ink-n { flex: 1; text-align: center; font-size: 13px; color: #ccc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ink-scroll { flex: 1; min-height: 0; overflow: auto; display: flex; background: #444; -webkit-overflow-scrolling: touch; }
+.ink-stage { position: relative; margin: auto; flex: none; background: #fff; box-shadow: 0 2px 12px rgba(0, 0, 0, .5); }
+.ink-stage img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; -webkit-user-drag: none; }
+.ink-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: hidden; }
+.ink-tools { background: #1b1b1b; padding: 6px 8px calc(8px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 6px; }
+.ink-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ink-sp { flex: 1; }
+.ink-b { background: #3a3a3a; color: #fff; border: 0; border-radius: 8px; height: 38px; padding: 0 10px; font-size: 14px; }
+.ink-b.small { height: 32px; font-size: 12px; }
+.ink-b.on { background: #fff; color: #111; font-weight: 700; }
+.ink-b:disabled { opacity: .35; }
+.ink-dot { width: 30px; height: 30px; border-radius: 50%; border: 2px solid #555; padding: 0; }
+.ink-dot.on { border-color: #fff; box-shadow: 0 0 0 2px #fff; }
+.ink-w { width: 38px; height: 34px; border-radius: 8px; border: 0; background: #3a3a3a; color: #fff; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.ink-w i { display: block; width: 22px; background: #fff; border-radius: 4px; }
+.ink-w.on { background: #fff; color: #111; }
+.ink-w.on i { background: #111; }
+.ink-hint { font-size: 12px; color: #bbb; }
+.ink-txt { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; background: #1b1b1b; padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 8px; box-shadow: 0 -4px 14px rgba(0, 0, 0, .5); }
+.ink-txt[hidden] { display: none; }
+.ink-txt textarea { width: 100%; box-sizing: border-box; font-size: 16px; border-radius: 8px; border: 0; padding: 8px; background: #fff; color: #111; resize: none; -webkit-user-select: text; user-select: text; }
+.vault-code { font-family: ui-monospace, Menlo, monospace; font-size: 17px; letter-spacing: .06em; user-select: all; -webkit-user-select: all; }
