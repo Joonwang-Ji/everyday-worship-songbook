@@ -523,10 +523,10 @@
     function startDraw(e) {
       const n = norm(e);
       active = { id: e.pointerId, type: e.pointerType, start: n, moved: 0, pts: [n], erased: [], shown: 0 };
-      if ((tool === 'pen' || tool === 'hl') && lastStroke && e.pointerType === 'pen' && Date.now() - lastStroke.t < 110 && lastStroke.tool === tool && items.includes(lastStroke.item)) {
+      if ((tool === 'pen' || tool === 'hl') && lastStroke && e.pointerType === 'pen' && Date.now() - lastStroke.t < (lastStroke.cut ? 700 : 110) && lastStroke.tool === tool && items.includes(lastStroke.item)) {
         const li = lastStroke.item;
         const end = [li.p[li.p.length - 2] / 10000, li.p[li.p.length - 1] / 10000];
-        if (Math.hypot(n[0] - end[0], (n[1] - end[1]) * ratio) < 0.02 / view.s) {
+        if (Math.hypot(n[0] - end[0], (n[1] - end[1]) * ratio) < (lastStroke.cut ? 0.06 : 0.02) / view.s) {
           const prevPts = [];
           for (let i = 0; i < li.p.length; i += 2) prevPts.push([li.p[i] / 10000, li.p[i + 1] / 10000]);
           active.pts = prevPts.concat([n]);
@@ -559,7 +559,7 @@
       if (live) { live.remove(); live = null; }
       if (a && a.erased.length) { a.erased.forEach(addItem); redraw(); }
     }
-    function finish(cancel) {
+    function finish(cancel, cut) {
       const a = active;
       active = null;
       if (live) { live.remove(); live = null; }
@@ -573,7 +573,7 @@
         const it = { id: uid(), t: a.stroke.t, c: a.stroke.c, w: a.stroke.w, p };
         addItem(it);
         record({ a: 'add', item: it });
-        lastStroke = { item: it, t: Date.now(), tool };
+        lastStroke = { item: it, t: Date.now(), tool, cut: !!cut };
         redraw();
         touch();
         renderBar();
@@ -670,7 +670,7 @@
       if (e.pointerType === 'pen') penActive = false;
       if (pan && e.pointerId === pan.id) { pan = null; return; }
       // 펜이 중간에 취소돼도 지금까지 그은 만큼은 남긴다(끊김 방지)
-      if (active && e.pointerId === active.id) finish(cancel && e.pointerType !== 'pen');
+      if (active && e.pointerId === active.id) finish(cancel && e.pointerType !== 'pen', cancel && e.pointerType === 'pen');
     }
     const release = (e) => { try { scroller.releasePointerCapture(e.pointerId); } catch {} };
     scroller.addEventListener('pointerup', (e) => { endPointer(e, false); release(e); });
@@ -680,6 +680,32 @@
     scroller.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
     scroller.addEventListener('contextmenu', (e) => e.preventDefault());
     ['gesturestart', 'gesturechange', 'gestureend'].forEach((n) => ov.addEventListener(n, (e) => e.preventDefault())); // 사파리의 화면 전체 확대 막기
+
+
+    // ----- 진단(더보기에서 켬): 펜 이벤트가 어떻게 오는지 화면에 보여준다 -----
+    if (ls.get('ews_ink_dbg', '') === '1') {
+      const box = document.createElement('div');
+      box.className = 'ink-dbg';
+      ov.appendChild(box);
+      const rows = [];
+      const t0 = performance.now();
+      let moves = 0, lastMv = 0, gaps = 0, maxGap = 0;
+      const add = (txt) => { rows.push(((performance.now() - t0) / 1000).toFixed(2) + ' ' + txt); if (rows.length > 16) rows.shift(); box.textContent = rows.join('\n') + '\n이동 ' + moves + ' 끊김(>60ms) ' + gaps + ' 최대 ' + Math.round(maxGap) + 'ms'; };
+      ['pointerdown', 'pointerup', 'pointercancel', 'lostpointercapture', 'touchstart', 'touchend', 'touchcancel', 'click', 'contextmenu', 'selectstart'].forEach((n) => {
+        ov.addEventListener(n, (e) => {
+          const t = e.pointerType || (e.changedTouches && e.changedTouches[0] ? 'T:' + (e.changedTouches[0].touchType || '') : '');
+          add(n + ' ' + t + (e.pointerId != null ? ' #' + e.pointerId : '') + (e.target && e.target.className && e.target.className.baseVal === undefined ? ' ' + String(e.target.className).slice(0, 12) : ''));
+          if (n === 'pointerdown' || n === 'pointerup' || n === 'pointercancel') { lastMv = 0; }
+        }, true);
+      });
+      ov.addEventListener('pointermove', (e) => {
+        if (!e.buttons) return;
+        const now = performance.now();
+        if (lastMv) { const g = now - lastMv; if (g > 60) { gaps++; if (g > maxGap) maxGap = g; add('간격 ' + Math.round(g) + 'ms ' + e.pointerType); } }
+        lastMv = now; moves++;
+      }, true);
+      add('진단 켜짐 (tool=' + tool + ')');
+    }
 
     // ----- 글자 메모 -----
     function renderTextBar() {
@@ -851,7 +877,9 @@
         <p class="muted small" style="margin:4px 0">다른 기기에서 <b>더보기 → 코드로 연결하기</b>에 이 코드를 넣으면 같은 필기가 보여요. 코드를 아는 사람은 이 필기를 볼 수 있으니 남에게 알려 주지 마세요.</p>
         <p class="muted small" style="margin:4px 0">${esc(info)}${pend ? ` 아직 올리지 못한 필기 ${pend}장(인터넷이 되면 자동으로 올라가요).` : ''}</p>
         ${msg ? `<p class="${msg.err ? 'error' : 'muted'} small">${esc(msg.text)}</p>` : ''}
+        <div class="row"><button class="btn small" id="vc-dbg" type="button">필기 진단 ${ls.get('ews_ink_dbg', '') === '1' ? '끄기' : '켜기'}</button></div>
         <div class="row"><button class="btn small" id="vc-copy" type="button">코드 복사</button><button class="btn small" id="vc-sync" type="button">지금 맞추기</button><button class="btn small" id="vc-leave" type="button">이 기기 연결 해제</button><button class="btn small danger" id="vc-del" type="button">보관함 지우기</button></div>`;
+      el.querySelector('#vc-dbg').onclick = () => { ls.set('ews_ink_dbg', ls.get('ews_ink_dbg', '') === '1' ? '0' : '1'); render({ text: '필기 진단을 ' + (ls.get('ews_ink_dbg', '') === '1' ? '켰어요. 필기 화면 왼쪽 아래에 기록이 보여요.' : '껐어요.') }); };
       el.querySelector('#vc-copy').onclick = async () => { try { await navigator.clipboard.writeText(v.code || ''); cfg.toast('코드를 복사했어요.'); } catch { cfg.toast('복사하지 못했어요. 코드를 직접 적어 주세요.'); } };
       el.querySelector('#vc-sync').onclick = async (e) => { e.target.disabled = true; try { await adoptServerNotes(); render({ text: '맞췄어요.' }); } catch (err) { render({ err: 1, text: err.message }); } };
       el.querySelector('#vc-leave').onclick = () => {
