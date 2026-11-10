@@ -357,8 +357,6 @@
       const a = area();
       bw = Math.max(50, Math.min(a.w - 8, (a.h - 8) / ratio));
       bh = bw * ratio;
-      stage.style.width = bw + 'px';
-      stage.style.height = bh + 'px';
       svg.setAttribute('viewBox', `0 0 1000 ${H().toFixed(1)}`);
     }
     function clampView() {
@@ -367,7 +365,9 @@
       view.y = sh <= a.h ? (a.h - sh) / 2 : clamp(view.y, a.h - sh - m, m);
     }
     function applyView() {
-      stage.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.s})`;
+      stage.style.width = bw * view.s + 'px';
+      stage.style.height = bh * view.s + 'px';
+      stage.style.transform = `translate(${view.x}px,${view.y}px)`;
       q('.ink-n').textContent = `${title ? title + ' · ' : ''}${page + 1}/${pages.length}${view.s > 1.02 ? ` · ${view.s.toFixed(1)}배` : ''}`;
     }
     function resetView() { view.s = 1; clampView(); applyView(); }
@@ -468,8 +468,8 @@
     });
 
     // ----- 쓰기 -----
-    const norm = (e) => {
-      const r = stage.getBoundingClientRect(); // 확대·이동이 반영된 실제 위치
+    const norm = (e, r = stage.getBoundingClientRect()) => {
+      // r: 확대·이동이 반영된 그림의 실제 위치
       return [clamp((e.clientX - r.left) / r.width, 0, 1), clamp((e.clientY - r.top) / r.height, 0, 1)];
     };
     function hitItems(nx, ny) {
@@ -508,20 +508,40 @@
       }
       if (a.erased.length !== a.shown) { a.shown = a.erased.length; redraw(); }
     }
+    let liveRaf = 0;
     function drawLive() {
-      if (!live || !active) return;
-      const p = [];
-      active.pts.forEach((pt) => p.push(Math.round(pt[0] * 10000), Math.round(pt[1] * 10000)));
-      live.setAttribute('d', pathD(p, 1000, H()));
+      if (liveRaf) return;
+      liveRaf = requestAnimationFrame(() => {
+        liveRaf = 0;
+        if (!live || !active) return;
+        const p = [];
+        active.pts.forEach((pt) => p.push(Math.round(pt[0] * 10000), Math.round(pt[1] * 10000)));
+        live.setAttribute('d', pathD(p, 1000, H()));
+      });
     }
+    let lastStroke = null;
     function startDraw(e) {
       const n = norm(e);
       active = { id: e.pointerId, type: e.pointerType, start: n, moved: 0, pts: [n], erased: [], shown: 0 };
+      if ((tool === 'pen' || tool === 'hl') && lastStroke && e.pointerType === 'pen' && Date.now() - lastStroke.t < 110 && lastStroke.tool === tool && items.includes(lastStroke.item)) {
+        const li = lastStroke.item;
+        const end = [li.p[li.p.length - 2] / 10000, li.p[li.p.length - 1] / 10000];
+        if (Math.hypot(n[0] - end[0], (n[1] - end[1]) * ratio) < 0.02 / view.s) {
+          const prevPts = [];
+          for (let i = 0; i < li.p.length; i += 2) prevPts.push([li.p[i] / 10000, li.p[i + 1] / 10000]);
+          active.pts = prevPts.concat([n]);
+          active.resume = li;
+          removeItem(li.id);
+          if (undo.length && undo[undo.length - 1].a === 'add' && undo[undo.length - 1].item.id === li.id) undo.pop();
+          redraw();
+        }
+        lastStroke = null;
+      }
       if (tool === 'pen' || tool === 'hl') {
         const o = opts[tool];
         // 확대해서 쓰면 선·글자가 같은 화면 굵기가 되도록 그림 기준 굵기를 줄여 저장한다
         const w = Math.max(10, Math.round(WIDTHS[tool][o.w] / view.s));
-        active.stroke = { t: tool === 'pen' ? 's' : 'h', c: o.c, w };
+        active.stroke = active.resume ? { t: active.resume.t, c: active.resume.c, w: active.resume.w } : { t: tool === 'pen' ? 's' : 'h', c: o.c, w };
         live = document.createElementNS(NS, 'path');
         live.setAttribute('fill', 'none');
         live.setAttribute('stroke', o.c);
@@ -553,12 +573,20 @@
         const it = { id: uid(), t: a.stroke.t, c: a.stroke.c, w: a.stroke.w, p };
         addItem(it);
         record({ a: 'add', item: it });
+        lastStroke = { item: it, t: Date.now(), tool };
         redraw();
         touch();
         renderBar();
       } else if (tool === 'er') {
         if (a.erased.length) { record({ a: 'del', items: a.erased }); touch(); renderBar(); }
-      } else if (tool === 'tx' && a.moved < 0.02) {
+      } else if (tool === 'tx' && a.moved < 0.02 / view.s) {
+        if (txtEdit && txtEdit.isNew) {
+          txtEdit.x = Math.round(a.start[0] * 10000);
+          txtEdit.y = Math.round(a.start[1] * 10000);
+          redraw();
+          return;
+        }
+        if (txtEdit) return;
         const hit = hitItems(a.start[0], a.start[1]).filter((i) => i.t === 'x').pop();
         openText(hit || null, a.start);
       }
@@ -618,8 +646,9 @@
       }
       if (!active || e.pointerId !== active.id) return;
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      const rect = stage.getBoundingClientRect();
       for (const ev of evs.length ? evs : [e]) {
-        const n = norm(ev);
+        const n = norm(ev, rect);
         const last = active.pts[active.pts.length - 1];
         if (Math.hypot(n[0] - last[0], (n[1] - last[1]) * ratio) < 0.0004 / view.s) continue;
         active.moved += Math.hypot(n[0] - last[0], (n[1] - last[1]) * ratio);
@@ -643,8 +672,10 @@
       // 펜이 중간에 취소돼도 지금까지 그은 만큼은 남긴다(끊김 방지)
       if (active && e.pointerId === active.id) finish(cancel && e.pointerType !== 'pen');
     }
-    scroller.addEventListener('pointerup', (e) => endPointer(e, false));
-    scroller.addEventListener('pointercancel', (e) => endPointer(e, true));
+    const release = (e) => { try { scroller.releasePointerCapture(e.pointerId); } catch {} };
+    scroller.addEventListener('pointerup', (e) => { endPointer(e, false); release(e); });
+    scroller.addEventListener('pointercancel', (e) => { endPointer(e, true); release(e); });
+    scroller.addEventListener('lostpointercapture', (e) => { if ((active && e.pointerId === active.id) || (pan && e.pointerId === pan.id)) endPointer(e, false); });
     scroller.addEventListener('wheel', (e) => { e.preventDefault(); const [cx, cy] = rel(e); zoomTo(view.s * (e.deltaY < 0 ? 1.18 : 1 / 1.18), cx, cy); }, { passive: false });
     scroller.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
     scroller.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -653,7 +684,8 @@
     // ----- 글자 메모 -----
     function renderTextBar() {
       const cur = txtEdit;
-      q('#ink-tr').innerHTML = dots(PEN_COLORS, cur.c) + TEXT_SIZES.map((sz, i) => `<button type="button" class="ink-w txs${sz === cur.z ? ' on' : ''}" data-z2="${sz}" style="font-size:${12 + i * 4}px">가</button>`).join('');
+      const zi = zIdx(cur.z);
+      q('#ink-tr').innerHTML = dots(PEN_COLORS, cur.c) + TEXT_SIZES.map((sz, i) => `<button type="button" class="ink-w txs${i === zi ? ' on' : ''}" data-z2="${i}" style="font-size:${12 + i * 4}px">가</button>`).join('');
     }
     // 입력창이 가리지 않도록 글자 자리가 보이게 화면을 옮긴다
     function revealPoint() {
@@ -663,11 +695,16 @@
       const limit = $txt.getBoundingClientRect().top - 70;
       if (sy > limit) { view.y -= sy - limit; applyView(); }
     }
+    const zFor = (i) => clamp(Math.round(TEXT_SIZES[i] / view.s), 60, 600);
+    const zIdx = (z) => { let bi = 0; TEXT_SIZES.forEach((_, i) => { if (Math.abs(zFor(i) - z) < Math.abs(zFor(bi) - z)) bi = i; }); return bi; };
     function openText(it, at) {
-      const z0 = clamp(Math.round(TEXT_SIZES[opts.tx.z] / view.s), 60, 600);
+      const z0 = zFor(opts.tx.z);
       txtEdit = it ? { ...it, isNew: false } : { id: uid(), t: 'x', x: Math.round(at[0] * 10000), y: Math.round(at[1] * 10000), c: opts.tx.c, z: z0, s: '', isNew: true };
       $ta.value = txtEdit.s;
       $txt.hidden = false;
+      // 탭한 뒤에 따라오는 클릭이 방금 나타난 입력창의 버튼(취소 등)을 누르지 않도록 잠깐 막는다
+      $txt.style.pointerEvents = 'none';
+      setTimeout(() => { $txt.style.pointerEvents = ''; }, 450);
       $txt.querySelector('[data-t="del"]').hidden = txtEdit.isNew;
       renderTextBar();
       redraw();
@@ -685,7 +722,7 @@
       const b = e.target.closest('button');
       if (!b || !txtEdit) return;
       if (b.dataset.col) { txtEdit.c = b.dataset.col; renderTextBar(); redraw(); }
-      else if (b.dataset.z2) { txtEdit.z = +b.dataset.z2; renderTextBar(); redraw(); }
+      else if (b.dataset.z2) { const i = +b.dataset.z2; txtEdit.z = zFor(i); opts.tx.z = i; saveOpts(); renderTextBar(); redraw(); }
       else if (b.dataset.t === 'cancel') closeText();
       else if (b.dataset.t === 'del') {
         const old = items.find((i) => i.id === txtEdit.id);
