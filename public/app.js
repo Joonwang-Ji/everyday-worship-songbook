@@ -550,6 +550,8 @@
       persist = false;
     }
     const slId = /^\d+$/.test(q.get('sl') || '') ? q.get('sl') : '';
+    // 콘티에서 열었다면 필기는 "콘티용"(곡 기본 필기 위에 겹쳐 보인다)
+    const slInk = slId && /^[0-9a-f]{12}$/.test(q.get('u') || '') ? { uid: q.get('u'), setlistId: +slId } : null;
     const isLeader = !!(me.team && me.team.isLeader);
 
     const playHref = '#/play/' + (slId ? slId + '?song=' + id : 'song/' + id + (q.toString() ? '?' + q.toString() : ''));
@@ -743,13 +745,14 @@
     const wantKey = q.get('key') || '';
     const keyBanner = wantKey && origKey && wantKey !== origKey ? `<div class="memo" style="margin-bottom:10px">이 콘티에서는 <b>${esc(wantKey)}</b> 키로 부릅니다. 이미지 악보는 원래 키(<b>${esc(origKey)}</b>) 기준입니다.</div>` : '';
     const hasImgFile = files.some((f) => f.kind === 'image');
-    $pi.innerHTML = (files.length ? keyBanner : '') + (hasImgFile ? '<div class="row ink-entry"><button class="btn small" id="inkbtn" type="button">✎ 필기하기</button><span class="muted small">내 필기는 나만 보여요</span></div>' : '') + Files.renderPane(files);
+    $pi.innerHTML = (files.length ? keyBanner : '') + (hasImgFile ? '<div class="row ink-entry"><button class="btn small" id="inkbtn" type="button">' + (slInk ? '✎ 콘티용 필기하기' : '✎ 필기하기') + '</button><span class="muted small">' + (slInk ? '이 콘티에서만 보여요 · 내 필기는 나만 보여요' : '내 필기는 나만 보여요') + '</span></div>' : '') + Files.renderPane(files);
     Files.bindPane($pi, files);
     if (hasImgFile) {
-      Ink.decorate($pi, files);
+      Ink.decorate($pi, files, slInk);
       Ink.pull(song.id);
+      if (slInk) Ink.pullSetlist(slInk.setlistId);
       const ib = document.getElementById('inkbtn');
-      if (ib) ib.onclick = () => Ink.edit({ files, start: 0, songId: song.id, title: song.title });
+      if (ib) ib.onclick = () => Ink.edit({ files, start: 0, songId: song.id, title: song.title, sl: slInk || undefined });
     }
     function showTab(t, remember) {
       $pc.hidden = t !== 'chord';
@@ -2357,6 +2360,7 @@
       if (it.key) p.set('key', it.key);
       if (it.view !== 'auto') p.set('view', it.view);
       p.set('sl', id);
+      if (it.uid) p.set('u', it.uid);
       const imgKeyNote = imageOnly && it.key && it.original_key && it.key !== it.original_key;
       return `<li class="song-item"><a href="#/song/${it.song_id}?${p.toString()}">
         <div class="row between"><div class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</div>${key || it.time_sig ? `<span class="row" style="gap:6px">${key ? `<span class="keybadge">${esc(key)}</span>` : ''}${SongFilter.tsigHTML(it.time_sig, esc)}</span>` : ''}</div>
@@ -2579,9 +2583,12 @@
     const $pb = g('pbody');
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    // 콘티에서 연 연주 모드: 곡 칸마다 콘티용 필기가 따로 붙는다
+    const slOf = (it) => (src.sl && it && it.uid ? { uid: it.uid, setlistId: +src.sl } : undefined);
+    if (src.sl && window.Ink) Ink.pullSetlist(+src.sl);
     g('pink').onclick = () => {
       if (!cur || !cur.pages.length) return;
-      Ink.edit({ files: cur.pages, start: cur.page, songId: cur.song.id, title: cur.song.title, onClose: (pg) => { if (cur) { cur.page = Math.min(pg, cur.pages.length - 1); draw(); } } });
+      Ink.edit({ files: cur.pages, start: cur.page, songId: cur.song.id, title: cur.song.title, sl: slOf(cur.it), onClose: (pg) => { if (cur) { cur.page = Math.min(pg, cur.pages.length - 1); draw(); } } });
     };
 
     // ----- 곡 불러오기 (한 번 불러온 곡은 이 화면 안에서 다시 쓴다. 악보 이미지 주소는 오래되면 만료되니 40분 뒤엔 새로 받는다) -----
@@ -2674,7 +2681,7 @@
         $pb.scrollTop = top;
       } else if (pages.length) {
         $pb.innerHTML = `<img class="sheet" src="${esc(pages[cur.page].url)}" alt="악보 ${cur.page + 1}">`;
-        if (window.Ink) Ink.attachImg($pb.querySelector('img.sheet'), pages[cur.page].id);
+        if (window.Ink) Ink.attachImg($pb.querySelector('img.sheet'), pages[cur.page].id, slOf(cur.it));
         if (pages[cur.page + 1]) new Image().src = pages[cur.page + 1].url;
       } else {
         $pb.innerHTML = Files.renderPane(files); // PDF만 있는 곡: 열기 링크
@@ -3277,7 +3284,8 @@
     const pickKeys = SongFilter.keyChips(songs);
     const pickTs = SongFilter.tsigChips(songs);
     const byId = Object.fromEntries(songs.map((s) => [s.id, s]));
-    const itemsOf = (setlist) => setlist.items.filter((it) => byId[it.song_id]).map((it) => ({ song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view }));
+    // keepUid: 콘티를 고칠 때만 곡 칸 번호(uid)를 이어 간다 → 콘티용 필기가 따라간다. 복사·다른 콘티에서 가져오기는 새 칸이다.
+    const itemsOf = (setlist, keepUid) => setlist.items.filter((it) => byId[it.song_id]).map((it) => ({ song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view, ...(keepUid && it.uid ? { uid: it.uid } : {}) }));
     const startDate = (sid) => {
       const o = services.find((x) => String(x.id) === String(sid));
       return svcDay(o) >= 0 ? nextWeekday(svcDay(o)) : nextSunday();
@@ -3290,7 +3298,7 @@
           service_id: listRes.setlist.service_id || '',
           leaders: SongForm.leaderList(listRes.setlist.leaders),
           is_temp: id ? !!listRes.setlist.is_temp : false,
-          items: itemsOf(listRes.setlist),
+          items: itemsOf(listRes.setlist, !!id),
         }
       : { date: quick ? todayKst() : nextSunday(), title: '', memo: '', service_id: '', leaders: [], is_temp: quick, items: [] };
     // 새 콘티에서 목록의 예배 종류 필터가 하나로 골라져 있으면 그 종류로 시작한다 (기본 요일이 있으면 날짜도 그 요일로)
@@ -3665,7 +3673,7 @@
         leaders: data.leaders,
         is_temp: data.is_temp,
         items: data.items.map((it) => {
-          return { song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view };
+          return { song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view, ...(it.uid ? { uid: it.uid } : {}) };
         }),
       };
       el('save').disabled = true;

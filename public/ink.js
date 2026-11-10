@@ -16,6 +16,9 @@
   let cfg = { headers: () => ({}), toast: () => {} };
   const emit = (fileId) => window.dispatchEvent(new CustomEvent('ews-ink', { detail: { fileId } }));
   const emptyData = () => ({ v: 1, items: [], del: [] });
+  // 콘티용 필기(16차): 콘티의 곡 한 칸(uid) + 악보 한 장(fid)마다 따로 저장한다. 같은 저장소에 문자열 키로 넣는다.
+  const slKey = (u, fid) => `sl:${u}:${fid}`;
+  const slMeta = (sl, fid) => (sl ? { sl: sl.uid, fid, setlistId: sl.setlistId } : {});
 
   // ---------- 이 기기 저장소 (IndexedDB, 안 되면 메모리) ----------
   let dbp = null;
@@ -101,13 +104,15 @@
       const all = await rall();
       for (const rec of all.filter((r) => r.dirty)) {
         try {
-          const r = await vfetch('/ink/' + rec.fileId, { method: 'PUT', body: { song_id: rec.songId, base_rev: rec.rev || 0, data: rec.data } });
+          const r = rec.sl
+            ? await vfetch('/ink-sl/' + rec.sl + '/' + rec.fid, { method: 'PUT', body: { base_rev: rec.rev || 0, data: rec.data } })
+            : await vfetch('/ink/' + rec.fileId, { method: 'PUT', body: { song_id: rec.songId, base_rev: rec.rev || 0, data: rec.data } });
           const cur = await rget(rec.fileId);
           if (cur && cur.stamp !== rec.stamp) {
             // 올리는 사이에 또 고쳤다: 서버에서 합쳐진 것과 내 최신본을 다시 합쳐 두고, 다음 번에 마저 올린다
             await rput({ ...cur, rev: r.rev, data: mergeInk(r.data, cur.data) });
           } else {
-            await rput({ fileId: rec.fileId, songId: rec.songId, rev: r.rev, data: r.data, dirty: false, stamp: rec.stamp });
+            await rput({ ...rec, rev: r.rev, data: r.data, dirty: false, stamp: rec.stamp });
             if (JSON.stringify(r.data) !== JSON.stringify(rec.data)) emit(rec.fileId);
           }
         } catch (e) {
@@ -139,13 +144,30 @@
     }
     flush();
   }
+  // 콘티를 열 때: 그 콘티의 콘티용 필기를 받아 이 기기 것과 맞춘다
+  async function pullSetlist(setlistId) {
+    if (!hasVault()) return;
+    try {
+      const r = await vfetch('/ink-sl?setlist=' + encodeURIComponent(setlistId));
+      for (const it of r.items || []) {
+        const key = slKey(it.uid, it.file_id);
+        const cur = await rget(key);
+        if (cur && (cur.dirty || cur.rev === it.rev)) continue;
+        await rput({ fileId: key, sl: it.uid, fid: it.file_id, setlistId: it.setlist_id, songId: it.song_id, rev: it.rev, data: it.data, dirty: false, stamp: 0 });
+        emit(key);
+      }
+    } catch (e) {
+      if (e.status === 401 && !warned) { warned = true; cfg.toast('필기 보관함 연결이 풀렸어요. 더보기에서 코드를 다시 입력해 주세요.'); }
+    }
+    flush();
+  }
   async function get(fileId) {
     const rec = await rget(fileId);
     return rec ? rec.data : null;
   }
-  async function save(fileId, songId, data) {
+  async function save(fileId, songId, data, meta) {
     const cur = await rget(fileId);
-    await rput({ fileId, songId, rev: cur ? cur.rev || 0 : 0, data, dirty: true, stamp: Date.now() + Math.random() });
+    await rput({ ...(cur && cur.sl ? { sl: cur.sl, fid: cur.fid, setlistId: cur.setlistId } : {}), ...(meta || {}), fileId, songId, rev: cur ? cur.rev || 0 : 0, data, dirty: true, stamp: Date.now() + Math.random() });
     emit(fileId);
     flush();
   }
@@ -158,8 +180,20 @@
       else await rput({ ...cur, rev: it.rev, data: mergeInk(it.data, cur.data), dirty: true, stamp: Date.now() + Math.random() });
       emit(it.file_id);
     }
+    const r2 = await vfetch('/ink-sl');
+    for (const it of r2.items || []) {
+      const key = slKey(it.uid, it.file_id);
+      const cur = await rget(key);
+      const meta = { sl: it.uid, fid: it.file_id, setlistId: it.setlist_id, songId: it.song_id };
+      if (!cur) await rput({ fileId: key, ...meta, rev: it.rev, data: it.data, dirty: false, stamp: 0 });
+      else await rput({ ...cur, rev: it.rev, data: mergeInk(it.data, cur.data), dirty: true, stamp: Date.now() + Math.random() });
+      emit(key);
+    }
     const all = await rall();
-    for (const rec of all) if (!rec.dirty && !(r.items || []).some((i) => i.file_id === rec.fileId)) await rput({ ...rec, rev: 0, dirty: true, stamp: Date.now() + Math.random() });
+    for (const rec of all) {
+      const onServer = rec.sl ? (r2.items || []).some((i) => slKey(i.uid, i.file_id) === rec.fileId) : (r.items || []).some((i) => i.file_id === rec.fileId);
+      if (!rec.dirty && !onServer) await rput({ ...rec, rev: 0, dirty: true, stamp: Date.now() + Math.random() });
+    }
     await flush();
   }
   async function vaultCreate() {
@@ -265,7 +299,8 @@
 
   // ---------- 악보 위에 보이기만 하는 필기 층 (곡 보기·연주 모드) ----------
   const overlays = new Set();
-  function attachImg(img, fileId) {
+  // sl = { uid, setlistId } 이면 곡 기본 필기 위에 콘티용 필기를 겹쳐 보인다
+  function attachImg(img, fileId, sl) {
     if (!img || !fileId || img.dataset.inkOn) return;
     const host = img.parentElement;
     if (!host) return;
@@ -276,7 +311,7 @@
     svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('preserveAspectRatio', 'none');
     host.appendChild(svg);
-    const o = { img, svg, fileId, data: null };
+    const o = { img, svg, fileId, slKey: sl ? slKey(sl.uid, fileId) : '', data: null, sdata: null };
     o.place = () => {
       const nw = img.naturalWidth, nh = img.naturalHeight;
       if (!nw || !nh) return;
@@ -290,9 +325,9 @@
       const H = (1000 * nh) / nw;
       svg.setAttribute('viewBox', `0 0 1000 ${H.toFixed(1)}`);
       o.H = H;
-      svg.innerHTML = dataSVG(o.data, 1000, H);
+      svg.innerHTML = dataSVG(o.data, 1000, H) + dataSVG(o.sdata, 1000, H);
     };
-    o.load = () => rget(fileId).then((rec) => { o.data = rec ? rec.data : null; o.place(); });
+    o.load = () => Promise.all([rget(fileId), o.slKey ? rget(o.slKey) : null]).then(([rec, srec]) => { o.data = rec ? rec.data : null; o.sdata = srec ? srec.data : null; o.place(); });
     overlays.add(o);
     img.addEventListener('load', o.place);
     try { o.ro = new ResizeObserver(o.place); o.ro.observe(img); } catch {}
@@ -301,14 +336,14 @@
   window.addEventListener('ews-ink', (e) => {
     for (const o of [...overlays]) {
       if (!o.svg.isConnected) { overlays.delete(o); try { o.ro && o.ro.disconnect(); } catch {} continue; }
-      if (o.fileId === e.detail.fileId) o.load();
+      if (o.fileId === e.detail.fileId || (o.slKey && o.slKey === e.detail.fileId)) o.load();
     }
   });
   window.addEventListener('resize', () => overlays.forEach((o) => o.svg.isConnected && o.place()));
   // 곡 보기 화면: root 안의 이미지 악보(img.sheet)에 차례대로 필기 층을 붙인다
-  function decorate(root, files) {
+  function decorate(root, files, sl) {
     const imgs = (files || []).filter((f) => f.kind === 'image');
-    root.querySelectorAll('img.sheet').forEach((im, i) => imgs[i] && attachImg(im, imgs[i].id));
+    root.querySelectorAll('img.sheet').forEach((im, i) => imgs[i] && attachImg(im, imgs[i].id, sl));
   }
 
   // ---------- 필기 화면 (전체 화면) ----------
@@ -322,7 +357,7 @@
 
   // 확대·이동은 브라우저에 맡기지 않고 직접 처리한다(브라우저가 맡으면 펜슬 획이 끊기고, 확대하면 화면 전체가 커져 도구 줄이 밀려난다).
   //  펜슬·마우스 = 쓰기 / 손가락 한 개 = 쓰기(☝ 켬) 또는 이동(☝ 끔) / 손가락 두 개 = 항상 확대·이동
-  function edit({ files, start = 0, songId, title = '', onClose }) {
+  function edit({ files, start = 0, songId, title = '', onClose, sl }) {
     const pages = (files || []).filter((f) => f.kind === 'image');
     if (!pages.length) return cfg.toast('필기할 이미지 악보가 없어요. (PDF 악보에는 쓸 수 없습니다)');
     let opts;
@@ -340,6 +375,9 @@
     let txtEdit = null;
     let bw = 300, bh = 420;
     const view = { s: 1, x: 0, y: 0 };
+    const keyOf = (i) => (sl ? slKey(sl.uid, pages[i].id) : pages[i].id); // 이 장의 저장 키
+    const metaOf = (i) => slMeta(sl, pages[i] && pages[i].id);
+    let under = null; // 콘티용으로 쓰는 중이면 그 밑에 깔아 보여 주는 곡 기본 필기(고치지 않는다)
     const base = new Map(); // 이 필기 화면을 연 뒤 처음 불러온 장의 모습 (취소하면 이걸로 되돌린다)
     const dirty = new Set();
     const ov = document.createElement('div');
@@ -409,7 +447,8 @@
     }
     function layout() { fitBase(); clampView(); applyView(); redraw(); }
     function redraw() {
-      let html = dataSVG({ items: txtEdit ? items.filter((i) => i.id !== txtEdit.id) : items }, 1000, H());
+      let html = under && under.items && under.items.length ? `<g class="ink-under" pointer-events="none">${dataSVG(under, 1000, H())}</g>` : '';
+      html += dataSVG({ items: txtEdit ? items.filter((i) => i.id !== txtEdit.id) : items }, 1000, H());
       if (txtEdit) {
         if (txtEdit.s.trim()) html += itemSVG(txtEdit, 1000, H());
         // 글자를 넣을 자리를 점선 원과 십자로 표시한다
@@ -422,7 +461,7 @@
     async function persist() {
       clearTimeout(timer);
       timer = null;
-      await save(pages[page].id, songId, { v: 1, items: items.slice(), del: [...del].slice(-2000) });
+      await save(keyOf(page), songId, { v: 1, items: items.slice(), del: [...del].slice(-2000) }, metaOf(page));
     }
     function touch() {
       dirty.add(page);
@@ -432,7 +471,8 @@
     async function loadPage() {
       undo = []; redo = [];
       const f = pages[page];
-      const rec = await rget(f.id);
+      const rec = await rget(keyOf(page));
+      if (sl) { const br = await rget(f.id); under = br && br.data ? br.data : null; }
       items = rec && rec.data ? rec.data.items.slice() : [];
       del = new Set(rec && rec.data ? rec.data.del : []);
       if (!base.has(page)) base.set(page, { v: 1, items: items.slice(), del: [...del] });
@@ -441,7 +481,7 @@
       img.src = f.url;
       fitBase(); resetView(); redraw();
       if (img.complete && img.naturalWidth) img.onload();
-      pull(songId);
+      if (sl) { pull(songId); pullSetlist(sl.setlistId); } else pull(songId);
     }
     const removeItem = (id) => { items = items.filter((i) => i.id !== id); del.add(id); };
     const addItem = (it) => { items = items.filter((i) => i.id !== it.id); items.push(it); del.delete(it.id); };
@@ -833,7 +873,7 @@
       }
       clearTimeout(timer);
       timer = null;
-      for (const i of dirty) if (base.has(i)) await save(pages[i].id, songId, base.get(i));
+      for (const i of dirty) if (base.has(i)) await save(keyOf(i), songId, base.get(i), metaOf(i));
       teardown();
       if (onClose) onClose(page);
     }
@@ -932,5 +972,5 @@
     setTimeout(flush, 1500);
   }
 
-  window.Ink = { init, edit, attachImg, decorate, pull, flush, get, save, mountVaultCard, hasVault, wipeLocal, mergeInk, simplify };
+  window.Ink = { init, edit, attachImg, decorate, pull, pullSetlist, flush, get, save, mountVaultCard, hasVault, wipeLocal, mergeInk, simplify };
 })();
