@@ -79,6 +79,7 @@
         else if (name === 'tempo') meta.tempo = val;
         else if (name === 'capo') meta.capo = val;
         else if (['comment', 'c', 'comment_italic', 'ci'].includes(name)) lines.push({ type: 'comment', text: val });
+        else if (['column_break', 'colb'].includes(name)) lines.push({ type: 'colbreak' });
         else if (['soc', 'start_of_chorus'].includes(name)) section = 'chorus';
         else if (['eoc', 'end_of_chorus'].includes(name)) section = null;
         continue;
@@ -144,6 +145,7 @@
     const conv = (c) => (c ? transposeChord(c, p.semis, p.flats) : '');
     const out = [];
     let inChorus = false;
+    let usedBreak = false; // 단 나누기는 한 곡에 첫 번째 표시만 쓴다(2단 보기에서 3단이 생기지 않게)
     const closeChorus = () => {
       if (inChorus) out.push('</div>');
       inChorus = false;
@@ -152,6 +154,10 @@
       if (ln.type === 'blank') {
         closeChorus();
         out.push('<div class="gap"></div>');
+      } else if (ln.type === 'colbreak') {
+        closeChorus();
+        if (!usedBreak) out.push('<div class="colb" aria-hidden="true"></div>');
+        usedBreak = true;
       } else if (ln.type === 'comment') {
         closeChorus();
         out.push('<div class="cm">' + esc(ln.text) + '</div>');

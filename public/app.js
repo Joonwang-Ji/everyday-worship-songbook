@@ -476,6 +476,7 @@
     const menuRows = [
       me.canEdit ? `<a class="menu-row" href="#/edit/${id}">곡 편집</a>` : me.adminRequired ? `<button type="button" class="menu-row" data-lock="song" data-go="#/edit/${id}">🔒 곡 편집 <span class="muted small">PIN 필요</span></button>` : '',
       me.canEdit ? `<a class="menu-row" href="#/history/${id}">수정 이력</a>` : '',
+      hasText ? `<button type="button" class="menu-row" id="m-lyr">가사 복사</button>` : '',
     ].filter(Boolean);
 
     $app.innerHTML = `
@@ -539,6 +540,18 @@
     if ($sm) $sm.onclick = () => {
       const sh = showSheet(`<div class="menu-list">${menuRows.join('')}</div><button type="button" class="btn" id="mcancel" style="width:100%;margin-top:8px">닫기</button>`);
       sh.q('#mcancel').onclick = () => sh.close();
+      const $ml = sh.q('#m-lyr');
+      if ($ml) $ml.onclick = () => {
+        sh.close();
+        // 콘티에서 열었다면 그 콘티에 적힌 송폼도 쓸 수 있게 한다
+        lyricsSheet('가사 복사', async () => {
+          let form = '';
+          if (slId) {
+            try { const it = ((await api('/setlists/' + slId)).setlist.items || []).find((x) => String(x.song_id) === String(id)); form = (it && it.form) || ''; } catch {}
+          }
+          return [{ title: song.title, form, song }];
+        }, { numbered: false, noForm: !slId });
+      };
     };
 
     const $score = document.getElementById('score');
@@ -829,6 +842,8 @@
             body = `<div class="te-lab">${esc(l.label || '(이름 없음)')}</div>`;
           } else if (l.kind === 'soc' || l.kind === 'eoc') {
             body = `<div class="te-soc">${l.kind === 'soc' ? '후렴 시작' : '후렴 끝'}</div>`;
+          } else if (l.kind === 'colb') {
+            body = `<div class="te-colb">↦ 여기서 오른쪽 단으로 (2단 보기)</div>`;
           } else if (l.kind === 'blank') {
             body = `<div class="te-gap"></div>`;
           } else {
@@ -1008,6 +1023,8 @@
       const sameLi = TabEdit.findSameLyric(tm, li);
       const allBlocks = TabEdit.bodyBlocks(tm);
       const myBlock = allBlocks.find((b) => li >= b.a && li <= b.b);
+      const colAt = TabEdit.colBreakAt(tm, li);
+      const colTile = (T) => (colAt >= 0 ? T('colb-off', '↤', '단 나누기 지우기') : T('colb', '↦', '여기부터 다음 단<small>2단 보기</small>'));
       const canCopyBlock = !!myBlock && allBlocks.some((b) => b !== myBlock && b.chordLines > 0);
       let h = `<h2 style="margin-top:0">${li + 1}번째 줄</h2>`;
       if (l.kind === 'lyric') {
@@ -1024,6 +1041,7 @@
           ${T('gap', '＋', '위에 빈 줄')}
           ${T('instr-up', '🎸', '위에 코드 줄<small>간주·인트로</small>')}
           ${T('instr-dn', '🎸', '아래에 코드 줄<small>간주·인트로</small>')}
+          ${colTile(T)}
         </div>
         <details class="mdet"><summary>구간 이름 넣기 (1절·후렴 …)</summary>${secChips(true)}</details>
         <p class="mlabel">정리</p>
@@ -1033,7 +1051,10 @@
         </div>`;
       } else if (l.kind === 'comment') {
         h += `<p class="hint" style="margin:0 0 4px">이름 바꾸기</p>${secChips(false)}
-          <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 이름표 삭제</button></div>`;
+          <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn" data-op="${colAt >= 0 ? 'colb-off' : 'colb'}">${colAt >= 0 ? '↤ 단 나누기 지우기' : '↦ 이 구간부터 다음 단'}</button><button type="button" class="btn danger" data-op="del">이 이름표 삭제</button></div>`;
+      } else if (l.kind === 'colb') {
+        h += `<p class="hint">2단 보기에서 이 줄 아래부터 오른쪽 단에 나와요. 1단으로 볼 때는 보이지 않아요.</p>
+          <div class="menu-col"><button type="button" class="btn danger" data-op="del">단 나누기 지우기</button></div>`;
       } else if (l.kind === 'soc' || l.kind === 'eoc') {
         h += `<div class="menu-col"><button type="button" class="btn" data-op="chorus">후렴 표시 끄기</button><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button></div>`;
       } else if (l.kind === 'blank') {
@@ -1072,6 +1093,8 @@
         } else if (op === 'copy-block') blockCopySheet(li);
         else if (op === 'del') apply(TabEdit.deleteLine(tm, li));
         else if (op === 'clear') apply(TabEdit.clearChords(tm, li));
+        else if (op === 'colb') { apply(TabEdit.setColBreak(tm, li)); toast('2단 보기에서 여기부터 오른쪽 단으로 넘어가요. (한 곡에 한 곳만 적용돼요)'); }
+        else if (op === 'colb-off') { const ci = TabEdit.colBreakAt(tm, li); if (ci >= 0) apply(TabEdit.deleteLine(tm, ci)); }
         else if (op === 'gap') apply(TabEdit.insertLines(tm, li, ['']));
         else if (op === 'chorus') { const r = TabEdit.toggleChorus(tm, li); if (r) apply(r); else toast('후렴으로 표시할 가사 줄이 아니에요.'); }
         else if (op === 'instr-up' || op === 'instr-dn') {
@@ -2083,6 +2106,7 @@
       const sh = showSheet(`<h2 style="margin-top:0">공유·저장</h2>
         <div class="share-list">
           <button class="share-item" id="x-text" type="button"><b>💬 카톡용 텍스트 복사</b><span>곡 순서·키·송폼·메모를 글자로 복사해요</span></button>
+          <button class="share-item" id="x-lyr" type="button"><b>🎤 가사 복사</b><span>콘티의 가사를 글자로 복사해요 (자막·문서용, 3가지 모양)</span></button>
           <button class="share-item" id="x-png" type="button"><b>🖼 표지 이미지</b><span>콘티 한 장짜리 그림(PNG)으로 저장·공유해요</span></button>
           <button class="share-item" id="x-pdf" type="button"><b>📄 PDF 만들기</b><span>표지 + 곡별 악보를 PDF 한 파일로 만들어요</span></button>
           <button class="share-item" id="x-off" type="button"><b>⬇ 오프라인 준비</b><span>인터넷이 없는 곳에서도 이 콘티를 열 수 있게 저장해요</span></button>
@@ -2097,6 +2121,11 @@
 
     
     const baseName = [s.date, (exp.title || '콘티').trim()].filter(Boolean).join(' ').replace(/[\\/:*?"<>|]/g, '').slice(0, 60) || '콘티';
+    const $xl = sh.q('#x-lyr');
+    if ($xl) $xl.onclick = () => {
+      sh.close();
+      lyricsSheet('가사 복사', () => fetchLyricEntries(s.items));
+    };
     const $xt = sh.q('#x-text');
     if ($xt) $xt.onclick = async () => {
       const text = SongForm.kakaoText(exp);
@@ -2724,6 +2753,86 @@
   }
 
   // 콘티의 곡들을 오프라인에서도 열 수 있게 미리 받아 둔다. (서비스 워커가 받은 내용을 이 기기에 저장한다)
+  // ---------- 가사 복사 (12차): 콘티 전체 또는 곡 하나의 가사를 글자로 복사 ----------
+  // 콘티의 곡들을 4곡씩 동시에 불러온다. 한 곡이 실패해도 나머지는 계속한다.
+  async function fetchLyricEntries(items) {
+    const out = new Array(items.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const i = next++;
+        const it = items[i];
+        try {
+          out[i] = { title: it.title, form: it.form, song: (await api('/songs/' + it.song_id)).song };
+        } catch {
+          out[i] = { title: it.title, form: it.form, song: null, failed: true };
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    return out;
+  }
+  // getEntries: async () => [{title, form, song|null, failed?}]
+  // opt.numbered=false 면 제목 앞 번호를 빼고, opt.noForm=true 면 "송폼 순서대로"를 숨긴다(곡 하나만 열었을 때 송폼을 모르는 경우)
+  function lyricsSheet(heading, getEntries, opt) {
+    opt = opt || {};
+    const FMT = [
+      ['labeled', '제목 + 가사', '곡 제목 아래에 구간 이름([1절]·[후렴])과 가사가 나와요.'],
+      ['form', '송폼 순서대로', '콘티에 적은 송폼(V1-C-V2-C…) 순서대로 가사를 펼쳐요. 후렴이 반복되면 그만큼 다시 나와요.'],
+      ['plain', '가사만', '제목·구간 이름 없이 가사만 이어서 나와요. 곡 사이는 빈 줄 두 개예요.'],
+    ].filter((f) => !(opt.noForm && f[0] === 'form'));
+    let fmt = ls.get('ews_lyr_fmt', 'labeled');
+    if (!FMT.some((f) => f[0] === fmt)) fmt = 'labeled';
+    const sh = showSheet(`<h2 style="margin-top:0">${esc(heading)}</h2>
+      <div class="row" id="lyfmt" style="flex-wrap:wrap;gap:6px">${FMT.map((f) => `<button type="button" class="seg" data-f="${f[0]}">${f[1]}</button>`).join('')}</div>
+      <p class="hint" id="lyhelp" style="margin:6px 0"></p>
+      <textarea id="lyta" rows="12" readonly spellcheck="false" style="font-size:16px">가사를 불러오는 중…</textarea>
+      <p class="hint" id="lynote" hidden></p>
+      <div class="row" style="margin-top:10px"><button type="button" class="btn primary grow" id="lycopy" disabled>복사</button><button type="button" class="btn" id="lyclose">닫기</button></div>`);
+    const ta = sh.q('#lyta');
+    const $copy = sh.q('#lycopy');
+    const $note = sh.q('#lynote');
+    sh.q('#lyclose').onclick = () => sh.close();
+    let entries = null;
+    const names = (arr) => arr.slice(0, 3).join(', ') + (arr.length > 3 ? ` 외 ${arr.length - 3}곡` : '');
+    function render() {
+      sh.wrap.querySelectorAll('[data-f]').forEach((b) => b.classList.toggle('on', b.dataset.f === fmt));
+      sh.q('#lyhelp').textContent = (FMT.find((f) => f[0] === fmt) || FMT[0])[2];
+      if (!entries) return;
+      const failed = entries.filter((e) => e.failed).map((e) => e.title);
+      const r = SongForm.lyricsText(
+        entries.map((e) => ({ title: e.title, form: e.form, parsed: e.song ? Chord.parseChordPro(e.song.chordpro) : null })),
+        fmt,
+        { numbered: opt.numbered !== false }
+      );
+      ta.value = r.text;
+      const notes = [];
+      if (failed.length) notes.push(`${names(failed)}은(는) 불러오지 못했어요. 인터넷을 확인하고 다시 열어 주세요.`);
+      const noText = r.noText.filter((t) => !failed.includes(t));
+      if (noText.length) notes.push(fmt === 'plain' ? `이미지·PDF 악보만 있는 곡(${names(noText)})은 가사가 없어 뺐어요.` : `이미지·PDF 악보만 있는 곡(${names(noText)})은 가사가 없어요.`);
+      if (fmt === 'form' && r.noForm.length) notes.push(`송폼이 없는 곡(${names(r.noForm)})은 악보에 적힌 순서대로 넣었어요.`);
+      if (fmt === 'form' && r.missing.length) notes.push(r.missing.slice(0, 2).map((m) => `${m.title}: 송폼의 ${m.tokens.join(', ')}은(는) 악보에서 찾지 못해 건너뛰었어요.`).join(' '));
+      $note.textContent = notes.join(' ');
+      $note.hidden = !notes.length;
+      $copy.disabled = !r.text.trim();
+    }
+    sh.wrap.querySelectorAll('[data-f]').forEach((b) => (b.onclick = () => { fmt = b.dataset.f; ls.set('ews_lyr_fmt', fmt); render(); }));
+    render();
+    $copy.onclick = async () => {
+      const text = ta.value;
+      let ok = false;
+      try { await navigator.clipboard.writeText(text); ok = true; } catch {
+        // 복사가 막힌 환경: 글자를 선택해 두고 직접 복사하게 한다
+        try { ta.readOnly = false; ta.focus(); ta.select(); ok = document.execCommand('copy'); ta.readOnly = true; } catch {}
+      }
+      if (ok) { sh.close(); toast('가사를 복사했어요.'); } else { ta.focus(); ta.select(); toast('글자를 길게 눌러 전체 선택 후 복사해 주세요.'); }
+    };
+    Promise.resolve()
+      .then(getEntries)
+      .then((e) => { entries = e; if (sh.wrap.isConnected) render(); })
+      .catch((e) => { ta.value = ''; $note.textContent = (e && e.message) || '가사를 불러오지 못했어요.'; $note.hidden = false; });
+  }
+
   async function prepareOffline(items) {
     if (!(navigator.serviceWorker && navigator.serviceWorker.controller)) {
       toast('처음 한 번은 앱을 새로 고친 뒤 다시 눌러 주세요.');

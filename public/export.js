@@ -229,6 +229,7 @@
     }
 
     for (const ln of parsed.lines) {
+      if (ln.type === 'colbreak') continue; // 단 나누기는 화면(2단 보기)에서만 쓴다
       if (ln.type === 'blank') { endBar(); inChorus = false; need(24 * scale); y += Math.round(24 * scale); continue; }
       if (ln.type === 'comment') {
         endBar(); inChorus = false;

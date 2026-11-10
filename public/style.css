@@ -398,6 +398,9 @@ main { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
 /* 9-B: 코드 악보 2단 보기 */
 .score .chorus, .score .ln { break-inside: avoid; }
 .score .cm { break-after: avoid; }
+/* 12차: 단 나누기 — 2단 보기에서만 여기서 다음 단으로 넘긴다(1단에서는 보이지 않음) */
+.score .colb { height: 0; margin: 0; padding: 0; }
+.score.cols2 .colb, .play-body.cols .score .colb { break-after: column; }
 .score.cols2 { column-count: 2; column-gap: 40px; column-rule: 1px solid var(--line); }
 #app.wide { max-width: none; }
 main.wide, #app.wide { max-width: 1280px; }
@@ -438,3 +441,6 @@ label.check input { width: 22px; height: 22px; flex: none; margin-top: 1px; }
 .editbar h2 { margin: 0; flex: 1; font-size: 18px; text-align: center; }
 .moreinfo { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 6px; }
 .moreinfo > summary { cursor: pointer; font-weight: 700; min-height: 40px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* 12차: 편집 화면의 단 나누기 줄 */
+.te-colb { align-self: center; margin: 4px 0; padding: 2px 12px; border: 1px dashed var(--brand); border-radius: 999px; color: var(--brand); font-size: 12px; font-weight: 700; }

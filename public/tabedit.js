@@ -52,6 +52,7 @@
       const name = d[1].toLowerCase();
       const val = (d[2] || '').trim();
       if (['comment', 'c', 'comment_italic', 'ci'].includes(name)) return { kind: 'comment', raw, label: val };
+      if (name === 'column_break' || name === 'colb') return { kind: 'colb', raw };
       if (name === 'soc' || name === 'start_of_chorus') return { kind: 'soc', raw };
       if (name === 'eoc' || name === 'end_of_chorus') return { kind: 'eoc', raw };
       return { kind: 'other', raw };
@@ -261,6 +262,36 @@
   }
   const isInChorus = (model, li) => !!chorusAround(model, li);
 
+  // ---------- 단 나누기 (2단 보기에서 여기부터 다음 단) ----------
+  // li 줄이 "다음 단의 첫 줄"이 되도록 {column_break}를 넣을 자리. 바로 위의 구간 이름표·{soc}는 함께 다음 단으로 보낸다.
+  function colBreakPos(model, li) {
+    let p = li;
+    while (p > 0 && model.lines[p - 1] && (model.lines[p - 1].kind === 'comment' || model.lines[p - 1].kind === 'soc')) p--;
+    return p;
+  }
+  // 이 자리에 이미 단 나누기가 있으면 그 줄 번호, 없으면 -1
+  function colBreakAt(model, li) {
+    const p = colBreakPos(model, li);
+    return p > 0 && model.lines[p - 1] && model.lines[p - 1].kind === 'colb' ? p - 1 : -1;
+  }
+  // 단 나누기를 모두 지우고 li 앞에 하나만 둔다(한 곡에 하나만 쓰므로). 반환 {model, at}
+  function setColBreak(model, li) {
+    const m = clone(model);
+    let pos = colBreakPos(m, li);
+    // 원래 있던 표시는 먼저 지우고, 지운 만큼 자리를 당긴다
+    for (let i = m.lines.length - 1; i >= 0; i--) {
+      if (m.lines[i].kind === 'colb') { m.lines.splice(i, 1); if (i < pos) pos--; }
+    }
+    m.lines.splice(pos, 0, parseLine('{column_break}'));
+    return { model: m, at: pos };
+  }
+  function clearColBreaks(model) {
+    const m = clone(model);
+    m.lines = m.lines.filter((l) => l.kind !== 'colb');
+    if (!m.lines.length) m.lines.push(parseLine(''));
+    return m;
+  }
+
   // ---------- 반복 구간 코드 복사 (9차) ----------
   // 2절이 1절과 같은 진행이거나 후렴이 되풀이될 때, 이미 코드를 단 줄·구간의 코드를 다른 줄·구간으로 복사한다.
   // 가사 글자가 완전히 같으면 코드 자리도 그대로, 글자 수가 다르면 줄 길이에 비례해 옮기고 가까운 낱말 시작으로 맞춘다.
@@ -430,6 +461,7 @@
     addChord, appendChord, replaceChord, deleteChord, moveChord, reshape,
     insertLines, replaceLine, deleteLine, clearChords, setLyricText, instrumentalRaw,
     insertSection, chorusAround, blockRange, toggleChorus, isInChorus,
+    colBreakAt, setColBreak, clearColBreaks,
     lyricKey, findSameLyric, copyLineChords, bodyBlocks, copyBlock,
     splitLyrics, buildFromBlocks, canonLabel,
   };
