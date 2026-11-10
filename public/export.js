@@ -165,7 +165,7 @@
     g.fillStyle = INK;
     for (const l of tl) { g.fillText(l, M, y + 46); y += 62; }
     if (keyLabel) { g.font = font(44, 800); g.fillStyle = BRAND; g.textAlign = 'right'; g.fillText(keyLabel, W - M, M + 44); g.textAlign = 'left'; }
-    const sub = [info.artist, info.origKey && info.origKey !== keyText ? `원키 ${info.origKey}` : '', info.timeSig || '', info.tempo ? `♩${info.tempo}` : ''].filter(Boolean).join('  ·  ');
+    const sub = [info.artist, info.origKey && info.origKey !== keyText ? `원키 ${info.origKey}` : '', String(info.timeSig || '').split(/[,，]/).map((t) => t.trim()).filter(Boolean).join(', '), info.tempo ? `♩${info.tempo}` : ''].filter(Boolean).join('  ·  ');
     if (sub) { g.font = font(26, 400); g.fillStyle = MUTED; g.fillText(sub, M, y + 28); y += 40; }
     for (const [label, text] of [['송폼', it.form], ['메모', it.memo]]) {
       if (!(text || '').trim()) continue;

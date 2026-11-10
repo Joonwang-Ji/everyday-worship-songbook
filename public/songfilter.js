@@ -22,6 +22,26 @@
   }
   const cmpTitle = (a, b) => String(a.title || '').localeCompare(String(b.title || ''), 'ko');
 
+  // ---------- 키·박자 표시 (14차) ----------
+  // 곡에 보이는 키는 "우리 팀 키"가 있으면 그것, 없으면 원래 키. 필터·정렬도 같은 기준을 쓴다.
+  const effKey = (s) => normKey(s.team_key) || normKey(s.original_key);
+  // 두 키가 다른 키인지 (A# 과 Bb 처럼 표기만 다른 경우는 같은 키로 본다)
+  const keyDiffers = (a, b) => (normKey(a) || String(a || '').trim()) !== (normKey(b) || String(b || '').trim());
+  // 박자는 "3/4,4/4"처럼 쉼표로 여러 개가 올 수 있다.
+  const tsigList = (v) => String(v == null ? '' : v).split(/[,，]/).map((t) => t.trim()).filter(Boolean);
+  const tsigText = (v) => tsigList(v).join(' · ');
+  const tsigHTML = (v, esc) => { const t = tsigText(v); return t ? `<span class="tsigbadge" title="박자">${esc(t)}</span>` : ''; };
+  // 키 배지 바로 오른쪽에 박자, 팀 키와 원키가 다르면 원키를 작게 덧붙인다. (곡 목록 줄·곡 고르는 창 공용)
+  function keyTsigHTML(s, esc) {
+    const team = String(s.team_key || '').trim();
+    const orig = String(s.original_key || '').trim();
+    const shown = team || orig;
+    let h = shown ? `<span class="keybadge">${esc(shown)}</span>` : '';
+    h += tsigHTML(s.time_sig, esc);
+    if (team && orig && keyDiffers(team, orig)) h += `<span class="origkey" title="원래 키">원키 ${esc(orig)}</span>`;
+    return h;
+  }
+
   // ---------- 악보 형식 ----------
   function formatOf(s) {
     const kinds = String(s.file_kinds || '').split(',').filter(Boolean);
@@ -89,11 +109,11 @@
     return groups.filter((g) => g.items.length);
   }
 
-  // 곡이 실제로 쓰는 키(원래 키 기준)만 칩으로. 곡 수를 함께 센다.
+  // 곡이 실제로 쓰는 키(우리 팀 키가 있으면 팀 키, 없으면 원래 키)만 칩으로. 곡 수를 함께 센다.
   function keyChips(songs) {
     const count = new Map();
     for (const s of songs) {
-      const k = normKey(s.original_key);
+      const k = effKey(s);
       if (k) count.set(k, (count.get(k) || 0) + 1);
     }
     return [...count.entries()].sort((a, b) => keyRank(a[0]) - keyRank(b[0])).map(([key, n]) => ({ key, n }));
@@ -105,7 +125,7 @@
       const have = String(s.tags || '').split(',');
       if (!st.tags.every((t) => have.includes(t))) return false;
     }
-    if (st.keys.length && !st.keys.includes(normKey(s.original_key))) return false;
+    if (st.keys.length && !st.keys.includes(effKey(s))) return false;
     if (st.fmt === 'chord' && !s.has_chords) return false;
     if (st.fmt === 'file' && !(s.file_count > 0)) return false;
     if (st.fmt === 'missing' && completeness(s) === 'full') return false;
@@ -146,7 +166,7 @@
     const grp = (label, body) => `<div class="chipgroup"><span class="ctl-label">${esc(label)}</span><div class="chips">${body}</div></div>`;
     const chip = (on, attrs, text) => `<button type="button" class="chip ${on ? 'on' : ''}" ${attrs}>${text}</button>`;
     const parts = groups.map((g) => grp(g.label, g.items.map((t) => chip(st.tags.includes(t), `data-t="${esc(t)}"`, esc(t))).join('')));
-    if (chips.length) parts.push(grp('키 (원래 키)', chips.map((c) => chip(st.keys.includes(c.key), `data-k="${esc(c.key)}"`, `${esc(c.key)} <small>${c.n}</small>`)).join('')));
+    if (chips.length) parts.push(grp('키 (팀 키 기준)', chips.map((c) => chip(st.keys.includes(c.key), `data-k="${esc(c.key)}"`, `${esc(c.key)} <small>${c.n}</small>`)).join('')));
     parts.push(grp('악보', chip(st.fmt === 'chord', 'data-fmt="chord"', '🎼 코드') + chip(st.fmt === 'file', 'data-fmt="file"', '🖼 이미지·PDF') + chip(st.fmt === 'missing', 'data-fmt="missing"', '⚠ 빠진 것 있음') + chip(st.fmt === 'full', 'data-fmt="full"', '✓ 둘 다 있음')));
     return parts.join('');
   }
@@ -155,7 +175,7 @@
   // sort: 'title' | 'key' | 'old' | 'recent'  (old/recent 는 팀 콘티 기준)
   function sortSongs(songs, sort) {
     const list = [...songs];
-    if (sort === 'key') list.sort((a, b) => keyRank(a.original_key) - keyRank(b.original_key) || cmpTitle(a, b));
+    if (sort === 'key') list.sort((a, b) => keyRank(effKey(a)) - keyRank(effKey(b)) || cmpTitle(a, b));
     else if (sort === 'old' || sort === 'recent') {
       const key = (s) => s.last_used || '';
       list.sort((a, b) => (sort === 'recent' ? key(b).localeCompare(key(a)) : key(a).localeCompare(key(b))) || cmpTitle(a, b));
@@ -187,5 +207,5 @@
     return { st, q: (p.get('q') || '').trim(), sort };
   }
 
-  return { OTHER_KEY, normKey, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
+  return { OTHER_KEY, normKey, effKey, keyDiffers, tsigList, tsigText, tsigHTML, keyTsigHTML, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
 });

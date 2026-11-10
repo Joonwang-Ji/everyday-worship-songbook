@@ -376,7 +376,7 @@
           return `<li class="song-item"><a href="#/song/${s.id}">
             <div class="song-title">${esc(s.title)}${s.orig_title ? `<span class="orig"> · ${esc(s.orig_title)}</span>` : ''}</div>
             ${s.snippet ? `<div class="snip"><span class="tag">${esc(s.snippet.label)}</span> ${esc(s.snippet.text)}</div>` : ''}
-            <div class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${SongFilter.badgesHTML(s, esc)}${s.artist ? `<span>${esc(s.artist)}</span>` : ''}${s.time_sig ? `<span>${esc(s.time_sig)}</span>` : ''}${s.tempo ? `<span>♩${s.tempo}</span>` : ''}${used}</div>
+            <div class="song-meta">${SongFilter.keyTsigHTML(s, esc)}${SongFilter.badgesHTML(s, esc)}${s.artist ? `<span>${esc(s.artist)}</span>` : ''}${s.tempo ? `<span>♩${s.tempo}</span>` : ''}${used}</div>
             ${SongFilter.tagsLineHTML(s.tags, esc)}
           </a></li>`;
         })
@@ -480,6 +480,22 @@
       hasText ? `<button type="button" class="menu-row" id="m-lyr">가사 복사</button>` : '',
     ].filter(Boolean);
 
+    // 키·박자 줄: 우리 팀 키가 있으면 팀 키를 먼저(바로 오른쪽에 박자), 원키는 다를 때만 작게. 팀 키가 없으면 원키가 그 자리. (14차)
+    let curTeamKey = song.team_key || '';
+    const keyMetaHTML = () => {
+      const tsig = SongFilter.tsigHTML(song.time_sig, esc);
+      const guess = gk.guessed ? ' (추정)' : '';
+      if (curTeamKey) {
+        const differs = hasKey && SongFilter.keyDiffers(curTeamKey, origKey);
+        return `<span>우리 팀 <span class="keybadge" id="tkbadge">${esc(curTeamKey)}</span></span>${tsig}${differs ? `<span class="origkey" title="원래 키">원키 ${esc(origKey)}${guess}</span>` : ''}`;
+      }
+      return `${hasKey ? `<span>원키 <span class="keybadge">${esc(origKey)}</span>${guess}</span>` : ''}${tsig}`;
+    };
+    const refreshKeyMeta = (k) => {
+      curTeamKey = k || '';
+      const m = document.getElementById('keymeta');
+      if (m) m.innerHTML = keyMetaHTML();
+    };
     $app.innerHTML = `
       <div class="row between"><a href="${slId ? '#/setlist/' + slId : '#/songs'}" class="small">← ${slId ? '콘티' : '목록'}</a>${menuRows.length ? '<button class="btn small" id="smore" type="button" aria-label="더보기 메뉴">⋯</button>' : ''}</div>
       <h1>${esc(song.title)}</h1>
@@ -487,9 +503,7 @@
       <div class="row actions"><a class="btn primary big grow" href="${playHref}">▶ 연주 모드</a>${hasText ? '<button class="btn big" id="keychip" type="button" aria-label="키와 표시 설정"></button>' : ''}</div>
       <div class="song-meta" style="margin-bottom:8px">
         ${song.artist ? `<span>${esc(song.artist)}</span>` : ''}
-        ${hasKey ? `<span>원키 <span class="keybadge">${esc(origKey)}</span>${gk.guessed ? ' (추정)' : ''}</span>` : ''}
-        ${song.team_key ? `<span>우리 팀 <span class="keybadge" id="tkbadge">${esc(song.team_key)}</span></span>` : '<span id="tkwrap" hidden>우리 팀 <span class="keybadge" id="tkbadge"></span></span>'}
-        ${song.time_sig ? `<span title="박자">${esc(song.time_sig)}</span>` : ''}
+        <span id="keymeta" class="keymeta">${keyMetaHTML()}</span>
         ${song.tempo ? `<span>♩${song.tempo}</span>` : ''}
         ${yt ? `<a href="${esc(yt)}" target="_blank" rel="noopener noreferrer">▶ 유튜브</a>` : ''}
       </div>
@@ -608,10 +622,7 @@
       $tk.disabled = true;
       try {
         await api('/team/keys/' + id, { method: 'PUT', body: { key: k } });
-        const b = document.getElementById('tkbadge');
-        b.textContent = k;
-        const w = document.getElementById('tkwrap');
-        if (w) w.hidden = false;
+        refreshKeyMeta(k);
         toast(`우리 팀 기본 키를 ${k}(으)로 저장했습니다.`);
       } catch (e) {
         toast(e.message);
@@ -629,9 +640,7 @@
         $iks.disabled = true;
         try {
           await api('/team/keys/' + id, { method: 'PUT', body: { key: k } });
-          const b = document.getElementById('tkbadge');
-          b.textContent = k;
-          (document.getElementById('tkwrap') || b.parentNode).hidden = !k;
+          refreshKeyMeta(k);
           toast(k ? `우리 팀 기본 키를 ${k}(으)로 저장했습니다.` : '우리 팀 기본 키를 지웠습니다.');
         } catch (e) {
           toast(e.message);
@@ -707,7 +716,7 @@
               <div><label for="artist">아티스트</label><input id="artist" type="text" value="${esc(song.artist)}"></div>
               <div><label for="key">원래 키</label><select id="key">${keyOptions.map((k) => `<option value="${k}" ${k === song.original_key ? 'selected' : ''}>${k || '(모름)'}</option>`).join('')}</select></div>
             </div>
-            <label for="tsig-o">박자</label>
+            <label for="tsig-o">박자 <span class="hint" style="margin:0">때에 따라 다르면 여러 개 고를 수 있어요</span></label>
             <div class="chips tsig-chips" id="tsigchips"></div>
             <input id="tsig" type="hidden" value="${esc(song.time_sig || '')}">
             <label for="tags">태그 (쉼표로 구분 · 아래 추천 칩을 눌러도 돼요)</label><input id="tags" type="text" placeholder="경배, 빠른곡" value="${esc(song.tags)}">
@@ -1216,46 +1225,52 @@
 
     // ----- 태그: 추천 칩(주제·빠르기·절기 …) 누르면 넣고 빼기 -----
     const tagList = () => $('tags').value.split(/[,，]/).map((t) => t.trim()).filter(Boolean);
-    // ----- 박자: 자주 쓰는 박자를 눌러 고르고, 다시 누르면 해제. 그 밖의 박자는 "기타"에 직접 적는다 -----
+    // ----- 박자: 자주 쓰는 박자를 눌러 고르고, 다시 누르면 해제. 곡마다 때에 따라 다르게 부르면 여러 개(최대 4개)를 함께 고를 수 있다.
+    //       그 밖의 박자는 "기타"에 직접 적는다(여러 개면 쉼표로). 값은 숨은 칸 #tsig 에 "3/4,4/4"처럼 쉼표로 이어 저장한다 -----
     const TSIG_PRESETS = ['4/4', '3/4', '6/8', '2/4', '12/8'];
+    const TSIG_MAX = 4;
     const normTsig = (v) => {
       const m = /^\s*(\d{1,2})\s*[\/／]\s*(\d{1,2})\s*$/.exec(String(v || ''));
       return m && +m[1] >= 1 && +m[1] <= 16 && [2, 4, 8, 16].includes(+m[2]) ? `${+m[1]}/${+m[2]}` : '';
     };
+    const tsigs = () => [...new Set(String($('tsig').value || '').split(/[,，]/).map(normTsig).filter(Boolean))].slice(0, TSIG_MAX);
+    const tsigCustoms = () => tsigs().filter((t) => !TSIG_PRESETS.includes(t));
     // 칩을 다시 그리지 않고 켜짐 표시만 바꾼다. ("기타" 칸에 쓰다가 다른 칩을 바로 누를 때, 칸이 빠져나가며 칩이 새로 그려지면 그 눌림이 사라지기 때문)
-    const tsigCustom = () => {
-      const v = normTsig($('tsig').value);
-      return v && !TSIG_PRESETS.includes(v) ? v : '';
-    };
     function syncTsig() {
-      const cur = normTsig($('tsig').value);
-      $('tsigchips').querySelectorAll('button[data-ts]').forEach((b) => b.classList.toggle('on', b.dataset.ts === cur));
+      const cur = tsigs();
+      $('tsigchips').querySelectorAll('button[data-ts]').forEach((b) => b.classList.toggle('on', cur.includes(b.dataset.ts)));
       const o = $('tsig-o');
-      o.value = tsigCustom();
-      o.classList.toggle('on', !!tsigCustom());
+      const customs = tsigCustoms();
+      o.value = customs.join(', ');
+      o.classList.toggle('on', customs.length > 0);
     }
     function drawTsig() {
       $('tsigchips').innerHTML = TSIG_PRESETS.map((t) => `<button type="button" class="chip" data-ts="${t}">${t}</button>`).join('')
-        + '<input id="tsig-o" class="tsig-o" type="text" inputmode="text" maxlength="5" size="5" placeholder="기타 5/4" aria-label="기타 박자">';
+        + '<input id="tsig-o" class="tsig-o" type="text" inputmode="text" maxlength="14" size="8" placeholder="기타 5/4" aria-label="기타 박자">';
       syncTsig();
     }
-    function setTsig(v) {
-      $('tsig').value = v;
+    function setTsigs(list) {
+      $('tsig').value = [...new Set(list)].slice(0, TSIG_MAX).join(',');
       syncTsig();
       $('tsig').dispatchEvent(new Event('input', { bubbles: true }));
     }
     $('tsigchips').onclick = (ev) => {
       const b = ev.target.closest && ev.target.closest('button[data-ts]');
       if (!b) return;
-      setTsig(normTsig($('tsig').value) === b.dataset.ts ? '' : b.dataset.ts);
+      const cur = tsigs();
+      if (cur.includes(b.dataset.ts)) return setTsigs(cur.filter((t) => t !== b.dataset.ts));
+      if (cur.length >= TSIG_MAX) return toast(`박자는 ${TSIG_MAX}개까지 고를 수 있어요.`);
+      setTsigs([...cur, b.dataset.ts]);
     };
     $('tsigchips').onchange = (ev) => {
       if (!ev.target || ev.target.id !== 'tsig-o') return;
-      const raw = ev.target.value.trim();
-      if (!raw) { if (tsigCustom()) setTsig(''); return; } // 칸을 비우면 직접 쓴 박자만 해제(칩으로 고른 박자는 그대로)
-      const v = normTsig(raw);
-      if (!v) { toast('박자는 5/4처럼 적어 주세요. (아래 숫자는 2·4·8·16)'); ev.target.value = tsigCustom(); return; }
-      setTsig(v);
+      const parts = ev.target.value.split(/[\s,，]+/).filter(Boolean);
+      const presetsOn = tsigs().filter((t) => TSIG_PRESETS.includes(t));
+      if (!parts.length) { if (tsigCustoms().length) setTsigs(presetsOn); return; } // 칸을 비우면 직접 쓴 박자만 해제(칩으로 고른 박자는 그대로)
+      const norm = parts.map(normTsig);
+      if (norm.some((t) => !t)) { toast('박자는 5/4처럼 적어 주세요. (아래 숫자는 2·4·8·16)'); ev.target.value = tsigCustoms().join(', '); return; }
+      if (new Set([...presetsOn, ...norm]).size > TSIG_MAX) { toast(`박자는 ${TSIG_MAX}개까지 고를 수 있어요.`); ev.target.value = tsigCustoms().join(', '); return; }
+      setTsigs([...presetsOn, ...norm]);
     };
     drawTsig();
     function drawTagChips() {
@@ -1847,7 +1862,7 @@
         <div class="hero-label">${label}${s.date ? ' · ' + esc(fmtDate(s.date)) : ''}</div>
         <h2 class="hero-title">${esc(setlistTitle(s))}</h2>
         ${s.is_temp || leadersOf(s).length ? `<div class="song-meta" style="margin:-4px 0 8px">${tempTag(s)}${leaderTag(s)}</div>` : ''}
-        ${shown.length ? `<ol class="mini">${shown.map((it, i) => `<li><span class="num">${i + 1}</span><span class="grow">${esc(it.title)}</span>${(it.key || it.original_key) ? `<span class="keybadge">${esc(it.key || it.original_key)}</span>` : ''}</li>`).join('')}</ol>${s.items.length > shown.length ? `<p class="muted small" style="margin:4px 0 0">외 ${s.items.length - shown.length}곡</p>` : ''}` : '<p class="muted">이 콘티에는 아직 곡이 없어요.</p>'}
+        ${shown.length ? `<ol class="mini">${shown.map((it, i) => `<li><span class="num">${i + 1}</span><span class="grow">${esc(it.title)}</span>${(it.key || it.original_key) ? `<span class="keybadge">${esc(it.key || it.original_key)}</span>` : ''}${SongFilter.tsigHTML(it.time_sig, esc)}</li>`).join('')}</ol>${s.items.length > shown.length ? `<p class="muted small" style="margin:4px 0 0">외 ${s.items.length - shown.length}곡</p>` : ''}` : '<p class="muted">이 콘티에는 아직 곡이 없어요.</p>'}
         <div class="row" style="margin-top:12px">${shown.length ? `<a class="btn primary big grow" href="#/play/${s.id}">▶ 연주 모드</a>` : ''}<a class="btn big" href="#/setlist/${s.id}">콘티 보기</a></div>
       </div>`;
     }
@@ -2225,7 +2240,7 @@
       p.set('sl', id);
       const imgKeyNote = imageOnly && it.key && it.original_key && it.key !== it.original_key;
       return `<li class="song-item"><a href="#/song/${it.song_id}?${p.toString()}">
-        <div class="row between"><div class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</div>${key ? `<span class="keybadge">${esc(key)}</span>` : ''}</div>
+        <div class="row between"><div class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</div>${key || it.time_sig ? `<span class="row" style="gap:6px">${key ? `<span class="keybadge">${esc(key)}</span>` : ''}${SongFilter.tsigHTML(it.time_sig, esc)}</span>` : ''}</div>
         <div class="song-meta">
           ${it.form ? `<span>송폼 ${esc(it.form)}</span>` : ''}
           ${imageOnly ? '<span class="fmt img" title="이미지 악보" aria-label="이미지 악보">🖼</span>' : it.has_chords ? '<span class="fmt chord" title="코드 악보" aria-label="코드 악보">🎼</span>' : ''}
@@ -2522,7 +2537,7 @@
         : '<span class="play-next">마지막 곡</span>';
       g('pinfo').innerHTML = [
         keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '',
-        song.time_sig ? `<span class="pi tsig" title="박자"><b>${esc(song.time_sig)}</b></span>` : '',
+        song.time_sig ? `<span class="pi tsig" title="박자"><b>${esc(SongFilter.tsigText(song.time_sig))}</b></span>` : '',
         it.form ? `<span class="pi"><b>송폼</b> ${esc(it.form)}</span>` : '',
         it.memo ? `<span class="pi"><b>메모</b> ${esc(it.memo)}</span>` : '',
         extra ? `<span class="pi muted">${esc(extra)}</span>` : '',
@@ -3455,7 +3470,7 @@
           .map(
             (s) => `<button class="pick" type="button" data-add="${s.id}">
               <span class="song-title">${esc(s.title)}${s.orig_title ? `<span class="orig"> · ${esc(s.orig_title)}</span>` : ''}</span>
-              <span class="song-meta">${s.original_key ? `<span class="keybadge">${esc(s.original_key)}</span>` : ''}${s.team_key ? `<span>우리 팀 ${esc(s.team_key)}</span>` : ''}${s.last_used ? `<span class="tag used">최근 ${mmdd(s.last_used)}</span>` : ''}${SongFilter.badgesHTML(s, esc)}${used[s.id] ? `<span class="tag">✓ 추가됨${used[s.id] > 1 ? ' ×' + used[s.id] : ''}</span>` : ''}</span>
+              <span class="song-meta">${SongFilter.keyTsigHTML(s, esc)}${s.last_used ? `<span class="tag used">최근 ${mmdd(s.last_used)}</span>` : ''}${SongFilter.badgesHTML(s, esc)}${used[s.id] ? `<span class="tag">✓ 추가됨${used[s.id] > 1 ? ' ×' + used[s.id] : ''}</span>` : ''}</span>
             </button>`
           )
           .join('') || '<p class="muted">찾는 곡이 없습니다.</p>';

@@ -455,6 +455,14 @@ body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 
 .tsig-o.on { border-color: var(--brand); box-shadow: inset 0 0 0 1px var(--brand); }
 .play-info .pi.tsig b { font-size: 17px; padding: 0 2px; }
 
+/* ===== 14차: 키 바로 옆 박자 · 팀 키일 때 작은 원키 ===== */
+.tsigbadge { border: 1px solid var(--line); border-radius: 6px; padding: 0 6px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.keybadge + .tsigbadge { margin-left: -4px; }
+.origkey { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.keymeta { display: inline-flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; }
+.keymeta .keybadge + .tsigbadge { margin-left: 0; }
+.mini .tsigbadge { margin-left: 4px; font-size: 12px; }
+
 /* 13차: 연주 모드 쪽 넘기기 — 코드 악보를 높이 고정 다단으로 깔고 한 화면(쪽)씩 옆으로 민다 */
 .play-body.paged { overflow: hidden; }
 .play-body.paged .score { padding: 0; column-fill: auto; will-change: transform; transition: none; }

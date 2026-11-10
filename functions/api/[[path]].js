@@ -395,11 +395,18 @@ function cleanSong(body, { requireTitle = true } = {}) {
   if (key && !KEY_RE.test(key)) throw new HttpError(400, '원래 키는 G, Am, Bb 같은 형식으로 입력해 주세요.');
   let tempo = parseInt(body.tempo, 10);
   if (!Number.isFinite(tempo) || tempo < 20 || tempo > 300) tempo = null;
-  // 박자: "4/4"처럼 (분자 1~16 / 분모 2·4·8·16). 모양이 맞지 않으면 비운다.
+  // 박자: "4/4"처럼 (분자 1~16 / 분모 2·4·8·16). 14차부터 "3/4,4/4"처럼 쉼표로 여러 개(최대 4개, 적은 순서 유지)도 받는다.
+  // 모양이 맞지 않는 항목은 버리고, 같은 박자는 한 번만 둔다.
   let timeSig = '';
   {
-    const m = /^\s*(\d{1,2})\s*[\/／]\s*(\d{1,2})\s*$/.exec(String(body.time_sig == null ? '' : body.time_sig));
-    if (m && +m[1] >= 1 && +m[1] <= 16 && [2, 4, 8, 16].includes(+m[2])) timeSig = `${+m[1]}/${+m[2]}`;
+    const seen = [];
+    for (const part of String(body.time_sig == null ? '' : body.time_sig).split(/[,，]/)) {
+      const m = /^\s*(\d{1,2})\s*[\/／]\s*(\d{1,2})\s*$/.exec(part);
+      if (!m || +m[1] < 1 || +m[1] > 16 || ![2, 4, 8, 16].includes(+m[2])) continue;
+      const v = `${+m[1]}/${+m[2]}`;
+      if (!seen.includes(v)) seen.push(v);
+    }
+    timeSig = seen.slice(0, 4).join(',');
   }
   let youtube = str(body.youtube_url, 500);
   if (youtube && !/^https?:\/\//i.test(youtube)) youtube = '';
@@ -1023,7 +1030,7 @@ export async function onRequest({ request, env }) {
         const { results } = await db
           .prepare(
             `SELECT i.id,i.position,i.song_id,i.key,i.form,i.memo,i."view" AS view,
-              s.title,s.original_key,s.chordpro,
+              s.title,s.original_key,s.time_sig,s.chordpro,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = i.song_id) AS file_count
              FROM setlist_items i LEFT JOIN songs s ON s.id = i.song_id
              WHERE i.setlist_id=? ORDER BY i.position`
