@@ -444,3 +444,7 @@ label.check input { width: 22px; height: 22px; flex: none; margin-top: 1px; }
 
 /* 12차: 편집 화면의 단 나누기 줄 */
 .te-colb { align-self: center; margin: 4px 0; padding: 2px 12px; border: 1px dashed var(--brand); border-radius: 999px; color: var(--brand); font-size: 12px; font-weight: 700; }
+
+/* 12차 보완: 홈 화면 앱(상태 막대가 투명)에서 스크롤한 내용이 시계·배터리 줄과 겹치지 않게 그 자리를 항상 상단 막대 색으로 덮는다 */
+body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); background: var(--brand); z-index: 12; pointer-events: none; }
+@media (prefers-color-scheme: dark) { body::before { background: #1d2229; } }

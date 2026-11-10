@@ -299,10 +299,33 @@
   const isWordStart = (t, p) => p === 0 ? t[0] !== ' ' : p >= t.length ? false : t[p - 1] === ' ' && t[p] !== ' ';
   const wordSpans = (t) => { const r = []; const re = /\S+/g; let m; while ((m = re.exec(t))) r.push([m.index, m.index + m[0].length]); return r; };
   // src 줄의 코드들을 dstText 위의 자리로 옮긴 목록 [{pos,c}]
+  // 띄어쓰기를 뺀 글자 수 / k번째(0부터) 글자의 위치(없으면 끝) / 한글이 절반 이상인 줄
+  const nonSpaceCount = (t) => String(t).replace(/\s/g, '').length;
+  function nonSpacePos(t, k) {
+    let n = 0;
+    for (let i = 0; i < t.length; i++) {
+      if (/\s/.test(t[i])) continue;
+      if (n === k) return i;
+      n++;
+    }
+    return t.length;
+  }
+  function isKorean(t) {
+    const ns = String(t).replace(/\s/g, '');
+    if (!ns) return false;
+    return ((ns.match(/[\uAC00-\uD7A3]/g) || []).length * 2) >= ns.length;
+  }
   function mapChords(src, dstText) {
     const a = src.text, b = String(dstText);
     if (a === b) return src.chords.map((c) => ({ pos: c.pos, c: c.c }));
     if (!a.length) return src.chords.map((c) => ({ pos: Math.min(c.pos, b.length), c: c.c }));
+    // 한국어 가사는 띄어쓰기가 줄마다 달라지기 쉬우므로, 띄어쓰기를 뺀 글자 수로 위치를 센다.
+    // (코드 앞에 글자가 몇 개 있었는지 → 새 줄에서 그 개수만큼 지난 글자 앞)
+    const ko = isKorean(a) && isKorean(b);
+    const na = nonSpaceCount(a), nb = nonSpaceCount(b);
+    if (ko && na === nb) {
+      return src.chords.map((c) => (c.pos >= a.length ? { pos: b.length, c: c.c } : { pos: nonSpacePos(b, nonSpaceCount(a.slice(0, c.pos))), c: c.c }));
+    }
     // 낱말 개수가 같으면 "몇 번째 낱말의 몇 번째 글자"로 그대로 옮긴다. (비례 계산보다 훨씬 일정하다)
     const wa = wordSpans(a), wb = wordSpans(b);
     if (wa.length && wa.length === wb.length) {
@@ -315,7 +338,11 @@
       });
     }
     return src.chords.map((c) => {
-      let np = Math.round((c.pos * b.length) / a.length);
+      let np;
+      if (ko && na && nb) {
+        // 글자 수가 다른 한국어 줄: 띄어쓰기를 뺀 글자 수 기준으로 비례
+        np = c.pos >= a.length ? b.length : nonSpacePos(b, Math.min(nb, Math.round((nonSpaceCount(a.slice(0, c.pos)) * nb) / na)));
+      } else np = Math.round((c.pos * b.length) / a.length);
       np = Math.max(0, Math.min(b.length, np));
       if (np < b.length && !isWordStart(b, np)) {
         for (let d = 1; d <= 2; d++) {
