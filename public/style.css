@@ -422,7 +422,9 @@ main.wide, #app.wide { max-width: 1280px; }
 .svc-row { margin: 6px 0; }
 .svc-row .chip small { opacity: .7; }
 .opt-list { list-style: none; margin: 8px 0; padding: 0; }
-.opt-list li { display: flex; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.opt-list li { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.opt-day { flex-basis: 100%; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+.opt-day select { width: auto; min-width: 96px; padding: 4px 8px; }
 .opt-list li.muted { border-bottom: 0; }
 .linkbtn { background: none; border: 0; color: var(--brand); text-decoration: underline; padding: 6px 0; font-size: 14px; cursor: pointer; }
 .tempbar { display: flex; align-items: center; gap: 10px; background: #fff8e1; border-color: #f0d98a; padding: 8px 12px; }
@@ -521,4 +523,11 @@ body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 
 .vault-code { font-family: ui-monospace, Menlo, monospace; font-size: 17px; letter-spacing: .06em; user-select: all; -webkit-user-select: all; }
 .ink-dbg { position: absolute; left: 6px; bottom: 120px; z-index: 5; max-width: 62vw; background: rgba(0,0,0,.72); color: #9f9; font: 11px/1.35 ui-monospace, Menlo, monospace; white-space: pre; padding: 6px 8px; border-radius: 8px; pointer-events: none; }
 body.ink-open .nav { display: none !important; }
+
+/* 16차: 아래 메뉴 밑 빈 띠 보정 — 메뉴 아래끝이 보이는 화면 맨 아래보다 위에 떠 있으면(app.js fitNav) 그만큼 아래로 늘려 채운다.
+   글자·아이콘 위치는 그대로 두고 흰 배경만 아래로 늘어난다. */
+.nav { bottom: calc(-1 * var(--nav-gap, 0px)); padding-bottom: calc(env(safe-area-inset-bottom) + var(--nav-gap, 0px)); }
 body.ink-open { background: #2b2b2b; }
+/* 16차: 필기 화면이 열려 있는 동안 뒤의 화면(악보·메뉴 등)은 통째로 숨긴다. 스크리블 도구 막대나 키보드로 필기 화면이 잠깐 줄어들 때 뒤의 악보가 비치지 않게 한다. */
+body.ink-open > *:not(.ink-ed):not(#toast):not(#viewdbg) { visibility: hidden !important; }
+#oday { width: auto; flex: 0 0 auto; }

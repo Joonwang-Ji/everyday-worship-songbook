@@ -209,6 +209,59 @@
     ];
     $nav.innerHTML = items.map(([href, label, ic, on]) => `<a href="${href}" class="${on ? 'on' : ''}">${NAV_ICON[ic]}<span>${label}</span></a>`).join('');
     $nav.hidden = false;
+    fitNavSoon();
+  }
+
+  // 16차: 아이패드 홈 화면 앱에서 아래 메뉴 밑에 빈 띠가 생기는 문제 보정.
+  // 아래 메뉴는 화면 맨 아래에 붙는(fixed, bottom:0) 막대인데, 키보드·스크리블 도구 막대가 나타났다 사라지거나 화면을 돌린 뒤에
+  // 사파리가 "페이지가 보는 화면 높이"를 실제 보이는 높이보다 짧게 잘못 기억하면 막대가 그만큼 위에 떠서 밑에 배경이 비친다.
+  // 눈에 보이는 영역의 맨 아래(visualViewport)와 막대 아래끝을 비교해, 남는 만큼 막대를 아래로 늘려 채운다.
+  function fitNav() {
+    try {
+      const root = document.documentElement;
+      if ($nav.hidden || document.body.classList.contains('ink-open')) { root.style.removeProperty('--nav-gap'); return; }
+      root.style.removeProperty('--nav-gap'); // 보정 없는 원래 위치에서 잰다 (같은 프레임 안이라 깜빡이지 않음)
+      const vv = window.visualViewport;
+      const seeBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+      const gap = Math.round(seeBottom - $nav.getBoundingClientRect().bottom);
+      if (gap >= 2 && gap <= 160) root.style.setProperty('--nav-gap', gap + 'px');
+      if (viewDbgOn()) viewDbgDraw(gap);
+    } catch {}
+  }
+  let navTimers = [];
+  function fitNavSoon() {
+    fitNav();
+    navTimers.forEach(clearTimeout);
+    // 키보드·회전 애니메이션이 끝난 뒤에 값이 바뀌는 경우가 있어 몇 번 다시 잰다
+    navTimers = [120, 450, 1200].map((ms) => setTimeout(fitNav, ms));
+  }
+  const viewDbgOn = () => ls.get('ews_view_dbg', '') === '1';
+  function viewDbgDraw(gap) {
+    let box = document.getElementById('viewdbg');
+    if (!viewDbgOn()) { if (box) box.remove(); return; }
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'viewdbg';
+      box.className = 'ink-dbg';
+      box.style.cssText = 'position:fixed;left:6px;top:90px;bottom:auto;z-index:200;max-width:92vw';
+      document.body.appendChild(box);
+    }
+    const vv = window.visualViewport;
+    const probe = document.createElement('div');
+    probe.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)';
+    document.body.appendChild(probe);
+    const cs = getComputedStyle(probe);
+    const inset = cs.paddingTop + ' / ' + cs.paddingBottom;
+    probe.remove();
+    const nb = $nav.hidden ? null : $nav.getBoundingClientRect();
+    const f = (n) => (Math.round(n * 10) / 10);
+    box.textContent = [
+      '창 ' + innerWidth + '×' + innerHeight + ' · 문서 ' + document.documentElement.clientHeight,
+      vv ? '보이는 영역 ' + f(vv.width) + '×' + f(vv.height) + ' 위 ' + f(vv.offsetTop) + ' 배율 ' + f(vv.scale) : '보이는 영역 정보 없음',
+      '화면 ' + screen.width + '×' + screen.height + ' · 홈앱 ' + (navigator.standalone ? '예' : '아니오'),
+      '메뉴 아래끝 ' + (nb ? f(nb.bottom) : '-') + ' · 남은 틈 ' + gap + ' · 보정 ' + (document.documentElement.style.getPropertyValue('--nav-gap') || '0'),
+      '안전영역 위/아래 ' + inset + ' · 스크롤 ' + f(scrollY),
+    ].join('\n');
   }
 
   // ---------- 라우터 ----------
@@ -334,7 +387,7 @@
     $app.innerHTML = `
       <div class="row between"><h1>곡 목록</h1>${lockBtn('song', '+ 새 곡', '#/new', 'primary')}</div>
       <input type="search" id="q" placeholder="제목 · 원제 · 가사(후렴) · 아티스트 · 태그 검색" value="${esc(listState.q)}">
-      <details class="filter" id="filter"><summary id="fsum">분류·키로 찾기</summary><div id="chips"></div><p class="row" style="margin:8px 0 0"><button type="button" class="btn small" id="fclear">선택 모두 지우기</button></p></details>
+      <details class="filter" id="filter"><summary id="fsum">분류·키·박자로 찾기</summary><div id="chips"></div><p class="row" style="margin:8px 0 0"><button type="button" class="btn small" id="fclear">선택 모두 지우기</button></p></details>
       <div class="row sortrow"><span class="ctl-label">정렬</span><select id="sort" aria-label="정렬"><option value="title">제목순</option><option value="key">키순 (C→B, 단조는 뒤)</option>${teamSorts}</select></div>
       <ul class="songs" id="list"></ul>
       <div class="card" id="ext" hidden></div>
@@ -348,6 +401,7 @@
     let songs = [];
     let groups = [];
     let kchips = [];
+    let tchips = [];
     if (!me.team && (listState.sort === 'old' || listState.sort === 'recent')) listState.sort = 'title';
     $sort.value = listState.sort;
     const gen = routeGen;
@@ -359,10 +413,10 @@
       try { history.replaceState(null, '', '#/songs' + (qs ? '?' + qs : '')); } catch {}
     }
     function drawChips() {
-      SongFilter.prune(listState.f, groups, kchips);
-      $chips.innerHTML = SongFilter.chipsHTML(listState.f, groups, kchips, esc);
+      SongFilter.prune(listState.f, groups, kchips, tchips);
+      $chips.innerHTML = SongFilter.chipsHTML(listState.f, groups, kchips, esc, tchips);
       const sum = SongFilter.summary(listState.f);
-      document.getElementById('fsum').textContent = sum ? `분류·키로 찾기 · ${sum}` : '분류·키로 찾기';
+      document.getElementById('fsum').textContent = sum ? `분류·키·박자로 찾기 · ${sum}` : '분류·키·박자로 찾기';
       document.getElementById('fclear').hidden = !SongFilter.isActive(listState.f);
     }
     function draw() {
@@ -403,6 +457,7 @@
       songs = r.songs;
       groups = groupTags(info);
       kchips = SongFilter.keyChips(songs);
+      tchips = SongFilter.tsigChips(songs);
       draw();
     }
     let timer;
@@ -1586,6 +1641,15 @@
     const p = (n) => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
+  // 16차: 예배 종류의 기본 요일(0=일 … 6=토). 오늘이 그 요일이면 오늘, 아니면 가장 가까운 다음 날.
+  const DAY_NAMES = '일월화수목금토';
+  function nextWeekday(n) {
+    const d = new Date();
+    d.setDate(d.getDate() + ((n - d.getDay() + 7) % 7));
+    const p = (x) => String(x).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+  const svcDay = (o) => (o && /^[0-6]$/.test(String(o.extra == null ? '' : o.extra)) ? Number(o.extra) : -1);
   const noteBox = (html) => `<div class="card">${html}</div>`;
 
   // ---------- 11차: 콘티 제목 · 인도자 · 예배 종류 ----------
@@ -1605,6 +1669,7 @@
   const tempTag = (l) => (l && l.is_temp ? '<span class="tag temp" title="급하게 만든 임시 콘티">⚡ 임시</span>' : '');
 
   // 예배 종류 / 인도자 목록을 관리하는 아래 창 (팀장). 닫을 때 onChange 로 화면을 다시 그리게 한다.
+  const dayOptions = (cur, none = '없음') => `<option value="" ${cur < 0 ? 'selected' : ''}>${none}</option>` + [...DAY_NAMES].map((c, i) => `<option value="${i}" ${i === cur ? 'selected' : ''}>${c}요일</option>`).join('');
   async function manageOptions(kind, onChange) {
     const label = kind === 'service' ? '예배 종류' : '인도자';
     const eg = kind === 'service' ? '예: 주일오전예배' : '예: 홍길동';
@@ -1622,11 +1687,12 @@
                 <button type="button" class="btn small" data-oa="up" ${i === 0 ? 'disabled' : ''} aria-label="위로">↑</button>
                 <button type="button" class="btn small" data-oa="down" ${i === list.length - 1 ? 'disabled' : ''} aria-label="아래로">↓</button>
                 <button type="button" class="btn small" data-oa="ren">이름</button>
-                <button type="button" class="btn small danger" data-oa="del">삭제</button></li>`).join('')
+                <button type="button" class="btn small danger" data-oa="del">삭제</button>${kind === 'service' ? `
+                <label class="opt-day">기본 요일 <select data-day aria-label="${esc(o.name)} 기본 요일">${dayOptions(svcDay(o))}</select></label>` : ''}</li>`).join('')
             : `<li class="muted">아직 없어요. 아래에서 추가해 보세요.</li>`
         }</ul>
-        <form id="oadd" class="row"><input id="oname" type="text" maxlength="20" placeholder="${eg}" enterkeyhint="done" aria-label="${label} 이름"><button class="btn primary small">추가</button></form>
-        <p class="hint">${kind === 'service' ? '예배 종류를 지우면 그 콘티들은 “미분류”로 남아요.' : '인도자 이름을 고치면 이 팀의 지난 콘티에 적힌 이름도 같이 바뀌어요.'}</p>
+        <form id="oadd" class="row"><input id="oname" type="text" maxlength="20" placeholder="${eg}" enterkeyhint="done" aria-label="${label} 이름" style="flex:1 1 140px">${kind === 'service' ? `<select id="oday" aria-label="기본 요일">${dayOptions(-1, '요일 없음')}</select>` : ''}<button class="btn primary small">추가</button></form>
+        <p class="hint">${kind === 'service' ? '기본 요일을 정해 두면 새 콘티에서 이 예배 종류를 고를 때 날짜가 그 요일로 맞춰져요. 예배 종류를 지우면 그 콘티들은 “미분류”로 남아요.' : '인도자 이름을 고치면 이 팀의 지난 콘티에 적힌 이름도 같이 바뀌어요.'}</p>
         <p class="error" id="oerr"></p>
         <button class="btn" id="oclose" type="button" style="width:100%">닫기</button>`;
       sh.q('#oclose').onclick = () => sh.close();
@@ -1635,13 +1701,26 @@
         const name = sh.q('#oname').value.trim();
         if (!name) return;
         try {
-          await api('/team/options', { method: 'POST', body: { kind, name } });
+          const body = { kind, name };
+          if (kind === 'service' && sh.q('#oday') && sh.q('#oday').value !== '') body.extra = sh.q('#oday').value;
+          await api('/team/options', { method: 'POST', body });
           changed = true;
           await load();
           draw();
         } catch (e) { say(e.message); }
       };
     };
+    sh.wrap.addEventListener('change', async (ev) => {
+      const sel = ev.target.closest && ev.target.closest('select[data-day]');
+      if (!sel) return;
+      const li = sel.closest('li[data-id]');
+      try {
+        await api('/team/options/' + li.dataset.id, { method: 'PUT', body: { extra: sel.value } });
+        changed = true;
+        await load();
+        draw();
+      } catch (e) { say(e.message); }
+    });
     sh.wrap.addEventListener('click', async (ev) => {
       const b = ev.target.closest && ev.target.closest('button[data-oa]');
       if (!b) return;
@@ -2002,7 +2081,13 @@
       <div class="card" id="vaultcard"></div>
       <div class="footer"><button id="logout" type="button">로그아웃</button></div>
       <p class="muted small">교회 내부용 악보집입니다. 저작권 보호를 위해 외부 공유를 삼가 주세요.</p>
-      <p class="muted small" id="persistnote"></p>`;
+      <p class="muted small" id="persistnote"></p>
+      <div class="row"><button class="btn small" id="viewdbgbtn" type="button">화면 진단 ${viewDbgOn() ? '끄기' : '켜기'}</button></div>`;
+    el('viewdbgbtn').onclick = () => {
+      ls.set('ews_view_dbg', viewDbgOn() ? '0' : '1');
+      el('viewdbgbtn').textContent = '화면 진단 ' + (viewDbgOn() ? '끄기' : '켜기');
+      if (viewDbgOn()) fitNav(); else viewDbgDraw(0);
+    };
     if (navigator.storage && navigator.storage.persisted) {
       navigator.storage.persisted().then((on) => {
         const n = el('persistnote');
@@ -3167,11 +3252,16 @@
     const pickGroups = groupTags(tagRes);
     const pickF = SongFilter.newState(); // 곡 추가할 때 주제·키·악보 형식으로 좁히기 (곡 목록과 같은 규칙)
     const pickKeys = SongFilter.keyChips(songs);
+    const pickTs = SongFilter.tsigChips(songs);
     const byId = Object.fromEntries(songs.map((s) => [s.id, s]));
     const itemsOf = (setlist) => setlist.items.filter((it) => byId[it.song_id]).map((it) => ({ song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view }));
+    const startDate = (sid) => {
+      const o = services.find((x) => String(x.id) === String(sid));
+      return svcDay(o) >= 0 ? nextWeekday(svcDay(o)) : nextSunday();
+    };
     const data = listRes
       ? {
-          date: id ? listRes.setlist.date || '' : nextSunday(), // 복사하면 날짜만 다음 일요일로 바뀐다
+          date: id ? listRes.setlist.date || '' : startDate(listRes.setlist.service_id), // 복사하면 날짜만 다음 날짜(예배 종류의 기본 요일, 없으면 일요일)로 바뀐다
           title: listRes.setlist.title,
           memo: listRes.setlist.memo,
           service_id: listRes.setlist.service_id || '',
@@ -3180,6 +3270,11 @@
           items: itemsOf(listRes.setlist),
         }
       : { date: quick ? todayKst() : nextSunday(), title: '', memo: '', service_id: '', leaders: [], is_temp: quick, items: [] };
+    // 새 콘티에서 목록의 예배 종류 필터가 하나로 골라져 있으면 그 종류로 시작한다 (기본 요일이 있으면 날짜도 그 요일로)
+    if (!id && !quick && !copyId) {
+      const f = ls.get('ews_sl_svc', '');
+      if (/^\d+$/.test(f) && services.some((x) => String(x.id) === f)) { data.service_id = f; data.date = startDate(f); }
+    }
     document.title = (id ? '콘티 편집' : quick ? '빠른 콘티' : '새 콘티') + ' · Everyday Worship Songbook';
     // 송폼 탭 입력(6차): formSel = 카드별로 선택된 구간 번호, lastForms = 곡별 "지난번 송폼"
     let formSel = {};
@@ -3196,7 +3291,7 @@
         ${!id && prevLists.length ? `<select id="prevsl" aria-label="지난 콘티에서 곡 가져오기"><option value="">↺ 지난 콘티의 곡 전부 가져오기…</option>${prevLists.map((l) => `<option value="${l.id}">${esc(setlistTitle(l))}${l.date ? ' · ' + esc(mmdd(l.date)) : ''} (${l.item_count}곡)</option>`).join('')}</select>` : ''}
         ${recentSongs.length ? `<div class="small muted" style="margin:8px 0 2px">최근 부른 곡</div><div class="chips" id="recentchips">${recentSongs.map((x) => `<button type="button" class="chip" data-add="${x.id}">${esc(x.title)}</button>`).join('')}</div>` : ''}
         <input type="search" id="sq" placeholder="제목 · 아티스트 · 태그로 찾기">
-        <details class="filter" id="pfilter"><summary id="pfsum">분류·키로 찾기</summary><div id="pchips"></div></details>
+        <details class="filter" id="pfilter"><summary id="pfsum">분류·키·박자로 찾기</summary><div id="pchips"></div></details>
         <div id="res" class="pick-list"></div>
       </div>`;
     const itemsCard = `<h2>곡 순서</h2><div id="items"></div>`;
@@ -3247,8 +3342,14 @@
     };
     drawService();
     drawLeaders();
-    el('ssvc').onchange = () => { data.service_id = el('ssvc').value; drawInfoSum(); };
-    el('sd').onchange = drawInfoSum;
+    let dateTouched = false; // 날짜를 직접 고쳤으면 예배 종류를 바꿔도 날짜를 건드리지 않는다
+    el('ssvc').onchange = () => {
+      data.service_id = el('ssvc').value;
+      const o = services.find((x) => String(x.id) === String(data.service_id));
+      if (!id && !quick && !dateTouched && svcDay(o) >= 0) el('sd').value = nextWeekday(svcDay(o));
+      drawInfoSum();
+    };
+    el('sd').onchange = () => { dateTouched = true; drawInfoSum(); };
     el('stemp').onchange = () => { data.is_temp = el('stemp').checked; drawInfoSum(); };
     el('lchips').onclick = (ev) => {
       const b = ev.target.closest && ev.target.closest('button[data-ld]');
@@ -3463,9 +3564,9 @@
       .catch(() => {});
 
     function drawPickChips() {
-      el('pchips').innerHTML = SongFilter.chipsHTML(pickF, pickGroups, pickKeys, esc);
+      el('pchips').innerHTML = SongFilter.chipsHTML(pickF, pickGroups, pickKeys, esc, pickTs);
       const sum = SongFilter.summary(pickF);
-      el('pfsum').textContent = sum ? `분류·키로 찾기 · ${sum}` : '분류·키로 찾기';
+      el('pfsum').textContent = sum ? `분류·키·박자로 찾기 · ${sum}` : '분류·키·박자로 찾기';
     }
     el('pchips').onclick = (ev) => {
       const b = ev.target.closest && ev.target.closest('button.chip');
@@ -3806,6 +3907,15 @@
       route();
     };
   }
+
+  // 16차: 화면 크기가 바뀔 수 있는 순간마다 아래 메뉴 위치를 다시 맞춘다
+  window.addEventListener('resize', fitNavSoon);
+  window.addEventListener('orientationchange', fitNavSoon);
+  window.addEventListener('pageshow', fitNavSoon);
+  window.addEventListener('focusout', fitNavSoon, true);
+  window.addEventListener('hashchange', fitNavSoon);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) fitNavSoon(); });
+  if (window.visualViewport) visualViewport.addEventListener('resize', fitNavSoon);
 
   route();
 

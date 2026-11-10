@@ -98,8 +98,8 @@
   }
 
   // ---------- 필터 상태 ----------
-  // { tags: ['회개&보혈'], keys: ['G','E'], fmt: ''|'chord'|'file' }  (정렬·검색어는 목록 화면이 따로 가진다)
-  const newState = () => ({ tags: [], keys: [], fmt: '' });
+  // { tags: ['회개&보혈'], keys: ['G','E'], tsigs: ['4/4'], fmt: ''|'chord'|'file' }  (정렬·검색어는 목록 화면이 따로 가진다)
+  const newState = () => ({ tags: [], keys: [], tsigs: [], fmt: '' });
 
   // 분류별로 곡에 쓰인 태그만 모은 칩 목록 (추천 목록 순서, 추천에 없는 태그는 "기타")
   function groupTags(info) {
@@ -119,20 +119,30 @@
     return [...count.entries()].sort((a, b) => keyRank(a[0]) - keyRank(b[0])).map(([key, n]) => ({ key, n }));
   }
 
-  // 한 곡이 필터에 맞는지. 태그는 "그리고", 키는 여러 개 중 하나("또는"), 악보 형식은 하나.
+  // 박자 칩 (16차): 곡에 적힌 박자를 곡 수와 함께 센다. 한 곡에 박자가 여러 개면 각각 센다. 자주 쓰는 순서(4/4, 3/4, 6/8 …) 뒤에 나머지.
+  const TSIG_ORDER = ['4/4', '3/4', '6/8', '2/4', '12/8'];
+  const tsigRank = (t) => { const i = TSIG_ORDER.indexOf(t); return i >= 0 ? i : 100; };
+  function tsigChips(songs) {
+    const count = new Map();
+    for (const s of songs) for (const t of new Set(tsigList(s.time_sig))) count.set(t, (count.get(t) || 0) + 1);
+    return [...count.entries()].sort((a, b) => tsigRank(a[0]) - tsigRank(b[0]) || a[0].localeCompare(b[0])).map(([key, n]) => ({ key, n }));
+  }
+
+  // 한 곡이 필터에 맞는지. 태그는 "그리고", 키·박자는 여러 개 중 하나("또는"), 악보 형식은 하나. 박자가 여러 개 적힌 곡은 그중 하나라도 맞으면 보인다.
   function matches(s, st) {
     if (st.tags.length) {
       const have = String(s.tags || '').split(',');
       if (!st.tags.every((t) => have.includes(t))) return false;
     }
     if (st.keys.length && !st.keys.includes(effKey(s))) return false;
+    if (st.tsigs.length && !tsigList(s.time_sig).some((t) => st.tsigs.includes(t))) return false;
     if (st.fmt === 'chord' && !s.has_chords) return false;
     if (st.fmt === 'file' && !(s.file_count > 0)) return false;
     if (st.fmt === 'missing' && completeness(s) === 'full') return false;
     if (st.fmt === 'full' && completeness(s) !== 'full') return false;
     return true;
   }
-  const isActive = (st) => !!(st.tags.length || st.keys.length || st.fmt);
+  const isActive = (st) => !!(st.tags.length || st.keys.length || st.tsigs.length || st.fmt);
 
   // 칩을 눌렀을 때 상태를 바꾼다. 태그는 분류 안에서 하나만(다시 누르면 해제), 키는 여러 개, 형식은 하나.
   function toggle(st, groups, ds) {
@@ -141,6 +151,11 @@
       if (i >= 0) st.keys.splice(i, 1);
       else st.keys.push(ds.k);
       st.keys.sort((a, b) => keyRank(a) - keyRank(b));
+    } else if (ds.ts !== undefined) {
+      const i = st.tsigs.indexOf(ds.ts);
+      if (i >= 0) st.tsigs.splice(i, 1);
+      else st.tsigs.push(ds.ts);
+      st.tsigs.sort((a, b) => tsigRank(a) - tsigRank(b) || a.localeCompare(b));
     } else if (ds.fmt !== undefined) {
       st.fmt = st.fmt === ds.fmt ? '' : ds.fmt;
     } else if (ds.t !== undefined) {
@@ -153,20 +168,25 @@
     }
   }
   // 더는 없는 태그·키가 상태에 남아 있으면 뺀다 (주소로 들어왔거나 곡이 지워진 경우)
-  function prune(st, groups, chips) {
+  function prune(st, groups, chips, tsChips) {
     const all = new Set(groups.flatMap((g) => g.items));
     st.tags = st.tags.filter((t) => all.has(t));
     const keys = new Set(chips.map((c) => c.key));
     st.keys = st.keys.filter((k) => keys.has(k));
+    if (tsChips) {
+      const ts = new Set(tsChips.map((c) => c.key));
+      st.tsigs = st.tsigs.filter((t) => ts.has(t));
+    }
   }
-  const summary = (st) => [...st.tags, st.keys.length ? st.keys.join('·') : '', st.fmt === 'chord' ? '코드 악보' : st.fmt === 'file' ? '이미지·PDF' : st.fmt === 'missing' ? '빠진 것 있음' : st.fmt === 'full' ? '둘 다 있음' : ''].filter(Boolean).join(' + ');
+  const summary = (st) => [...st.tags, st.keys.length ? st.keys.join('·') : '', st.tsigs.length ? st.tsigs.join('·') : '', st.fmt === 'chord' ? '코드 악보' : st.fmt === 'file' ? '이미지·PDF' : st.fmt === 'missing' ? '빠진 것 있음' : st.fmt === 'full' ? '둘 다 있음' : ''].filter(Boolean).join(' + ');
 
   // ---------- 칩 그리기 ----------
-  function chipsHTML(st, groups, chips, esc) {
+  function chipsHTML(st, groups, chips, esc, tsChips) {
     const grp = (label, body) => `<div class="chipgroup"><span class="ctl-label">${esc(label)}</span><div class="chips">${body}</div></div>`;
     const chip = (on, attrs, text) => `<button type="button" class="chip ${on ? 'on' : ''}" ${attrs}>${text}</button>`;
     const parts = groups.map((g) => grp(g.label, g.items.map((t) => chip(st.tags.includes(t), `data-t="${esc(t)}"`, esc(t))).join('')));
     if (chips.length) parts.push(grp('키 (팀 키 기준)', chips.map((c) => chip(st.keys.includes(c.key), `data-k="${esc(c.key)}"`, `${esc(c.key)} <small>${c.n}</small>`)).join('')));
+    if (tsChips && tsChips.length) parts.push(grp('박자', tsChips.map((c) => chip(st.tsigs.includes(c.key), `data-ts="${esc(c.key)}"`, `${esc(c.key)} <small>${c.n}</small>`)).join('')));
     parts.push(grp('악보', chip(st.fmt === 'chord', 'data-fmt="chord"', '🎼 코드') + chip(st.fmt === 'file', 'data-fmt="file"', '🖼 이미지·PDF') + chip(st.fmt === 'missing', 'data-fmt="missing"', '⚠ 빠진 것 있음') + chip(st.fmt === 'full', 'data-fmt="full"', '✓ 둘 다 있음')));
     return parts.join('');
   }
@@ -191,21 +211,23 @@
     if (extra && extra.q) p.set('q', extra.q);
     st.tags.forEach((t) => p.append('tag', t));
     if (st.keys.length) p.set('key', st.keys.join(','));
+    if (st.tsigs.length) p.set('ts', st.tsigs.join(','));
     if (st.fmt) p.set('fmt', st.fmt);
     if (extra && extra.sort && extra.sort !== 'title') p.set('sort', extra.sort);
     return p.toString();
   }
-  const FILTER_PARAMS = ['q', 'tag', 'key', 'fmt', 'sort'];
+  const FILTER_PARAMS = ['q', 'tag', 'key', 'ts', 'fmt', 'sort'];
   const hasFilterParams = (p) => FILTER_PARAMS.some((k) => p.has(k));
   function fromQuery(p) {
     const st = newState();
     st.tags = [...new Set(p.getAll('tag').map((t) => t.trim()).filter(Boolean))];
     st.keys = [...new Set((p.get('key') || '').split(',').map((k) => normKey(k.trim().replace(/^./, (c) => c.toUpperCase()))).filter(Boolean))].sort((a, b) => keyRank(a) - keyRank(b));
+    st.tsigs = [...new Set((p.get('ts') || '').split(',').map((t) => t.trim()).filter(Boolean))].sort((a, b) => tsigRank(a) - tsigRank(b) || a.localeCompare(b));
     const f = p.get('fmt');
     st.fmt = f === 'chord' || f === 'file' || f === 'missing' || f === 'full' ? f : '';
     const sort = SORTS.includes(p.get('sort')) ? p.get('sort') : 'title';
     return { st, q: (p.get('q') || '').trim(), sort };
   }
 
-  return { OTHER_KEY, normKey, effKey, keyDiffers, tsigList, tsigText, tsigHTML, keyTsigHTML, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
+  return { OTHER_KEY, normKey, effKey, keyDiffers, tsigList, tsigText, tsigHTML, keyTsigHTML, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, tsigChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
 });
