@@ -649,3 +649,16 @@ summary { padding: 6px 0; }
 @media (orientation: landscape) and (max-height: 520px) { .pbtn { min-height: 34px; min-width: 36px; } .pbtn.mini { min-height: 32px; } }
 .sortrow { flex-wrap: nowrap; gap: 10px; margin: 6px 0 10px; }
 .sortrow select { width: auto; min-width: 9em; min-height: 40px; padding: 6px 12px; }
+
+/* 22차: 송폼의 전조 칩 */
+.fchip.kc { border-color: var(--chord); color: var(--chord); background: var(--card); }
+.fchip.kc.sel { background: var(--chord); color: #fff; border-color: var(--chord); }
+.pchip.kcbtn { border-color: var(--chord); color: var(--chord); }
+.pchip.kcbtn.on, .pchip.kd.on { background: var(--chord); color: #fff; border-color: var(--chord); }
+.pchip.kcbtn.on small { color: #fff; }
+.fkey { border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin: 4px 0 10px; background: var(--card); }
+.fkrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+.fkrow .pchip.kd { min-width: 52px; min-height: 44px; flex-direction: row; }
+.fkrow select, .fkrow input[type="text"] { flex: 1; min-width: 120px; }
+.kc { color: var(--chord); font-weight: 700; white-space: nowrap; }
+.pi.kcpath b { color: var(--chord); }

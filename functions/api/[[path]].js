@@ -322,6 +322,8 @@ async function ensureSchema(db) {
   await ensureColumn(db, 'songs', 'lyrics_extra', `lyrics_extra TEXT NOT NULL DEFAULT ''`);
   // 13차: 박자(4/4, 3/4, 6/8 …). 비어 있으면 아직 정하지 않은 곡
   await ensureColumn(db, 'songs', 'time_sig', `time_sig TEXT NOT NULL DEFAULT ''`);
+  // 22차: 곡의 기본 송폼(예: 언제나 전조되는 곡의 "…-C-Key+2(D7 E)-C-End"). 콘티에 곡을 넣을 때 송폼 칸에 미리 채워 준다
+  await ensureColumn(db, 'songs', 'base_form', `base_form TEXT NOT NULL DEFAULT ''`);
   // 11차: 콘티의 예배 종류 / 인도자(이름 글자, 쉼표로 구분) / 임시(급하게 만든) 표시
   await ensureColumn(db, 'setlists', 'service_id', `service_id INTEGER`);
   await ensureColumn(db, 'setlists', 'leaders', `leaders TEXT NOT NULL DEFAULT ''`);
@@ -514,6 +516,7 @@ function cleanSong(body, { requireTitle = true } = {}) {
     original_key: key,
     tempo,
     time_sig: timeSig,
+    base_form: str(body.base_form, 200),
     youtube_url: youtube,
     tags,
     chordpro,
@@ -1372,11 +1375,11 @@ export async function onRequest({ request, env }) {
         const { results } = await db
           .prepare(
             pq.all
-              ? `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,tags,chordpro,lyrics_extra,updated_at,
+              ? `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,chordpro,lyrics_extra,updated_at,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
               (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds
              FROM songs ORDER BY title`
-              : `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,tags,updated_at,
+              : `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,updated_at,
               (TRIM(chordpro, ' ' || char(9) || char(10) || char(13)) <> '') AS has_chords,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
               (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds
@@ -1472,10 +1475,10 @@ export async function onRequest({ request, env }) {
         const now = nowIso();
         const r = await db
           .prepare(
-            `INSERT INTO songs (title,orig_title,lyrics_extra,artist,original_key,tempo,time_sig,youtube_url,tags,chordpro,memo,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            `INSERT INTO songs (title,orig_title,lyrics_extra,artist,original_key,tempo,time_sig,base_form,youtube_url,tags,chordpro,memo,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
           )
-          .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.youtube_url, song.tags, song.chordpro, song.memo, now, now)
+          .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.base_form, song.youtube_url, song.tags, song.chordpro, song.memo, now, now)
           .run();
         return json({ id: r.meta.last_row_id }, 201);
       }
@@ -1572,8 +1575,8 @@ export async function onRequest({ request, env }) {
         }
         stmts.push(
           db
-            .prepare('UPDATE songs SET title=?,orig_title=?,lyrics_extra=?,artist=?,original_key=?,tempo=?,time_sig=?,youtube_url=?,tags=?,chordpro=?,memo=?,updated_at=? WHERE id=?')
-            .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.youtube_url, song.tags, song.chordpro, song.memo, now, id)
+            .prepare('UPDATE songs SET title=?,orig_title=?,lyrics_extra=?,artist=?,original_key=?,tempo=?,time_sig=?,base_form=?,youtube_url=?,tags=?,chordpro=?,memo=?,updated_at=? WHERE id=?')
+            .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.base_form, song.youtube_url, song.tags, song.chordpro, song.memo, now, id)
         );
         await db.batch(stmts);
         return json({ id });

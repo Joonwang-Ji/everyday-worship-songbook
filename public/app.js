@@ -818,6 +818,187 @@
 [C]찬양해 [D]찬양해 [G]주님을
 {eoc}`;
 
+  // ---------- 송폼 입력기 (6차 구간 버튼 · 22차 전조 칩, 콘티 편집과 곡 편집의 "기본 송폼"이 같이 쓴다) ----------
+  // host 안의 .formed[data-i] 칸마다 입력기를 그린다. data.items[i] = {form, key | original_key, song_id, _undo}.
+  // lastForms: 곡별 "지난번 송폼"(없으면 빈 객체). 반환: {inner(i), draw(i), action(a,i,btn), reset(), bind()}
+  //  · bind()는 host 안의 송폼 버튼 클릭과 Enter 입력을 연결한다(콘티 편집은 자기 클릭 처리기에서 action을 직접 부른다).
+  function formHtml(form, key) {
+    if (!SongForm.hasKeyChange(form)) return esc(form);
+    const steps = SongForm.keySteps(form, key);
+    let k = 0;
+    return SongForm.parse(form).map((t) => (SongForm.isKeyChange(t) ? `<span class="kc">${esc(SongForm.keyStepText(steps[k++]))}</span>` : esc(t))).join('-');
+  }
+  function createFormEditor(host, data, lastForms) {
+    let formSel = {}; // 카드별로 선택된 구간 번호
+    const kst = {};   // 카드별 전조 패널 상태 {open, d, to, chords}
+    const startKey = (it) => it.key || it.original_key || '';
+    const KEYOPTS = [...SongForm.KEY_NAMES, ...SongForm.KEY_NAMES_MINOR.map((n) => n + 'm')];
+    const boxOf = (i) => host.querySelector(`.formed[data-i="${i}"]`);
+
+    function inner(i) {
+      const it = data.items[i];
+      const toks = SongForm.parse(it.form);
+      const steps = SongForm.keySteps(it.form, startKey(it));
+      const sel = formSel[i];
+      let ks = 0;
+      const seq = toks.length
+        ? toks
+            .map((t, k) => {
+              const kc = SongForm.isKeyChange(t);
+              return `<button type="button" class="fchip ${kc ? 'kc' : ''} ${k === sel ? 'sel' : ''}" data-fa="sel" data-i="${i}" data-k="${k}">${esc(kc ? SongForm.keyStepText(steps[ks++]) : t)}</button>`;
+            })
+            .join('<span class="farrow" aria-hidden="true">›</span>')
+        : '<span class="muted small">아래 버튼을 눌러 순서대로 쌓아 보세요</span>';
+      const hasSel = sel !== undefined && toks[sel] !== undefined;
+      const selKc = hasSel && SongForm.isKeyChange(toks[sel]);
+      const tools = hasSel
+        ? `<div class="ftools on"><span class="small"><b>${esc(selKc ? '전조' : toks[sel])}</b> 선택됨 · 아래 버튼은 이 뒤에 들어가요</span>
+             <button type="button" class="btn small" data-fa="left" data-i="${i}" ${sel === 0 ? 'disabled' : ''} aria-label="앞으로">◀</button>
+             <button type="button" class="btn small" data-fa="right" data-i="${i}" ${sel === toks.length - 1 ? 'disabled' : ''} aria-label="뒤로">▶</button>
+             <button type="button" class="btn small" data-fa="dup" data-i="${i}">복제</button>
+             ${selKc ? '' : `<button type="button" class="btn small" data-fa="rep" data-i="${i}">×반복</button>`}
+             <button type="button" class="btn small danger" data-fa="del" data-i="${i}">삭제</button></div>`
+        : toks.length || (it._undo && it._undo.length)
+          ? `<div class="ftools"><button type="button" class="btn small" data-fa="undo" data-i="${i}" ${it._undo && it._undo.length ? '' : 'disabled'}>↶ 되돌리기</button>${toks.length ? `<button type="button" class="btn small" data-fa="clear" data-i="${i}">모두 지우기</button>` : ''}</div>`
+          : '';
+      const last = !toks.length && lastForms[it.song_id] ? `<button type="button" class="btn small" data-fa="last" data-i="${i}">↺ 지난번 송폼 불러오기 <span class="muted">${esc(lastForms[it.song_id])}</span></button>` : '';
+      const st = kst[i] || {};
+      const kpanel = st.open
+        ? `<div class="fkey">
+             <div class="fkrow"><span class="small">올리거나 내릴 반음</span>${[-2, -1, 1, 2, 3, 4].map((d) => `<button type="button" class="pchip kd ${st.d === d ? 'on' : ''}" data-fa="kd" data-i="${i}" data-d="${d}">${d > 0 ? '+' : ''}${d}</button>`).join('')}</div>
+             <div class="fkrow"><label class="small" for="kto-${i}">또는 도착 키</label><select id="kto-${i}" data-kto="${i}"><option value="">고르지 않음</option>${KEYOPTS.map((k) => `<option value="${esc(k)}" ${st.to === k ? 'selected' : ''}>${esc(k)}</option>`).join('')}</select></div>
+             <div class="fkrow"><input type="text" data-kch="${i}" maxlength="30" placeholder="연결 코드 (선택) 예: D7 E" enterkeyhint="done" value="${esc(st.chords || '')}"></div>
+             <div class="fkrow"><button type="button" class="btn small primary" data-fa="kadd" data-i="${i}">전조 칩 넣기</button><button type="button" class="btn small" data-fa="kclose" data-i="${i}">닫기</button></div>
+           </div>`
+        : '';
+      return `<label>송폼</label>
+        <div class="fseq">${seq}</div>${tools}${last}
+        <div class="fpal">${SongForm.PALETTE.map((p) => `<button type="button" class="pchip" data-fa="add" data-i="${i}" data-c="${esc(p.code)}">${esc(p.code)}${p.hint ? `<small>${esc(p.hint)}</small>` : ''}</button>`).join('')}<button type="button" class="pchip kcbtn ${st.open ? 'on' : ''}" data-fa="kopen" data-i="${i}">♯ 전조<small>키 변경</small></button></div>
+        ${kpanel}
+        <div class="fcustom"><input type="text" data-fcustom="${i}" maxlength="30" placeholder="그 밖의 구간 (예: 2절반복)" enterkeyhint="done"><button type="button" class="btn small" data-fa="addcustom" data-i="${i}">추가</button></div>`;
+    }
+    function draw(i) {
+      const box = boxOf(i);
+      if (!box) return;
+      const old = box.querySelector('[data-fcustom]');
+      const typed = old ? old.value : '';
+      box.innerHTML = inner(i); // (전조 패널 값은 action 시작에서 이미 상태로 옮겨 두었다)
+      const nu = box.querySelector('[data-fcustom]');
+      if (nu && typed) nu.value = typed;
+    }
+    // 전조 패널의 도착 키·연결 코드는 다시 그리기 전에 상태로 옮겨 둔다
+    function readK(i) {
+      const box = boxOf(i);
+      if (!box || !kst[i]) return;
+      const t = box.querySelector('[data-kto]');
+      const c = box.querySelector('[data-kch]');
+      if (t) kst[i].to = t.value;
+      if (c) kst[i].chords = c.value;
+    }
+    // tokens로 송폼을 바꾼다. 너무 길면 거부. 바꾸기 전 값은 되돌리기용으로 보관.
+    function setForm(i, str) {
+      const it = data.items[i];
+      if (str.length > SongForm.MAX) {
+        toast(`송폼이 너무 길어요. (최대 ${SongForm.MAX}자)`);
+        return false;
+      }
+      it._undo = it._undo || [];
+      it._undo.push(it.form);
+      if (it._undo.length > 30) it._undo.shift();
+      it.form = str;
+      return true;
+    }
+    function action(a, i, b) {
+      const it = data.items[i];
+      if (!it) return;
+      readK(i);
+      const toks = SongForm.parse(it.form);
+      let sel = formSel[i];
+      if (sel !== undefined && toks[sel] === undefined) sel = undefined;
+      if (a === 'sel') {
+        const k = +b.dataset.k;
+        if (sel === k) delete formSel[i];
+        else formSel[i] = k;
+      } else if (a === 'add' || a === 'addcustom' || a === 'kadd') {
+        let add;
+        if (a === 'add') add = [b.dataset.c];
+        else if (a === 'kadd') {
+          const st = kst[i] || {};
+          const tok = SongForm.makeKeyChange({ delta: st.d, to: st.to, chords: st.chords });
+          if (!tok) return toast('올릴 반음 수나 도착 키를 골라 주세요.');
+          add = [tok];
+        } else {
+          const inp = host.querySelector(`[data-fcustom="${i}"]`);
+          add = SongForm.parse(inp ? inp.value : '');
+          if (!add.length) return;
+          inp.value = '';
+        }
+        const at = sel !== undefined ? sel + 1 : toks.length;
+        toks.splice(at, 0, ...add);
+        if (!setForm(i, SongForm.format(toks))) return;
+        if (a === 'kadd') kst[i] = { open: false };
+        if (sel !== undefined) formSel[i] = at + add.length - 1; // 선택이 새로 넣은 구간으로 따라가서 연달아 누르면 이어 붙는다
+      } else if (a === 'kopen') {
+        kst[i] = kst[i] && kst[i].open ? Object.assign(kst[i], { open: false }) : Object.assign(kst[i] || {}, { open: true });
+      } else if (a === 'kclose') {
+        kst[i] = Object.assign(kst[i] || {}, { open: false });
+      } else if (a === 'kd') {
+        const d = +b.dataset.d;
+        kst[i] = Object.assign(kst[i] || { open: true }, { d: kst[i] && kst[i].d === d ? undefined : d });
+      } else if (a === 'left' || a === 'right') {
+        const j = a === 'left' ? sel - 1 : sel + 1;
+        if (sel === undefined || j < 0 || j >= toks.length) return;
+        [toks[sel], toks[j]] = [toks[j], toks[sel]];
+        if (!setForm(i, SongForm.format(toks))) return;
+        formSel[i] = j;
+      } else if (a === 'dup') {
+        if (sel === undefined) return;
+        toks.splice(sel + 1, 0, toks[sel]);
+        if (!setForm(i, SongForm.format(toks))) return;
+        formSel[i] = sel + 1;
+      } else if (a === 'rep') {
+        if (sel === undefined) return;
+        toks[sel] = SongForm.cycleRepeat(toks[sel]);
+        if (!setForm(i, SongForm.format(toks))) return;
+      } else if (a === 'del') {
+        if (sel === undefined) return;
+        toks.splice(sel, 1);
+        if (!setForm(i, SongForm.format(toks))) return;
+        delete formSel[i];
+      } else if (a === 'undo') {
+        if (!it._undo || !it._undo.length) return;
+        it.form = it._undo.pop();
+        delete formSel[i];
+      } else if (a === 'clear') {
+        if (!setForm(i, '')) return;
+        delete formSel[i];
+      } else if (a === 'last') {
+        if (!lastForms[it.song_id] || !setForm(i, lastForms[it.song_id])) return;
+        delete formSel[i];
+      }
+      draw(i);
+    }
+    // 직접 입력칸·연결 코드 칸에서 Enter 를 누르면 "추가"
+    host.addEventListener('keydown', (ev) => {
+      const t = ev.target;
+      if (ev.key !== 'Enter' || !t.dataset) return;
+      if (t.dataset.fcustom !== undefined) { ev.preventDefault(); action('addcustom', +t.dataset.fcustom, t); }
+      else if (t.dataset.kch !== undefined) { ev.preventDefault(); action('kadd', +t.dataset.kch, t); }
+    });
+    return {
+      inner,
+      draw,
+      action,
+      reset() { formSel = {}; },
+      bind() {
+        host.addEventListener('click', (ev) => {
+          const fb = ev.target.closest && ev.target.closest('button[data-fa]');
+          if (fb) action(fb.dataset.fa, +fb.dataset.i, fb);
+        });
+      },
+    };
+  }
+
   async function viewEdit(id, q) {
     if (!me.canEdit) {
       $app.innerHTML = `<div class="card"><p>악보를 편집할 권한이 없습니다.</p>
@@ -826,7 +1007,7 @@
       return;
     }
     document.querySelector('main').classList.add('wide');
-    let song = { title: '', orig_title: '', lyrics_extra: '', artist: '', original_key: '', tempo: '', time_sig: '', youtube_url: '', tags: '', chordpro: '', memo: '' };
+    let song = { title: '', orig_title: '', lyrics_extra: '', artist: '', original_key: '', tempo: '', time_sig: '', base_form: '', youtube_url: '', tags: '', chordpro: '', memo: '' };
     if (id) song = (await api('/songs/' + id)).song;
     else if (q && q.get('title')) song.title = q.get('title').slice(0, 200); // 목록에서 "새 곡으로 등록"으로 넘어온 검색어
     const tagInfo = await api('/tags');
@@ -848,6 +1029,12 @@
             <label for="tsig-o">박자 <span class="hint" style="margin:0">때에 따라 다르면 여러 개 고를 수 있어요</span></label>
             <div class="chips tsig-chips" id="tsigchips"></div>
             <input id="tsig" type="hidden" value="${esc(song.time_sig || '')}">
+            <details class="moreinfo" id="bfdet" ${song.base_form ? 'open' : ''}>
+              <summary>기본 송폼 · 전조 <span class="muted small">콘티에 곡을 넣을 때 미리 채워져요</span></summary>
+              <div class="hint" style="margin:6px 0 0">늘 같은 순서로 부르는 곡이면 송폼을 적어 두세요. 언제나 전조되는 곡은 ♯ 전조 칩을 넣어 두면 됩니다. 콘티마다 따로 고칠 수도 있어요.</div>
+              <div id="bformhost"><div class="formed" data-i="0"></div></div>
+              <input id="bform" type="hidden" value="${esc(song.base_form || '')}">
+            </details>
             <label for="tags">태그 (쉼표로 구분 · 아래 추천 칩을 눌러도 돼요)</label><input id="tags" type="text" placeholder="경배, 빠른곡" value="${esc(song.tags)}">
             <div id="tagchips"></div>
             <details class="moreinfo" id="moreinfo" ${song.tempo || song.youtube_url || song.memo || song.lyrics_extra ? 'open' : ''}>
@@ -1631,9 +1818,18 @@
       }, 150);
     }
 
+    // ----- 기본 송폼 (22차): 콘티의 송폼 입력기와 같은 것을 쓴다. 값은 숨은 칸 #bform 에 글자로 넣어 두고, 저장·임시저장은 다른 칸과 똑같이 처리된다 -----
+    const bfData = { items: [{ form: song.base_form || '', original_key: song.original_key || '', song_id: id || 0 }] };
+    const bfEd = createFormEditor($('bformhost'), bfData, {});
+    bfEd.bind();
+    const bfDraw = () => { bfData.items[0].form = $('bform').value; bfData.items[0].original_key = $('key').value; bfEd.draw(0); };
+    $('bformhost').addEventListener('click', () => { $('bform').value = bfData.items[0].form; $('bform').dispatchEvent(new Event('input', { bubbles: true })); });
+    $('key').addEventListener('change', () => { bfData.items[0].original_key = $('key').value; bfEd.draw(0); });
+    bfDraw();
+
     // ----- 입력 중 자동 임시저장 (이 기기 안에만 저장. 앱이 닫히거나 새로고침돼도 이어서 쓸 수 있다) -----
     const draftKey = 'ews_draft_' + (id || 'new');
-    const FIELDS = { title: 'title', orig_title: 'otitle', artist: 'artist', original_key: 'key', tempo: 'tempo', time_sig: 'tsig', tags: 'tags', youtube_url: 'yt', memo: 'memo', lyrics_extra: 'lx', chordpro: 'cp' };
+    const FIELDS = { title: 'title', orig_title: 'otitle', artist: 'artist', original_key: 'key', tempo: 'tempo', time_sig: 'tsig', base_form: 'bform', tags: 'tags', youtube_url: 'yt', memo: 'memo', lyrics_extra: 'lx', chordpro: 'cp' };
     const readForm = () => Object.fromEntries(Object.entries(FIELDS).map(([k, i]) => [k, $(i).value]));
     const baseline = JSON.stringify(readForm());
     let draftTimer;
@@ -1656,7 +1852,7 @@
       $('dr-use').onclick = () => {
         for (const [k, i] of Object.entries(FIELDS)) if (typeof d.f[k] === 'string') $(i).value = d.f[k];
         bar.hidden = true;
-        preview(); drawTagChips(); drawTsig(); drawExt(); runCheck();
+        preview(); drawTagChips(); drawTsig(); drawExt(); runCheck(); bfDraw();
         undoS = []; redoS = []; tabRefresh();
         toast('저장하지 않았던 작업을 불러왔습니다. 저장을 눌러야 반영돼요.');
       };
@@ -1674,7 +1870,7 @@
         }
       }
       const body = {
-        title: $('title').value, orig_title: $('otitle').value, lyrics_extra: $('lx').value, artist: $('artist').value, original_key: $('key').value, tempo: $('tempo').value, time_sig: $('tsig').value,
+        title: $('title').value, orig_title: $('otitle').value, lyrics_extra: $('lx').value, artist: $('artist').value, original_key: $('key').value, tempo: $('tempo').value, time_sig: $('tsig').value, base_form: $('bform').value,
         youtube_url: $('yt').value, tags: $('tags').value, chordpro: $('cp').value, memo: $('memo').value, force: !!force,
       };
       const btn = $('save');
@@ -2557,7 +2753,7 @@
       return `<li class="song-item"><a href="#/song/${it.song_id}?${p.toString()}">
         <div class="row between"><div class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</div>${key || it.time_sig ? `<span class="row" style="gap:6px">${key ? `<span class="keybadge">${esc(key)}</span>` : ''}${SongFilter.tsigHTML(it.time_sig, esc)}</span>` : ''}</div>
         <div class="song-meta">
-          ${it.form ? `<span>송폼 ${esc(it.form)}</span>` : ''}
+          ${it.form ? `<span>송폼 ${formHtml(it.form, key)}</span>` : ''}
           ${imageOnly ? '<span class="fmt img" title="이미지 악보" aria-label="이미지 악보">🎼</span>' : it.has_chords ? '<span class="fmt chord" title="코드 악보" aria-label="코드 악보"><b class="cmk">Chord</b></span>' : ''}
           ${it.memo ? `<span>${esc(it.memo)}</span>` : ''}
         </div>
@@ -2862,7 +3058,8 @@
       g('pinfo').innerHTML = [
         keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '',
         song.time_sig ? `<span class="pi tsig" title="박자"><b>${esc(SongFilter.tsigText(song.time_sig))}</b></span>` : '',
-        it.form ? `<span class="pi"><b>송폼</b> ${esc(it.form)}</span>` : '',
+        it.form ? `<span class="pi"><b>송폼</b> ${formHtml(it.form, keyTxt)}</span>` : '',
+        SongForm.keyPathText(it.form, keyTxt) ? `<span class="pi kcpath" title="전조"><b>♯ 키</b> ${esc(SongForm.keyPathText(it.form, keyTxt))}</span>` : '',
         it.memo ? `<span class="pi"><b>메모</b> ${esc(it.memo)}</span>` : '',
         extra ? `<span class="pi muted">${esc(extra)}</span>` : '',
         hasText && files.length ? `<button class="pbtn mini" id="pswap" type="button">${isImg ? '코드 악보로' : '이미지 악보로'}</button>` : '',
@@ -3302,7 +3499,7 @@
       g('plsheet').innerHTML = `
         <div class="sheet-card">
           <h2 style="margin-top:0">곡 목록</h2>
-          ${items.map((it, i) => `<button type="button" class="pick ${i === idx ? 'now' : ''}" data-i="${i}"><span class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</span><span class="song-meta">${it.key ? `<span class="keybadge">${esc(it.key)}</span>` : ''}${it.form ? `<span>송폼 ${esc(it.form)}</span>` : ''}</span></button>`).join('')}
+          ${items.map((it, i) => `<button type="button" class="pick ${i === idx ? 'now' : ''}" data-i="${i}"><span class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</span><span class="song-meta">${it.key ? `<span class="keybadge">${esc(it.key)}</span>` : ''}${it.form ? `<span>송폼 ${formHtml(it.form, it.key || it.original_key || '')}</span>` : ''}</span></button>`).join('')}
           <button type="button" class="btn" data-a="close" style="width:100%;margin-top:6px">닫기</button>
         </div>`;
       g('plsheet').hidden = false;
@@ -3541,7 +3738,6 @@
     }
     document.title = (id ? '콘티 편집' : quick ? '빠른 콘티' : '새 콘티') + ' · Everyday Worship Songbook';
     // 송폼 탭 입력(6차): formSel = 카드별로 선택된 구간 번호, lastForms = 곡별 "지난번 송폼"
-    let formSel = {};
     const lastForms = {};
     const backHref = id ? '#/setlist/' + id : '#/setlists';
     const heading = id ? '콘티 편집' : quick ? '⚡ 빠른 콘티' : copyId ? '콘티 복사' : '새 콘티';
@@ -3684,110 +3880,11 @@
         .join('');
     }
 
-    // ----- 송폼: 글자를 쓰지 않고 버튼을 눌러 순서대로 쌓는다 -----
-    // 구간 버튼을 누르면 맨 뒤(또는 선택한 구간 바로 뒤)에 들어가고, 쌓인 구간을 누르면 앞뒤 이동·복제·반복(×2)·삭제를 할 수 있다.
-    function formInner(i) {
-      const it = data.items[i];
-      const toks = SongForm.parse(it.form);
-      const sel = formSel[i];
-      const seq = toks.length
-        ? toks.map((t, k) => `<button type="button" class="fchip ${k === sel ? 'sel' : ''}" data-fa="sel" data-i="${i}" data-k="${k}">${esc(t)}</button>`).join('<span class="farrow" aria-hidden="true">›</span>')
-        : '<span class="muted small">아래 버튼을 눌러 순서대로 쌓아 보세요</span>';
-      const hasSel = sel !== undefined && toks[sel] !== undefined;
-      const tools = hasSel
-        ? `<div class="ftools on"><span class="small"><b>${esc(toks[sel])}</b> 선택됨 · 아래 버튼은 이 뒤에 들어가요</span>
-             <button type="button" class="btn small" data-fa="left" data-i="${i}" ${sel === 0 ? 'disabled' : ''} aria-label="앞으로">◀</button>
-             <button type="button" class="btn small" data-fa="right" data-i="${i}" ${sel === toks.length - 1 ? 'disabled' : ''} aria-label="뒤로">▶</button>
-             <button type="button" class="btn small" data-fa="dup" data-i="${i}">복제</button>
-             <button type="button" class="btn small" data-fa="rep" data-i="${i}">×반복</button>
-             <button type="button" class="btn small danger" data-fa="del" data-i="${i}">삭제</button></div>`
-        : toks.length || (it._undo && it._undo.length)
-          ? `<div class="ftools"><button type="button" class="btn small" data-fa="undo" data-i="${i}" ${it._undo && it._undo.length ? '' : 'disabled'}>↶ 되돌리기</button>${toks.length ? `<button type="button" class="btn small" data-fa="clear" data-i="${i}">모두 지우기</button>` : ''}</div>`
-          : '';
-      const last = !toks.length && lastForms[it.song_id] ? `<button type="button" class="btn small" data-fa="last" data-i="${i}">↺ 지난번 송폼 불러오기 <span class="muted">${esc(lastForms[it.song_id])}</span></button>` : '';
-      return `<label>송폼</label>
-        <div class="fseq">${seq}</div>${tools}${last}
-        <div class="fpal">${SongForm.PALETTE.map((p) => `<button type="button" class="pchip" data-fa="add" data-i="${i}" data-c="${esc(p.code)}">${esc(p.code)}${p.hint ? `<small>${esc(p.hint)}</small>` : ''}</button>`).join('')}</div>
-        <div class="fcustom"><input type="text" data-fcustom="${i}" maxlength="30" placeholder="그 밖의 구간 (예: 2절반복)" enterkeyhint="done"><button type="button" class="btn small" data-fa="addcustom" data-i="${i}">추가</button></div>`;
-    }
-    function drawForm(i) {
-      const box = el('items').querySelector(`.formed[data-i="${i}"]`);
-      if (!box) return;
-      const old = box.querySelector('[data-fcustom]');
-      const typed = old ? old.value : '';
-      box.innerHTML = formInner(i);
-      const nu = box.querySelector('[data-fcustom]');
-      if (nu && typed) nu.value = typed;
-    }
-    // tokens로 송폼을 바꾼다. 너무 길면 거부. 바꾸기 전 값은 되돌리기용으로 보관.
-    function setForm(i, str) {
-      const it = data.items[i];
-      if (str.length > SongForm.MAX) {
-        toast(`송폼이 너무 길어요. (최대 ${SongForm.MAX}자)`);
-        return false;
-      }
-      it._undo = it._undo || [];
-      it._undo.push(it.form);
-      if (it._undo.length > 30) it._undo.shift();
-      it.form = str;
-      return true;
-    }
-    function formAction(a, i, b) {
-      const it = data.items[i];
-      if (!it) return;
-      const toks = SongForm.parse(it.form);
-      let sel = formSel[i];
-      if (sel !== undefined && toks[sel] === undefined) sel = undefined;
-      if (a === 'sel') {
-        const k = +b.dataset.k;
-        if (sel === k) delete formSel[i];
-        else formSel[i] = k;
-      } else if (a === 'add' || a === 'addcustom') {
-        let add;
-        if (a === 'add') add = [b.dataset.c];
-        else {
-          const inp = el('items').querySelector(`[data-fcustom="${i}"]`);
-          add = SongForm.parse(inp ? inp.value : '');
-          if (!add.length) return;
-          inp.value = '';
-        }
-        const at = sel !== undefined ? sel + 1 : toks.length;
-        toks.splice(at, 0, ...add);
-        if (!setForm(i, SongForm.format(toks))) return;
-        if (sel !== undefined) formSel[i] = at + add.length - 1; // 선택이 새로 넣은 구간으로 따라가서 연달아 누르면 이어 붙는다
-      } else if (a === 'left' || a === 'right') {
-        const j = a === 'left' ? sel - 1 : sel + 1;
-        if (sel === undefined || j < 0 || j >= toks.length) return;
-        [toks[sel], toks[j]] = [toks[j], toks[sel]];
-        if (!setForm(i, SongForm.format(toks))) return;
-        formSel[i] = j;
-      } else if (a === 'dup') {
-        if (sel === undefined) return;
-        toks.splice(sel + 1, 0, toks[sel]);
-        if (!setForm(i, SongForm.format(toks))) return;
-        formSel[i] = sel + 1;
-      } else if (a === 'rep') {
-        if (sel === undefined) return;
-        toks[sel] = SongForm.cycleRepeat(toks[sel]);
-        if (!setForm(i, SongForm.format(toks))) return;
-      } else if (a === 'del') {
-        if (sel === undefined) return;
-        toks.splice(sel, 1);
-        if (!setForm(i, SongForm.format(toks))) return;
-        delete formSel[i];
-      } else if (a === 'undo') {
-        if (!it._undo || !it._undo.length) return;
-        it.form = it._undo.pop();
-        delete formSel[i];
-      } else if (a === 'clear') {
-        if (!setForm(i, '')) return;
-        delete formSel[i];
-      } else if (a === 'last') {
-        if (!lastForms[it.song_id] || !setForm(i, lastForms[it.song_id])) return;
-        delete formSel[i];
-      }
-      drawForm(i);
-    }
+    // ----- 송폼: 글자를 쓰지 않고 버튼을 눌러 순서대로 쌓는다 (입력기는 createFormEditor, 22차에 곡 편집과 공용화) -----
+    const fe = createFormEditor(el('items'), data, lastForms);
+    const drawForm = fe.draw;
+    const formInner = fe.inner;
+    const formAction = fe.action;
     // 입력칸은 다시 그리지 않고 값만 저장해서, 타이핑 중에 커서가 튀지 않게 한다.
     const onField = (ev) => {
       const t = ev.target;
@@ -3808,17 +3905,9 @@
         if (j < 0 || j >= data.items.length) return;
         [data.items[i], data.items[j]] = [data.items[j], data.items[i]];
       }
-      formSel = {}; // 곡 순서가 바뀌면 카드 번호가 달라지므로 선택 상태를 비운다
+      fe.reset(); // 곡 순서가 바뀌면 카드 번호가 달라지므로 선택 상태를 비운다
       drawItems();
     };
-    // 직접 입력칸에서 Enter 를 누르면 "추가"
-    el('items').addEventListener('keydown', (ev) => {
-      const t = ev.target;
-      if (ev.key === 'Enter' && t.dataset && t.dataset.fcustom !== undefined) {
-        ev.preventDefault();
-        formAction('addcustom', +t.dataset.fcustom, t);
-      }
-    });
     // 우리 팀이 지난번에 쓴 송폼 (불러오지 못해도 입력에는 지장 없음)
     api('/team/last-forms' + (id ? '?exclude=' + id : ''))
       .then((r) => {
@@ -3866,7 +3955,7 @@
       if (!s) return;
       if (data.items.length >= 60) return toast('콘티에는 곡을 60개까지 넣을 수 있습니다.');
       // 기본 키: 우리 팀 기본 키 ▶ 원래 키
-      data.items.push({ song_id: s.id, key: s.team_key || s.original_key || '', form: '', memo: '', view: 'auto' });
+      data.items.push({ song_id: s.id, key: s.team_key || s.original_key || '', form: s.base_form || '', memo: '', view: 'auto' }); // 22차: 곡의 기본 송폼(전조 포함)을 미리 채운다
       drawItems();
       drawResults();
       toast(`"${s.title}" 추가`);
@@ -3884,7 +3973,7 @@
           const add = itemsOf(r.setlist);
           const room = 60 - data.items.length;
           data.items.push(...add.slice(0, Math.max(0, room)));
-          formSel = {};
+          fe.reset();
           drawItems();
           drawResults();
           toast(add.length > room ? `곡 ${Math.max(0, room)}개만 가져왔어요. (최대 60곡)` : `${add.length}곡을 가져왔어요.`);

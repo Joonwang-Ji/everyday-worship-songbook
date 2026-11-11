@@ -10,10 +10,19 @@
   const PALETTE = Sections.PALETTE;
 
   // "V1-C-V2 C (2번)" → ['V1','C','V2','C','(2번)']  (구분: - – → > , 와 빈칸. 괄호 안은 한 덩어리)
+  // 전조 칩(Key+2(D7 E) · Key-1 · Key:A)은 한 덩어리로 묶는다. "Key+2 (D7 E)"처럼 띄어 쓴 괄호도 전조에 붙인다. (22차)
   function parse(str) {
-    const m = String(str || '').match(/\([^)]*\)|[^\s\-–—→>,()]+/g);
-    return m ? m.map((t) => t.trim()).filter(Boolean) : [];
+    const m = String(str || '').match(Sections.FORM_TOKEN());
+    const toks = m ? m.map((t) => t.trim()).filter(Boolean) : [];
+    const out = [];
+    for (let i = 0; i < toks.length; i++) {
+      const t = toks[i];
+      if (isKeyChange(t) && !/\(/.test(t) && toks[i + 1] && toks[i + 1][0] === '(') { out.push(t + toks[i + 1]); i++; }
+      else out.push(t);
+    }
+    return out;
   }
+  const isKeyChange = (tok) => Sections.isKeyChange(tok);
   const format = (tokens) => tokens.join('-');
 
   // 마지막이 "C×2" 처럼 반복 표시면 [기본, 횟수]로 나눈다
@@ -23,10 +32,90 @@
   }
   // 반복 표시를 한 단계 돌린다: (없음) → ×2 → ×3 → ×4 → 없음
   function cycleRepeat(tok) {
+    if (isKeyChange(tok)) return tok; // 전조 칩에는 반복 표시를 쓰지 않는다
     const { base, n } = splitRepeat(tok);
     const next = n >= 4 ? 1 : n + 1;
     return next === 1 ? base : base + '×' + next;
   }
+
+  // ---------- 전조 칩 (22차) ----------
+  // 송폼 글자 속 "Key+2(D7 E)" · "Key-1" · "Key:A" → {delta(반음, +위/-아래) | null, to(도착 키) | null, chords(연결 코드)}. 아니면 null.
+  const KMAJOR = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+  const KMINOR = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'G#', 'A', 'Bb', 'B'];
+  const LETTERS = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  const mod12 = (n) => ((n % 12) + 12) % 12;
+  function parseKeyName(str) {
+    const m = /^([A-G])([#b]?)(m|min)?$/.exec(String(str || '').trim());
+    return m ? { idx: mod12(LETTERS[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0)), minor: !!m[3] } : null;
+  }
+  const keyNameOf = (idx, minor) => (minor ? KMINOR : KMAJOR)[mod12(idx)] + (minor ? 'm' : '');
+  function keyChange(tok) {
+    const m = /^(?:Key|전조)(?:([+\-－−–])(\d{1,2})|:([A-Ga-g][#b♯♭]?m?))(?:\(([^)]*)\))?$/i.exec(String(tok || '').trim());
+    if (!m) return null;
+    const chords = (m[4] || '').trim();
+    if (m[3]) {
+      let to = m[3].replace('♯', '#').replace('♭', 'b');
+      to = to[0].toUpperCase() + to.slice(1);
+      return { delta: null, to, chords };
+    }
+    const n = +m[2];
+    return { delta: m[1] === '+' ? n : -n, to: null, chords };
+  }
+  // 전조 칩 만들기: {delta | to, chords} → 저장 글자. 값이 맞지 않으면 ''.
+  function makeKeyChange(o) {
+    const chords = String((o && o.chords) || '').replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 30);
+    let core = '';
+    if (o && o.to && parseKeyName(String(o.to).replace('♯', '#').replace('♭', 'b'))) core = 'Key:' + String(o.to).replace('♯', '#').replace('♭', 'b');
+    else if (o && Number.isInteger(o.delta) && o.delta !== 0 && Math.abs(o.delta) <= 11) core = 'Key' + (o.delta > 0 ? '+' : '-') + Math.abs(o.delta);
+    return core ? core + (chords ? '(' + chords + ')' : '') : '';
+  }
+  // 시작 키에서 송폼을 따라가며 전조 단계 목록을 만든다. 시작 키를 모르면 키 이름 없이 반음만 돌려준다.
+  // → [{tok, delta, from, to, chords}]  (delta는 위로 0~11 또는 입력한 값)
+  function keySteps(form, startKey) {
+    const out = [];
+    let cur = parseKeyName(startKey);
+    for (const tok of parse(form)) {
+      const kc = keyChange(tok);
+      if (!kc) continue;
+      const from = cur ? keyNameOf(cur.idx, cur.minor) : '';
+      let to = '';
+      let delta = kc.delta;
+      if (kc.to) {
+        const t = parseKeyName(kc.to);
+        to = kc.to;
+        if (cur && t) delta = mod12(t.idx - cur.idx);
+        if (t) cur = { idx: t.idx, minor: t.minor };
+      } else if (cur) {
+        const ni = mod12(cur.idx + kc.delta);
+        to = keyNameOf(ni, cur.minor);
+        cur = { idx: ni, minor: cur.minor };
+      }
+      out.push({ tok, delta, from, to, chords: kc.chords });
+    }
+    return out;
+  }
+  const deltaText = (d) => (d === null || d === undefined ? '' : (d > 0 ? '+' : '') + d);
+  // 전조 칩 하나의 보이는 글자. 예) "♯ 전조 +2 · G → A (D7 E)"
+  function keyStepText(st) {
+    const head = st.delta !== null && st.delta !== undefined && st.delta !== 0 ? deltaText(st.delta) : '';
+    const keys = st.to ? (st.from ? `${st.from} → ${st.to}` : `→ ${st.to}`) : '';
+    return `♯ 전조${head ? ' ' + head : ''}${keys ? (head ? ' · ' : ' ') + keys : ''}${st.chords ? ' (' + st.chords + ')' : ''}`;
+  }
+  // 곡 전체의 키 흐름. 예) "G → A → B". 전조가 없으면 ''. 시작 키를 모르면 ''.
+  function keyPathText(form, startKey) {
+    const steps = keySteps(form, startKey);
+    if (!steps.length || !steps[0].from) return '';
+    return [steps[0].from, ...steps.map((s) => s.to)].join(' → ');
+  }
+  // 송폼을 사람이 읽는 글자로 (카톡·PDF·가사 복사용): 전조 칩만 "전조 +2 G→A (D7 E)"로 풀어 쓴다.
+  function formDisplay(form, startKey) {
+    const steps = keySteps(form, startKey);
+    let k = 0;
+    return parse(form)
+      .map((t) => (isKeyChange(t) ? keyStepText(steps[k++]).replace(/^♯ /, '').replace(/ · /, ' ').replace(/ → /g, '→') : t))
+      .join('-');
+  }
+  const hasKeyChange = (form) => parse(form).some(isKeyChange);
 
   // ---------- 카톡용 콘티 텍스트 ----------
   const fmtDate = (d) => {
@@ -52,7 +141,7 @@
     (s.items || []).forEach((it, i) => {
       const key = (it.key || it.original_key || '').trim();
       out.push(`${i + 1}. ${it.title}${key ? ` (${key})` : ''}`);
-      if ((it.form || '').trim()) out.push(`   송폼: ${it.form.trim()}`);
+      if ((it.form || '').trim()) out.push(`   송폼: ${formDisplay(it.form.trim(), key)}`);
       if ((it.memo || '').trim()) out.push(`   메모: ${it.memo.trim().replace(/\s*\n\s*/g, ' ')}`);
     });
     return out.join('\n');
@@ -115,7 +204,8 @@
   function formOrder(form) {
     const out = [];
     for (const tok of parse(form)) {
-      if (/^\(/.test(tok)) continue;
+      if (/^\(/.test(tok)) continue; // 괄호 메모는 가사 구간이 아니다
+      if (isKeyChange(tok)) { out.push({ canon: '', n: 1, raw: tok, kc: true }); continue; } // 전조 칩: 가사 구간은 아니지만 복사할 때 표시는 남긴다
       const { base, n } = splitRepeat(tok);
       out.push({ canon: canonSection(base), n, raw: tok });
     }
@@ -135,8 +225,10 @@
     if (mode === 'form') {
       const order = formOrder(form);
       const parts = [];
+      let real = 0; // 가사가 들어간 구간 수(전조 표시는 세지 않는다)
       const missing = [];
       for (const o of order) {
+        if (o.kc) { parts.push(keyStepText(keySteps(o.raw, '')[0])); continue; }
         if (!o.canon) { missing.push(o.raw); continue; }
         // 같은 이름이 있으면 그것, 없으면 같은 종류(C2→C, End↔Outro)
         const hit = secs.find((x) => x.canon === o.canon) || secs.find((x) => x.canon && Sections.kindKey(x.canon) === Sections.kindKey(o.canon));
@@ -145,9 +237,9 @@
           missing.push(o.raw);
           continue;
         }
-        for (let i = 0; i < o.n; i++) parts.push(sectionText(hit));
+        for (let i = 0; i < o.n; i++) { parts.push(sectionText(hit)); real++; }
       }
-      if (parts.length) return { text: parts.join('\n\n'), noForm: false, missing, empty: false };
+      if (real) return { text: parts.join('\n\n'), noForm: false, missing, empty: false };
       // 송폼이 비어 있거나 하나도 맞지 않으면 악보에 적힌 순서대로
       return { text: secs.map(sectionText).join('\n\n'), noForm: true, missing: [], empty: false };
     }
@@ -175,5 +267,5 @@
     return { text: blocks.join(mode === 'plain' ? '\n\n\n' : '\n\n'), noText, noForm, missing };
   }
 
-  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, fmtDate, kakaoText, leaderList, canonSection, lyricSections, formOrder, songLyrics, lyricsText };
+  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, isKeyChange, keyChange, makeKeyChange, keySteps, keyStepText, keyPathText, formDisplay, hasKeyChange, parseKeyName, keyNameOf, KEY_NAMES: KMAJOR, KEY_NAMES_MINOR: KMINOR, fmtDate, kakaoText, leaderList, canonSection, lyricSections, formOrder, songLyrics, lyricsText };
 });

@@ -109,12 +109,18 @@
     }
     return { text: lines.join('\n'), changed, unknown };
   }
-  // 송폼 글자 → {form, changed(바뀌었나), unknown}. 구분 글자·괄호 메모·×반복은 그대로 둔다.
+  // 송폼의 전조 칩 (22차): Key+2 · Key-1 · Key:A, 뒤에 연결 코드를 괄호로 붙일 수 있다. 예) Key+2(D7 E)
+  // 한글 "전조"도 알아본다. 구간 이름이 아니므로 구간 판별(canon)은 건드리지 않고, 송폼 글자를 나눌 때만 한 덩어리로 묶는다.
+  const KEYCHG_SRC = '(?:Key|전조)(?:[+\\-－−–]\\d{1,2}|:[A-Ga-g][#b♯♭]?m?)(?:\\([^)]*\\))?';
+  const FORM_TOKEN = () => new RegExp(KEYCHG_SRC + '|\\([^)]*\\)|[^\\s\\-–—→>,()]+', 'gi');
+  const isKeyChange = (tok) => new RegExp('^' + KEYCHG_SRC + '$', 'i').test(String(tok || '').trim());
+
+  // 송폼 글자 → {form, changed(바뀌었나), unknown}. 구분 글자·괄호 메모·×반복·전조 칩은 그대로 둔다.
   function migrateForm(form) {
     const src = String(form == null ? '' : form);
     const unknown = [];
-    const out = src.replace(/\([^)]*\)|[^\s\-–—→>,()]+/g, (tok) => {
-      if (tok[0] === '(') return tok;
+    const out = src.replace(FORM_TOKEN(), (tok) => {
+      if (tok[0] === '(' || isKeyChange(tok)) return tok;
       const m = /^(.*?)[×xX*](\d{1,2})$/.exec(tok);
       const base = m && m[1] ? m[1] : tok;
       const rep = m && m[1] ? tok.slice(base.length) : '';
@@ -125,5 +131,5 @@
     return { form: out, changed: out !== src, unknown };
   }
 
-  return { FULL, PICKS, PALETTE, canon, display, label, normalize, kindKey, makeId, migrateChordPro, migrateForm };
+  return { FULL, PICKS, PALETTE, canon, display, label, normalize, kindKey, makeId, migrateChordPro, migrateForm, KEYCHG_SRC, FORM_TOKEN, isKeyChange };
 });

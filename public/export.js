@@ -8,6 +8,8 @@
   const INK = '#1d2430', MUTED = '#6b7280', BRAND = '#2a6670', CHORD = '#bf4b32', LINE = '#d9d6cc', SOFT = '#e8f1f1';
   const A4 = { w: 1240, h: 1754 }; // 150dpi
   const PT = { w: 595.28, h: 841.89 }; // A4 (pt)
+  // 송폼의 전조 칩(Key+2(D7 E))은 "전조 +2 G→A (D7 E)"로 풀어 쓴다 (22차)
+  const formText = (f, k) => (window.SongForm ? SongForm.formDisplay(String(f || '').trim(), k) : String(f || '').trim());
   const M = 90; // 바깥 여백
 
   const font = (px, weight) => `${weight || 400} ${px}px ${FONT}`;
@@ -92,7 +94,7 @@
       const rows = [];
       sc.font = font(30 * k, 400);
       const labW = 84 * k;
-      if ((it.form || '').trim()) rows.push({ label: '송폼', lines: wrap(sc, it.form.trim(), cw - numW - labW) });
+      if ((it.form || '').trim()) rows.push({ label: '송폼', lines: wrap(sc, formText(it.form, key), cw - numW - labW) });
       if ((it.memo || '').trim()) rows.push({ label: '메모', lines: wrap(sc, it.memo.trim().replace(/\s*\n\s*/g, ' '), cw - numW - labW) });
       let h = 26 * k + tl.length * 54 * k;
       for (const r of rows) h += 8 * k + r.lines.length * 42 * k;
@@ -167,7 +169,7 @@
     if (keyLabel) { g.font = font(44, 800); g.fillStyle = BRAND; g.textAlign = 'right'; g.fillText(keyLabel, W - M, M + 44); g.textAlign = 'left'; }
     const sub = [info.artist, info.origKey && info.origKey !== keyText ? `원키 ${info.origKey}` : '', String(info.timeSig || '').split(/[,，]/).map((t) => t.trim()).filter(Boolean).join(', '), info.tempo ? `♩${info.tempo}` : ''].filter(Boolean).join('  ·  ');
     if (sub) { g.font = font(26, 400); g.fillStyle = MUTED; g.fillText(sub, M, y + 28); y += 40; }
-    for (const [label, text] of [['송폼', it.form], ['메모', it.memo]]) {
+    for (const [label, text] of [['송폼', it.form ? formText(it.form, keyText) : ''], ['메모', it.memo]]) {
       if (!(text || '').trim()) continue;
       y += 6;
       g.font = font(26, 700); g.fillStyle = MUTED; g.fillText(label, M, y + 30);
