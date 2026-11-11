@@ -169,7 +169,7 @@
     if (!s) return [];
     let a = s.start, b = s.end;
     if (parsed.lines[a] && parsed.lines[a].type === 'comment') a++;
-    const body = parsed.lines.slice(a, b).filter((l) => l.type !== 'colbreak' && l.type !== 'ref');
+    const body = parsed.lines.slice(a, b).filter((l) => l.type !== 'colbreak' && l.type !== 'ref' && l.type !== 'keychg');
     while (body.length && body[body.length - 1].type === 'blank') body.pop();
     while (body.length && body[0].type === 'blank') body.shift();
     return body;
@@ -210,8 +210,14 @@
   // opt.refs: 'mark'(자리표시를 "↻ Chorus"로만, 기본) | 'all'(모두 원본으로 펼침) | Set(펼칠 자리표시 줄 번호)
   function renderHTML(parsed, opt) {
     const o = Object.assign({ originalKey: '', shift: 0, capo: 0, acc: 'auto', showChords: true, parts: false, names: 'full', refs: 'mark' }, opt);
-    const p = plan(o.originalKey, o.shift, o.capo, o.acc);
-    const conv = (c) => (c ? transposeChord(c, p.semis, p.flats) : '');
+    // 22차: 송폼 순서로 다시 배열한 악보는 줄마다 전조 누적 반음(ks)을 갖는다. 그 줄의 코드는 키를 ks만큼 더 올려서 쓴다.
+    const plans = {};
+    const planFor = (ks) => plans[ks || 0] || (plans[ks || 0] = plan(o.originalKey, o.shift + (ks || 0), o.capo, o.acc));
+    const conv = (c, ks) => {
+      if (!c) return '';
+      const pp = planFor(ks);
+      return transposeChord(c, pp.semis, pp.flats);
+    };
     const out = [];
     let inChorus = false;
     let usedBreak = false; // 단 나누기는 한 곡에 첫 번째 표시만 쓴다(2단 보기에서 3단이 생기지 않게)
@@ -272,6 +278,11 @@
           closePart();
           out.push('<div class="part refp" data-s="' + secAt(i) + '" data-ri="' + i + '" data-src="' + ln.src + '">' + chip + '</div>');
         } else out.push(chip);
+      } else if (ln.type === 'keychg') {
+        // 전조 표시줄 (송폼 순서로 배열한 악보에만 있다)
+        closeChorus();
+        const kc = '<div class="keychg">' + esc(ln.text || '♯ 전조') + '</div>';
+        if (o.parts) { closePart(); out.push('<div class="part kcpart">' + kc + '</div>'); } else out.push(kc);
       } else if (ln.type === 'comment') {
         if (o.parts) {
           closePart();
@@ -300,7 +311,7 @@
               ln.segs
                 .map(
                   (s) =>
-                    '<span class="sg"><span class="ch">' + esc(conv(s.chord)) + '</span><span class="ly">' + esc(s.text) + '</span></span>'
+                    '<span class="sg"><span class="ch">' + esc(conv(s.chord, ln.ks)) + '</span><span class="ly">' + esc(s.text) + '</span></span>'
                 )
                 .join('') +
               '</div>'
@@ -316,6 +327,6 @@
   return {
     MAJOR_NAMES, MINOR_NAMES,
     parseKey, keyUsesFlats, transposeChord, transposeKey, noteName,
-    parseChordPro, guessKey, plan, renderHTML, sectionBody,
+    parseChordPro, guessKey, plan, renderHTML, sectionBody, buildSections,
   };
 });

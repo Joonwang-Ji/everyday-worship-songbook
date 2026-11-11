@@ -662,3 +662,37 @@ summary { padding: 6px 0; }
 .fkrow select, .fkrow input[type="text"] { flex: 1; min-width: 120px; }
 .kc { color: var(--chord); font-weight: 700; white-space: nowrap; }
 .pi.kcpath b { color: var(--chord); }
+
+/* 23차: 송폼 순서로 배열한 악보의 전조 표시줄 */
+.keychg { margin: 10px 0 6px; padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, var(--chord) 12%, transparent); border-left: 4px solid var(--chord); color: var(--chord); font-weight: 800; font-size: .9em; break-inside: avoid; }
+.part.kcpart { break-after: avoid; }
+
+/* 23차: 송폼 만들기 창 / 원본 악보 옆에 놓기 / 송폼 한 줄 요약 */
+.fsum { display: flex; flex-wrap: wrap; gap: 2px 0; align-items: center; margin: 2px 0 8px; font-weight: 600; line-height: 1.7; }
+.pchip.morebtn { border-style: dashed; color: var(--muted); }
+.fwin { position: fixed; inset: 0; z-index: 80; background: var(--bg); color: var(--text); display: flex; flex-direction: column; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+.fw-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--card); }
+.fw-title { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fw-body { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(0, 42%) minmax(0, 1fr); }
+.fw-ref, .fw-work { overflow: auto; padding: 10px 14px; min-height: 0; -webkit-overflow-scrolling: touch; }
+.fw-ref { background: var(--card); border-bottom: 1px solid var(--line); }
+.fw-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.fw-tabs .chip.on { background: var(--brand); color: var(--brand-text); border-color: var(--brand); }
+.fw-view.score { --song-size: 16px; }
+.fw-view img.ipimg { width: 100%; height: auto; display: block; }
+.ipbar { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+@media (min-width: 900px) {
+  .fw-body { grid-template-columns: 1fr 1fr; grid-template-rows: none; }
+  .fw-ref { border-bottom: 0; border-right: 1px solid var(--line); }
+}
+.refdock { grid-column: 1 / -1; position: sticky; top: calc(98px + env(safe-area-inset-top)); z-index: 7; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.rd-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+.rd-bar .small { flex: 1; }
+.rd-body { max-height: 38vh; overflow: auto; padding: 8px 10px; -webkit-overflow-scrolling: touch; }
+.rd-body img.ipimg { width: 100%; height: auto; display: block; }
+@media (min-width: 900px) {
+  .edit-wrap.dock-on > div:last-child { display: none; }
+  .edit-wrap.dock-on > .refdock { grid-column: 2; grid-row: 1; align-self: start; }
+  .edit-wrap.dock-on > .refdock + div { grid-column: 1; grid-row: 1; }
+  .rd-body { max-height: calc(100vh - 190px); }
+}

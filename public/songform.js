@@ -117,6 +117,67 @@
   }
   const hasKeyChange = (form) => parse(form).some(isKeyChange);
 
+  // ---------- 송폼 순서로 다시 배열한 악보 (23차) ----------
+  // parsed(Chord.parseChordPro 결과) + 송폼 글자 + 시작 키(소리 나는 키) → 새 parsed. 저장된 악보는 건드리지 않는다.
+  //  · 송폼 순서대로 구간을 놓는다. 같은 구간이 다시 나오면, 직전에 나온 같은 이름의 구간과 키가 같을 때만 "위와 같음"(자리표시)로 두고,
+  //    키가 달라졌으면(전조 뒤) 그 키의 코드로 다시 펼친다.
+  //  · 전조 칩 자리에는 전조 표시줄(keychg)을 넣고, 그 뒤 줄들은 ks(누적 반음)를 갖는다 → renderHTML이 코드를 ks만큼 올려 그린다.
+  //  · 송폼에 있는데 악보에 없는 구간은 이름만 놓는다(missing 목록으로도 돌려준다). 악보에 있어도 송폼에 없는 구간은 빠진다(omitted).
+  // 송폼에 구간이 하나도 없거나 Chord.buildSections가 없으면 null.
+  function arrangeByForm(parsed, form, startKey, Chord) {
+    if (!parsed || !Chord || !Chord.buildSections) return null;
+    const toks = parse(form);
+    if (!toks.some((t) => !/^\(/.test(t) && !isKeyChange(t))) return null;
+    const secs = parsed.sections || [];
+    const find = (id) =>
+      secs.findIndex((x) => !x.isRef && x.id === id) >= 0
+        ? secs.findIndex((x) => !x.isRef && x.id === id)
+        : secs.findIndex((x) => !x.isRef && x.id && Sections.kindKey(x.id) === Sections.kindKey(id));
+    const steps = keySteps(form, startKey);
+    let stepAt = 0;
+    let ks = 0;
+    const lines = [];
+    const last = {}; // 구간 이름 → 마지막으로 놓은 때의 ks
+    const used = new Set();
+    const missing = [];
+    for (const tok of toks) {
+      if (/^\(/.test(tok)) continue;
+      if (isKeyChange(tok)) {
+        const st = steps[stepAt++];
+        const kc = keyChange(tok);
+        const d = st && st.delta !== null && st.delta !== undefined ? st.delta : kc && kc.delta ? kc.delta : 0;
+        ks += d;
+        if (lines.length && lines[lines.length - 1].type !== 'blank') lines.push({ type: 'blank' });
+        lines.push({ type: 'keychg', text: st ? keyStepText(st) : '♯ 전조', ks });
+        continue;
+      }
+      const { base, n } = splitRepeat(tok);
+      const id = canonSection(base);
+      if (!id) { missing.push(tok); continue; }
+      const si = find(id);
+      const times = Math.max(1, n);
+      for (let r = 0; r < times; r++) {
+        if (lines.length && lines[lines.length - 1].type !== 'blank') lines.push({ type: 'blank' });
+        if (si < 0) {
+          if (r === 0) { lines.push({ type: 'comment', text: id }); missing.push(tok); }
+          else lines.push({ type: 'ref', id, rest: '', raw: id });
+          continue;
+        }
+        used.add(si);
+        if (id in last && last[id] === ks) {
+          lines.push({ type: 'ref', id, rest: '', raw: id });
+        } else {
+          lines.push({ type: 'comment', text: id });
+          for (const b of Chord.sectionBody(parsed, si)) lines.push(Object.assign({}, b, ks ? { ks } : {}));
+        }
+        last[id] = ks;
+      }
+    }
+    while (lines.length && lines[lines.length - 1].type === 'blank') lines.pop();
+    const omitted = secs.map((x, i) => i).filter((i) => !secs[i].isRef && secs[i].hasLyrics && !used.has(i)).map((i) => secs[i].id || secs[i].label || '');
+    return { meta: parsed.meta, lines, sections: Chord.buildSections(lines), arranged: true, missing, omitted };
+  }
+
   // ---------- 카톡용 콘티 텍스트 ----------
   const fmtDate = (d) => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || '');
@@ -267,5 +328,5 @@
     return { text: blocks.join(mode === 'plain' ? '\n\n\n' : '\n\n'), noText, noForm, missing };
   }
 
-  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, isKeyChange, keyChange, makeKeyChange, keySteps, keyStepText, keyPathText, formDisplay, hasKeyChange, parseKeyName, keyNameOf, KEY_NAMES: KMAJOR, KEY_NAMES_MINOR: KMINOR, fmtDate, kakaoText, leaderList, canonSection, lyricSections, formOrder, songLyrics, lyricsText };
+  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, isKeyChange, keyChange, makeKeyChange, keySteps, keyStepText, keyPathText, formDisplay, hasKeyChange, arrangeByForm, parseKeyName, keyNameOf, KEY_NAMES: KMAJOR, KEY_NAMES_MINOR: KMINOR, fmtDate, kakaoText, leaderList, canonSection, lyricSections, formOrder, songLyrics, lyricsText };
 });
