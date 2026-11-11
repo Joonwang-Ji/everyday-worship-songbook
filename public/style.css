@@ -696,3 +696,8 @@ summary { padding: 6px 0; }
   .edit-wrap.dock-on > .refdock + div { grid-column: 1; grid-row: 1; }
   .rd-body { max-height: calc(100vh - 190px); }
 }
+
+/* 24차: 연주 모드 키 −/+ */
+.play-info .kstep { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.play-info .kstep .pbtn { min-width: 40px; font-size: 20px; line-height: 1; padding-top: 2px; padding-bottom: 2px; }
+.play-info .kstep .keybadge.big { min-width: 34px; text-align: center; }

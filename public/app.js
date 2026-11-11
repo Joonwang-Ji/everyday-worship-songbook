@@ -3151,13 +3151,20 @@
       let shift = startFrom(it.key);
       if (shift === null) shift = Number.isInteger(saved.shift) ? saved.shift : startFrom(song.team_key);
       if (shift === null) shift = 0;
+      // 24차: 연주 모드에서 임시로 바꾼 키(반음). 이 연주 화면 안에서만 유지되고, 나가면 사라진다.
+      const base = shift;
+      const delta = kdGet(it);
+      shift = hasKey ? (((base + delta) % 12) + 12) % 12 : base + delta;
       const capo = Number.isInteger(saved.capo) ? saved.capo : 0;
       let tab = 'none';
       if (hasText && files.length) tab = it.view === 'image' ? 'img' : it.view === 'chord' ? 'chord' : ls.get('ews_tab_' + song.id, '') === 'img' ? 'img' : 'chord';
       else if (hasText) tab = 'chord';
       else if (files.length) tab = 'img';
-      return { song, it, parsed, origKey, hasKey, files, pages, hasText, shift, capo, tab, page: 0 };
+      return { song, it, parsed, origKey, hasKey, files, pages, hasText, shift, base, delta, capo, tab, page: 0 };
     }
+    // 곡 칸마다(같은 곡이 두 번 있어도 따로) 임시 키 변화량을 메모리에만 둔다
+    const kd = new Map();
+    const kdGet = (it) => kd.get(items.indexOf(it)) || 0;
 
     let cur = null;
     let nav = 0;
@@ -3180,9 +3187,18 @@
         keyTxt = hasKey ? p.soundKey : it.key || '';
         if (cur.capo) extra = `카포 ${cur.capo} · ${p.shapeKey} 코드`;
       } else {
-        keyTxt = it.key || origKey || '';
-        if (it.key && origKey && it.key !== origKey) extra = `악보는 원키 ${origKey} 기준`;
+        // 이미지 악보는 코드가 안 바뀐다. 임시로 키를 바꿨으면 키 표시(와 송폼 전조 흐름)만 새 키로 보여 준다.
+        keyTxt = cur.delta && hasKey ? Chord.plan(origKey, cur.shift, 0, P.acc).soundKey : it.key || origKey || '';
+        if ((it.key && origKey && it.key !== origKey) || (cur.delta && hasKey && origKey)) extra = `악보는 원키 ${origKey} 기준`;
       }
+      // 키 −/+ : 코드 악보, 또는 키를 아는 이미지 악보에서만
+      const canKey = (!isImg && hasText) || (isImg && hasKey);
+      const baseKeyTxt = hasKey ? Chord.plan(origKey, cur.base, 0, P.acc).soundKey : '';
+      const kLabel = keyTxt || (cur.shift ? (cur.shift > 0 ? '+' : '') + cur.shift : '원키');
+      const keyHtml = canKey
+        ? `<span class="kstep"><button class="pbtn mini" id="kdn" type="button" aria-label="반음 내리기">−</button><span class="keybadge big">${esc(kLabel)}</span><button class="pbtn mini" id="kup" type="button" aria-label="반음 올리기">+</button></span>`
+          + (cur.delta ? `<button class="pbtn mini" id="kreset" type="button">원래대로${baseKeyTxt ? ' ' + esc(baseKeyTxt) : ''}</button>` : '')
+        : keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '';
       g('ptitle').textContent = (multi ? `${idx + 1}. ` : '') + song.title;
       // 다음 곡 미리보기: 제목 · 키 · 메모 (길면 말줄임). 누르면 다음 곡으로.
       const nx = items[idx + 1];
@@ -3190,7 +3206,7 @@
         ? `<button class="play-next" id="pnext" type="button">다음 ▶ ${idx + 2}. ${esc(nx.title || '')}${nx.key ? ' · <b>' + esc(nx.key) + '</b>' : ''}${nx.memo ? ' · ' + esc(nx.memo) : ''}</button>`
         : '<span class="play-next">마지막 곡</span>';
       g('pinfo').innerHTML = [
-        keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '',
+        keyHtml,
         song.time_sig ? `<span class="pi tsig" title="박자"><b>${esc(SongFilter.tsigText(song.time_sig))}</b></span>` : '',
         it.form ? `<span class="pi"><b>송폼</b> ${formHtml(it.form, keyTxt)}</span>` : '',
         SongForm.keyPathText(it.form, keyTxt) ? `<span class="pi kcpath" title="전조"><b>♯ 키</b> ${esc(SongForm.keyPathText(it.form, keyTxt))}</span>` : '',
@@ -3614,6 +3630,18 @@
     // ----- 위쪽 버튼, 설정·곡 목록 창 -----
     g('pinfo').onclick = (ev) => {
       if (ev.target.closest && ev.target.closest('#pnext')) { if (idx + 1 < items.length) { if (cur && cur.pageCount > 1) { busy || loading || show(idx + 1, 0); } else slide(1); } return; }
+      // 24차: 반음 단위 임시 키 변경 (이 화면 안에서만, 나가면 원래 키로)
+      const kb = ev.target.closest && ev.target.closest('#kdn, #kup, #kreset');
+      if (cur && kb) {
+        const i = items.indexOf(cur.it);
+        const d = kb.id === 'kreset' ? 0 : (kd.get(i) || 0) + (kb.id === 'kup' ? 1 : -1);
+        const nd = cur.hasKey ? ((d % 12) + 12) % 12 : Math.max(-11, Math.min(11, d));
+        if (nd) kd.set(i, nd); else kd.delete(i);
+        cur.delta = nd;
+        cur.shift = cur.hasKey ? (((cur.base + nd) % 12) + 12) % 12 : cur.base + nd;
+        draw(true);
+        return;
+      }
       if (cur && ev.target.closest && ev.target.closest('#pform')) {
         ls.set('ews_fv_' + cur.song.id, formViewOn(cur) ? 'score' : 'form');
         cur.page = 0;
@@ -3644,7 +3672,7 @@
           <div class="srow"><span>구간 이름</span><span class="row">${seg('names', [['full', '풀네임'], ['abbr', '약어']], P.names)}</span></div>
           <div class="srow"><span>코드 표시</span><span class="row">${seg('chords', [['1', '보기'], ['0', '숨기기']], P.chords ? '1' : '0')}</span></div>
           <div class="srow"><span>코드 표기</span><span class="row">${seg('acc', [['auto', '자동'], ['sharp', '♯'], ['flat', '♭']], P.acc)}</span></div>
-          <p class="hint">키 변경은 곡 보기 화면에서 하세요. 콘티에서 정한 키로 열립니다.</p>
+          <p class="hint">키는 위쪽 −/+ 버튼으로 반음씩 바꿀 수 있어요. 연주 모드를 나가면 콘티의 키로 돌아옵니다. (콘티에 저장하려면 콘티에서 키를 고치세요.)</p>
           <button type="button" class="btn primary" data-a="close" style="width:100%">닫기</button>
         </div>`;
       g('psheet').hidden = false;
