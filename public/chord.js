@@ -266,7 +266,7 @@
         const txt = nameOf(ln.id + (ln.rest ? ' ' + ln.rest : ''));
         const chip =
           ln.src >= 0
-            ? '<div class="ref" data-ri="' + i + '" role="button" tabindex="0">↻ ' + esc(txt) + '<small>위와 같음 · 탭하면 펼침</small></div>'
+            ? '<div class="ref" data-ri="' + i + '" role="button" tabindex="0">↻ ' + esc(txt) + '<small>' + (o.hint === false ? '위와 같음' : '위와 같음 · 탭하면 펼침') + '</small></div>'
             : '<div class="ref orphan" data-ri="' + i + '">↻ ' + esc(txt) + '<small>원본 구간이 없어요</small></div>';
         if (o.parts) {
           closePart();

@@ -982,7 +982,7 @@
           if (l.kind === 'eoc') inCh = false;
         });
       }
-      html += `<div class="row" style="margin-top:8px"><button type="button" class="btn small" data-op="addend">＋ 맨 끝에 가사 줄 추가</button></div>`;
+      html += `<div class="row" style="margin-top:8px"><button type="button" class="btn small" data-op="addend">＋ 맨 끝에 가사 줄 추가</button><button type="button" class="btn small" data-op="addsec">＋ 맨 끝에 구간 · 자리표시</button></div>`;
       box.innerHTML = html;
       tePalette();
       // 고른 글자가 아래 고정 팔레트에 가려지지 않게, 가려지면 화면을 살짝 올린다
@@ -1040,6 +1040,7 @@
       if (gut) { lineSheet(+gut.dataset.gut); return; }
       const op = t.closest('[data-op]');
       if (op && op.dataset.op === 'addend') { newLinesSheet(tm.lines.length - 1); return; }
+      if (op && op.dataset.op === 'addsec') { endSheet(); return; }
       const tc = t.closest('.tc');
       if (tc && $('te-lines').contains(tc)) {
         const li = +tc.dataset.li, pos = +tc.dataset.p;
@@ -1142,16 +1143,32 @@
       sh.q('#rw-ok').onclick = () => { const v = inp.value; sh.close(); apply(TabEdit.replaceLine(tm, li, v)); };
     }
 
+    const secChips = () => `<div class="te-pal-row wrap">${TabEdit.SECTION_NAMES.map((n) => `<button type="button" class="chip ctb sm" data-sec="${esc(n)}">${esc(n)}${Sections.display(n, 'full') !== n ? `<small>${esc(Sections.display(n, 'full'))}</small>` : ''}</button>`).join('')}</div>`;
+    // 앞 구간 자리표시 칩: 이미 나온 구간 이름 중에서 고른다
+    const refChips = () => {
+      const used = TabEdit.usedSectionIds(tm);
+      return used.length ? `<p class="mlabel">↻ 앞 구간 자리표시 <small class="muted">(같은 구간을 다시 쓰지 않고 위치만 표시)</small></p><div class="te-pal-row wrap">${used.map((n) => `<button type="button" class="chip ctb sm" data-refsec="${esc(n)}">↻ ${esc(n)}</button>`).join('')}</div>` : '';
+    };
+    // 곡 맨 끝에 구간 이름표나 자리표시 넣기 (마지막 가사 아래에는 빈 줄이 없어서 줄 메뉴로는 못 넣던 자리)
+    function endSheet() {
+      const sh = showSheet(`<h2 style="margin-top:0">맨 끝에 넣기</h2>
+        <p class="hint" style="margin:0 0 4px">구간 이름 <small class="muted">(이어서 가사 줄을 추가하세요)</small></p>${secChips()}${refChips()}
+        <div class="row" style="margin-top:12px"><button type="button" class="btn" data-op="close">닫기</button></div>`);
+      sh.wrap.addEventListener('click', (ev) => {
+        const b = ev.target.closest('button');
+        if (!b) return;
+        const end = tm.lines.length;
+        if (b.dataset.refsec !== undefined) { sh.close(); apply(TabEdit.insertRef(tm, end, b.dataset.refsec)); return; }
+        if (b.dataset.sec !== undefined) { sh.close(); apply(TabEdit.insertSection(tm, end, b.dataset.sec)); toast('구간 이름을 넣었어요. “＋ 맨 끝에 가사 줄 추가”로 이어서 쓰세요.'); return; }
+        if (b.dataset.op === 'close') sh.close();
+      });
+    }
+
     // 줄 메뉴(왼쪽 ⋯)
     function lineSheet(li) {
       const l = tm.lines[li];
       if (!l) return;
-      const secChips = () => `<div class="te-pal-row wrap">${TabEdit.SECTION_NAMES.map((n) => `<button type="button" class="chip ctb sm" data-sec="${esc(n)}">${esc(n)}${Sections.display(n, 'full') !== n ? `<small>${esc(Sections.display(n, 'full'))}</small>` : ''}</button>`).join('')}</div>`;
-      // 앞 구간 자리표시 칩: 이미 나온 구간 이름 중에서 고른다
-      const refChips = () => {
-        const used = TabEdit.usedSectionIds(tm);
-        return used.length ? `<p class="mlabel">↻ 앞 구간 자리표시 <small class="muted">(같은 구간을 다시 쓰지 않고 위치만 표시)</small></p><div class="te-pal-row wrap">${used.map((n) => `<button type="button" class="chip ctb sm" data-refsec="${esc(n)}">↻ ${esc(n)}</button>`).join('')}</div>` : '';
-      };
+      let below = false; // 구간·자리표시를 이 줄 아래에 넣을지(기본: 위)
       // "이 구간을 자리표시로": 같은 이름의 구간이 앞에 있을 때만
       const toRefOk = (() => { const r = TabEdit.sectionToRef(tm, li); return !!(r && (r.model || r.diff)); })();
       const inCh = TabEdit.isInChorus(tm, li);
@@ -1180,7 +1197,10 @@
           ${colTile(T)}
         </div>
         ${toRefOk ? `<div class="mgrid">${T('to-ref', '↻', '이 구간을 자리표시로<small>앞 구간과 같을 때</small>')}</div>` : ''}
-        <details class="mdet"><summary>구간 이름 넣기 (V1 · C · B …)</summary>${secChips()}${refChips()}</details>
+        <details class="mdet"><summary>구간 이름 · 자리표시 넣기 (V1 · C · B …)</summary>
+          <p class="mlabel">넣을 자리</p>
+          <div class="row" style="gap:6px"><button type="button" class="seg on" data-pos="up">이 줄 위</button><button type="button" class="seg" data-pos="dn">이 줄 아래</button></div>
+          ${secChips()}${refChips()}</details>
         <p class="mlabel">정리</p>
         <div class="mgrid">
           ${l.chords.length ? T('clear', '🧹', '코드 모두 지우기') : ''}
@@ -1212,10 +1232,16 @@
       sh.wrap.addEventListener('click', (ev) => {
         const b = ev.target.closest('button');
         if (!b) return;
+        if (b.dataset.pos) {
+          below = b.dataset.pos === 'dn';
+          sh.wrap.querySelectorAll('[data-pos]').forEach((x) => x.classList.toggle('on', x === b));
+          return;
+        }
         const refsec = b.dataset.refsec;
         if (refsec !== undefined) {
           sh.close();
-          apply(TabEdit.insertRef(tm, l.kind === 'blank' ? li + 1 : li, refsec));
+          const at = l.kind === 'blank' ? li + 1 : below ? TabEdit.belowAt(tm, li) : li;
+          apply(TabEdit.insertRef(tm, at, refsec));
           return;
         }
         const sec = b.dataset.sec;
@@ -1224,7 +1250,7 @@
           if (l.kind === 'comment') apply(TabEdit.replaceLine(tm, li, '{comment: ' + sec + '}'));
           else if (l.kind === 'ref') apply(TabEdit.replaceLine(tm, li, '{ref: ' + sec + '}'));
           else {
-            const at = l.kind === 'blank' ? li + 1 : li;
+            const at = l.kind === 'blank' ? li + 1 : below ? TabEdit.belowAt(tm, li) : li;
             const r = TabEdit.insertSection(tm, at, sec);
             apply(r);
           }
@@ -2844,7 +2870,7 @@
       return Math.floor((el.getBoundingClientRect().left - sc.getBoundingClientRect().left + 2) / (+sc.dataset.step || 1));
     }
     function drawChord(body, varEl, st, wantPage) {
-      const base = { originalKey: st.origKey, shift: st.shift, capo: st.capo, acc: P.acc, showChords: P.chords, parts: true, names: P.names };
+      const base = { originalKey: st.origKey, shift: st.shift, capo: st.capo, acc: P.acc, showChords: P.chords, parts: true, names: P.names, hint: false };
       const refLines = st.parsed.lines.map((l, i) => (l.type === 'ref' && l.src >= 0 ? i : -1)).filter((i) => i >= 0);
       const open = new Set();
       let info = null;

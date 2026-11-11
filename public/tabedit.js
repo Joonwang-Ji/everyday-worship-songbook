@@ -383,10 +383,18 @@
   function insertRef(model, li, id) {
     const m = clone(model);
     const prev = m.lines[li - 1];
+    const next = m.lines[li];
     const needGap = li > 0 && prev && prev.kind !== 'blank';
-    const raws = (needGap ? [''] : []).concat(['{ref: ' + id + '}']);
+    const gapAfter = !!next && next.kind !== 'blank'; // 아래에도 빈 줄: 다음 구간과 붙어 보이지 않게
+    const raws = (needGap ? [''] : []).concat(['{ref: ' + id + '}'], gapAfter ? [''] : []);
     m.lines.splice(li, 0, ...raws.map(parseLine));
-    return { model: m, at: li + raws.length - 1 };
+    return { model: m, at: li + (needGap ? 1 : 0) };
+  }
+  // 줄 li "아래"에 넣을 자리(줄 번호). 바로 아래가 {eoc}면 그 뒤로 넘긴다. 곡 끝이면 줄 수.
+  function belowAt(model, li) {
+    let at = li + 1;
+    if (model.lines[at] && model.lines[at].kind === 'eoc') at++;
+    return Math.min(at, model.lines.length);
   }
   // 지금 악보에 나온 구간 이름들(자리표시 칩 후보). 가사가 있는 구간만, 처음 나온 순서.
   function usedSectionIds(model) {
@@ -733,7 +741,7 @@
     parse, serialize, parseLyric, lyricRaw,
     addChord, appendChord, replaceChord, deleteChord, moveChord, reshape,
     insertLines, replaceLine, deleteLine, clearChords, setLyricText, instrumentalRaw,
-    insertSection, chorusAround, blockRange, toggleChorus, isInChorus,
+    insertSection, belowAt, chorusAround, blockRange, toggleChorus, isInChorus,
     listSections, sectionAt, sectionRaws, refSource, sectionToRef, refToSection, repeatCandidates, collapseRepeats, insertRef, usedSectionIds, refProblems,
     colBreakAt, setColBreak, clearColBreaks,
     lyricKey, findSameLyric, copyLineChords, bodyBlocks, copyBlock,
