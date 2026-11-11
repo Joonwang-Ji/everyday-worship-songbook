@@ -727,7 +727,7 @@
     // 팀장: 지금 보고 있는 키를 "우리 팀 기본 키"로 저장 (콘티에 곡을 넣을 때 기본값, 팀원이 처음 열 때 시작 키)
     const $tk = document.getElementById('teamkey');
     if ($tk) $tk.onclick = async () => {
-      const k = Chord.transposeKey(origKey, st.shift);
+      const k = Chord.transposeKey(origKey, st.shift, prefs.acc);
       $tk.disabled = true;
       try {
         await api('/team/keys/' + id, { method: 'PUT', body: { key: k } });
@@ -1291,7 +1291,10 @@
           } else if (l.kind === 'ref') {
             const rc = Sections.canon(l.id);
             const ok = !!rc && !!TabEdit.refSource(tm, li);
-            body = `<div class="te-ref${ok ? '' : ' orphan'}">↻ ${esc(rc ? Sections.display(rc.id, 'full') : l.id || '(이름 없음)')}${l.rest ? ' ' + esc(l.rest) : ''}<small>${ok ? '위와 같음 · ⋯에서 펼쳐서 따로 쓸 수 있어요' : rc ? '같은 이름의 구간이 없어요' : '이름을 알아볼 수 없어요'}</small></div>`;
+            // 27차: 이름 옆에 ↻만. 문제가 있을 때만 이유를 붙인다(위와 같음 안내 줄은 없앴다)
+            body = `<div class="te-ref${ok ? '' : ' orphan'}">${esc(rc ? Sections.display(rc.id, 'full') : l.id || '(이름 없음)')}${l.rest ? ' ' + esc(l.rest) : ''} ↻${ok ? '' : `<small>${rc ? '같은 이름의 구간이 없어요' : '이름을 알아볼 수 없어요'}</small>`}</div>`;
+          } else if (l.kind === 'memo') {
+            body = `<div class="te-memo${/^\s*(전조|key\b)/i.test(l.label) ? ' kc' : ''}">${esc(l.label)}</div>`;
           } else if (l.kind === 'soc' || l.kind === 'eoc') {
             body = `<div class="te-soc">${l.kind === 'soc' ? '후렴 시작' : '후렴 끝'}</div>`;
           } else if (l.kind === 'colb') {
@@ -1474,6 +1477,57 @@
       sh.q('#rw-ok').onclick = () => { const v = inp.value; sh.close(); apply(TabEdit.replaceLine(tm, li, v)); };
     }
 
+    // 메모 넣기·고치기 창 (27차): 구간을 나누지 않는 작은 표시 줄 {ci: …}. 칩을 누르면 입력칸에 들어가고, 직접 고쳐 쓸 수도 있다.
+    //  opt: {li, edit:true}=그 줄 고치기 | {li, pos:'up'|'dn'}=li 줄 위/아래에 넣기(창에서 바꿀 수 있음) | {pos:'at', at}=줄 번호 at 자리에 넣기
+    const MEMO_CHIPS = ['1번 괄호', '2번 괄호', 'D.S.', 'D.C.', 'Fine', '코다', '2nd time'];
+    function memoSheet(opt) {
+      const edit = !!opt.edit;
+      const cur = edit ? tm.lines[opt.li] : null;
+      if (edit && (!cur || cur.kind !== 'memo')) return;
+      const pk = Chord.parseKey(keyNow().key);
+      const keyNames = pk && pk.minor ? Chord.MINOR_NAMES.map((n) => n + 'm') : Chord.MAJOR_NAMES;
+      let pos = opt.pos === 'dn' ? 'dn' : 'up';
+      const sh = showSheet(`<h2 style="margin-top:0">${edit ? '메모 고치기' : '메모 넣기'}</h2>
+        <p class="hint" style="margin:0 0 8px">구간을 나누지 않는 작은 표시예요. 후렴 한가운데에 넣어도 후렴이 쪼개지지 않아요.</p>
+        <input id="mm-in" class="memo-in" type="text" maxlength="40" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="예: 전조 Ab · 2nd time" value="${esc(edit ? cur.label : '')}">
+        <div class="te-pal-row wrap memo-chips" style="margin-top:8px"><button type="button" class="chip ctb sm" data-mk="key">♯ 전조 ▾</button>${MEMO_CHIPS.map((t) => `<button type="button" class="chip ctb sm" data-mc="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+        <div class="memo-keys" id="mm-keys" hidden>${keyNames.map((k) => `<button type="button" class="chip ctb sm" data-mkey="${esc(k)}">${esc(k)}</button>`).join('')}</div>
+        ${!edit && opt.pos !== 'at' ? `<p class="mlabel">넣을 자리</p><div class="row" style="gap:6px"><button type="button" class="seg${pos === 'up' ? ' on' : ''}" data-pos="up">이 줄 위</button><button type="button" class="seg${pos === 'dn' ? ' on' : ''}" data-pos="dn">이 줄 아래</button></div>` : ''}
+        <div class="row" style="margin-top:12px"><button type="button" class="btn primary" id="mm-ok">${edit ? '저장' : '넣기'}</button><button type="button" class="btn" id="mm-no">닫기</button></div>`);
+      const inp = sh.q('#mm-in');
+      const keys = sh.q('#mm-keys');
+      const paint = () => {
+        const v = inp.value.trim();
+        sh.wrap.querySelectorAll('[data-mc]').forEach((x) => x.classList.toggle('on', x.dataset.mc === v));
+        sh.wrap.querySelectorAll('[data-mkey]').forEach((x) => x.classList.toggle('on', v === '전조 ' + x.dataset.mkey));
+        const kb = sh.wrap.querySelector('[data-mk]');
+        if (kb) kb.classList.toggle('on', /^전조\b/.test(v));
+      };
+      inp.addEventListener('input', paint);
+      paint();
+      sh.q('#mm-no').onclick = () => sh.close();
+      const save = () => {
+        const text = TabEdit.memoClean(inp.value);
+        if (!text) { toast('메모 글자를 적거나 칩을 눌러 주세요.'); return; }
+        const r = edit ? TabEdit.setMemo(tm, opt.li, text) : TabEdit.insertMemo(tm, opt.pos === 'at' ? opt.at : pos === 'up' ? opt.li : opt.li + 1, text);
+        if (!r) { toast('메모를 넣지 못했어요.'); return; }
+        sh.close();
+        apply(r);
+        toast(edit ? '메모를 고쳤어요.' : '메모를 넣었어요. 구간은 나뉘지 않아요. (↶로 되돌리기)');
+      };
+      sh.q('#mm-ok').onclick = save;
+      inp.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } });
+      sh.wrap.addEventListener('click', (ev) => {
+        const b = ev.target.closest('button');
+        if (!b) return;
+        if (b.dataset.pos) { pos = b.dataset.pos; sh.wrap.querySelectorAll('[data-pos]').forEach((x) => x.classList.toggle('on', x === b)); return; }
+        if (b.dataset.mk) { keys.hidden = !keys.hidden; return; }
+        if (b.dataset.mkey) { inp.value = '전조 ' + b.dataset.mkey; paint(); return; }
+        if (b.dataset.mc) { inp.value = b.dataset.mc; keys.hidden = true; paint(); }
+      });
+      setTimeout(() => { try { if (edit) inp.select(); else inp.focus(); } catch {} }, 60);
+    }
+
     const secChips = () => `<div class="te-pal-row wrap">${TabEdit.SECTION_NAMES.map((n) => `<button type="button" class="chip ctb sm" data-sec="${esc(n)}">${esc(n)}${Sections.display(n, 'full') !== n ? `<small>${esc(Sections.display(n, 'full'))}</small>` : ''}</button>`).join('')}</div>`;
     // 앞 구간 자리표시 칩: 이미 나온 구간 이름 중에서 고른다
     const refChips = () => {
@@ -1537,6 +1591,7 @@
           ${T('gap', '＋', '위에 빈 줄')}
           ${T('instr-up', '🎸', '위에 코드 줄<small>간주·인트로</small>')}
           ${T('instr-dn', '🎸', '아래에 코드 줄<small>간주·인트로</small>')}
+          ${T('memo', '📝', '메모 넣기<small>전조 · 2nd time …</small>')}
           ${colTile(T)}
         </div>
         ${toRefOk ? `<div class="mgrid">${T('to-ref', '↻', '이 구간을 자리표시로<small>앞 구간과 같을 때</small>')}</div>` : ''}
@@ -1553,7 +1608,7 @@
       } else if (l.kind === 'comment') {
         h += `<p class="hint" style="margin:0 0 4px">이름 바꾸기</p>${secChips()}
           ${toRefOk ? `<div class="mgrid" style="margin-top:6px">${(() => { const T = (op, ic, txt) => `<button type="button" class="btn mtile" data-op="${op}"><span class="mi">${ic}</span><span>${txt}</span></button>`; return T('to-ref', '↻', '이 구간을 자리표시로<small>앞 구간과 같을 때</small>'); })()}</div>` : ''}
-          <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn" data-op="${colAt >= 0 ? 'colb-off' : 'colb'}">${colAt >= 0 ? '↤ 단 나누기 지우기' : '↦ 이 구간부터 다음 단'}</button><button type="button" class="btn danger" data-op="del">이 이름표만 삭제</button></div>
+          <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button>${Sections.canon(l.label) ? '' : '<button type="button" class="btn" data-op="memo-from">📝 메모로 바꾸기 <small class="muted">구간 이름이 아니에요</small></button>'}<button type="button" class="btn" data-op="memo">📝 아래에 메모 넣기</button><button type="button" class="btn" data-op="${colAt >= 0 ? 'colb-off' : 'colb'}">${colAt >= 0 ? '↤ 단 나누기 지우기' : '↦ 이 구간부터 다음 단'}</button><button type="button" class="btn danger" data-op="del">이 이름표만 삭제</button></div>
           ${editTools((op, ic, txt, cls) => `<button type="button" class="btn mtile ${cls || ''}" data-op="${op}"><span class="mi">${ic}</span><span>${txt}</span></button>`, false)}`;
       } else if (l.kind === 'colb') {
         h += `<p class="hint">2단 보기에서 이 줄 아래부터 오른쪽 단에 나와요. 1단으로 볼 때는 보이지 않아요.</p>
@@ -1563,11 +1618,14 @@
       } else if (l.kind === 'ref') {
         const hasSrc = !!TabEdit.refSource(tm, li);
         h += `<p class="hint" style="margin:0 0 6px">앞에 나온 <b>${esc(l.id)}</b> 구간을 여기서 다시 보여 주는 자리표시예요. 원본을 고치면 여기도 함께 바뀌어요.</p>
-          <div class="menu-col">${hasSrc ? '<button type="button" class="btn" data-op="ref-expand">✂ 펼쳐서 따로 쓰기 (원본과 따로 고치기)</button>' : ''}<button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">자리표시 삭제</button></div>
+          <div class="menu-col">${hasSrc ? '<button type="button" class="btn" data-op="ref-expand">✂ 펼쳐서 따로 쓰기 (원본과 따로 고치기)</button>' : ''}<button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn" data-op="memo">📝 아래에 메모 넣기</button><button type="button" class="btn danger" data-op="del">자리표시 삭제</button></div>
           <p class="hint" style="margin:8px 0 4px">다른 구간 이름으로 바꾸기</p>${secChips()}`;
       } else if (l.kind === 'blank') {
         h += `<p class="hint" style="margin:0 0 4px">여기 아래에 구간 이름 넣기</p>${secChips()}${refChips()}
-          <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 빈 줄 삭제</button>${clip && clip.raws && clip.raws.length ? `<button type="button" class="btn" data-op="paste-dn">📋 아래에 붙여넣기 (${clip.raws.length}줄)</button>` : ''}</div>`;
+          <div class="menu-col" style="margin-top:8px"><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn" data-op="memo">📝 아래에 메모 넣기</button><button type="button" class="btn danger" data-op="del">이 빈 줄 삭제</button>${clip && clip.raws && clip.raws.length ? `<button type="button" class="btn" data-op="paste-dn">📋 아래에 붙여넣기 (${clip.raws.length}줄)</button>` : ''}</div>`;
+      } else if (l.kind === 'memo') {
+        h += `<p class="hint" style="margin:0 0 6px">구간을 나누지 않는 메모예요. 구간을 복사하거나 반복 정리할 때 이 구간의 일부로 따라다녀요.</p>
+          <div class="menu-col"><button type="button" class="btn" data-op="memo-edit">✏️ 메모 고치기</button><button type="button" class="btn" data-op="mv-up" ${li > 0 ? '' : 'disabled'}>↑ 한 줄 위로</button><button type="button" class="btn" data-op="mv-dn" ${li < tm.lines.length - 1 ? '' : 'disabled'}>↓ 한 줄 아래로</button><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">메모 삭제</button></div>`;
       } else {
         h += `<p class="hint">앱이 모르는 모양의 줄이라 그대로 두었어요. 글자를 직접 고칠 수 있어요.</p>
           <div class="menu-col"><button type="button" class="btn" data-op="raw">줄 글자 직접 고치기</button><button type="button" class="btn" data-op="add">＋ 아래에 가사 줄 추가</button><button type="button" class="btn danger" data-op="del">이 줄 삭제</button></div>`;
@@ -1614,6 +1672,10 @@
         } else if (op === 'copy-block') blockCopySheet(li);
         else if (op === 'del') apply(TabEdit.deleteLine(tm, li));
         else if (op === 'to-ref') toRefSheet(li);
+        else if (op === 'memo') memoSheet(l.kind === 'lyric' ? { li, pos: 'up' } : { li, pos: 'at', at: li + 1 });
+        else if (op === 'memo-edit') memoSheet({ li, edit: true });
+        else if (op === 'memo-from') { const r = TabEdit.commentToMemo(tm, li); if (r) { apply(r); toast('메모로 바꿨어요. 이제 구간을 나누지 않아요. (↶로 되돌리기)'); } }
+        else if (op === 'mv-up' || op === 'mv-dn') { const r = TabEdit.moveLine(tm, li, op === 'mv-up' ? -1 : 1); if (r) apply(r); }
         else if (op === 'ref-expand') { const r = TabEdit.refToSection(tm, li); if (r) { apply(r); toast('펼쳐서 따로 쓸 수 있게 했어요. 이제 이 구간은 원본과 따로 고쳐져요.'); } }
         else if (op === 'clear') apply(TabEdit.clearChords(tm, li));
         else if (op === 'join') { const r = TabEdit.joinWithPrev(tm, li); if (r) apply(r, { li: r.at, pos: r.join, ci: -1 }); }
@@ -1905,9 +1967,9 @@
     async function copyImage(url) {
       try {
         await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngOf(url) })]);
-        toast('이미지를 복사했어요. Claude 앱 입력칸에 붙여넣으세요.');
+        return true;
       } catch {
-        toast('이미지를 복사하지 못했어요. "공유"를 쓰거나 악보를 길게 눌러 복사해 주세요.');
+        return false;
       }
     }
     async function shareFile(f, n) {
@@ -1921,6 +1983,8 @@
         toast('공유하지 못했어요. "복사"를 써 보세요.');
       }
     }
+    // 변환 창에서 끝낸 단계(① 가사 뽑기 ② 다듬기 ③ 코드 입히기 ④ 넣기). 곡 편집 화면을 닫기 전까지 창을 다시 열어도 ✓가 남는다. (27차)
+    const convDone = { 1: false, 2: false, 3: false, 4: false };
     function convSheet() {
       const files = dockFiles();
       let ni = 0;
@@ -1931,26 +1995,79 @@
           return `<div class="cv-file"><span>${f.kind === 'image' ? '악보 이미지' : 'PDF'} ${n}</span>${f.kind === 'image' ? `<button type="button" class="btn small" data-cp="${k}">복사</button>` : ''}<button type="button" class="btn small" data-sh="${k}" data-n="${n}">공유</button></div>`;
         })
         .join('');
+      const NO = ['①', '②', '③', '④'];
+      const head = (n) => `<button type="button" class="cv-no" data-no="${n}" aria-pressed="${convDone[n]}" aria-label="${NO[n - 1]}단계 끝냄 표시">${convDone[n] ? '✓' : NO[n - 1]}</button>`;
+      const cls = (n) => `cv-step${convDone[n] ? ' done' : ''}`;
+      const again = (n) => (convDone[n] ? '✓ 복사함 · 다시 복사' : '프롬프트 복사');
       const sh = showSheet(`<h2 style="margin-top:0">Claude로 악보 변환</h2>
-        <p class="hint" style="margin:0 0 8px">가사를 먼저 뽑아 다듬은 뒤, 코드를 얹어요. 변환은 Claude 앱에서 하고 결과만 여기로 붙여넣어요. 추가 비용이 없어요.</p>
-        <ol class="cv-steps">
-          <li><b>① 가사 뽑기</b> <button type="button" class="btn small primary" id="cv-copy1">프롬프트 복사</button><div class="muted small">Claude 앱 새 대화에 붙여넣고, 아래 악보도 함께 보내요.</div>${rows ? `<div class="cv-files">${rows}</div>` : '<div class="muted small">"이미지·PDF 악보"에 악보를 올리면 여기서 복사·공유할 수 있어요. (사진 앱의 사진을 바로 Claude에 붙여도 돼요)</div>'}<div class="muted small">이미지는 복사 후 Claude 입력칸에 붙여넣거나 공유로 보내세요.</div></li>
-          <li><b>② 가사 다듬기</b><div class="muted small">Claude가 준 가사에서 줄바꿈·오타를 고쳐요. 구간 줄 <code>{comment: V1}</code>은 그대로 두세요.</div></li>
-          <li><b>③ 코드 입히기</b> <button type="button" class="btn small primary" id="cv-copy2">프롬프트 복사</button><div class="muted small">같은 대화에 붙여넣고, 그 바로 아래에 다듬은 가사를 붙여넣어 보내요.</div></li>
-          <li><b>④ 결과 넣기</b> Claude의 답을 복사한 뒤 <button type="button" class="btn small primary" id="cv-paste">📥 붙여넣어 넣기</button></li>
-        </ol>
+        <p class="hint" style="margin:0 0 8px">가사를 먼저 뽑아 다듬은 뒤, 코드를 얹어요. 변환은 Claude 앱에서 하고 결과만 여기로 붙여넣어요. 추가 비용이 없어요. <span class="muted">(번호를 누르면 끝낸 단계로 표시돼요)</span></p>
+        <div class="cv-status small" id="cv-status" role="status" aria-live="polite" hidden></div>
+        <div class="cv-steps2">
+          <div class="${cls(1)}" data-step="1">${head(1)}<div class="grow"><b>가사 뽑기</b> <button type="button" class="btn small primary${convDone[1] ? ' copied' : ''}" id="cv-copy1">${again(1)}</button><div class="muted small">Claude 앱 새 대화에 붙여넣고, 아래 악보도 함께 보내요.</div><div class="cv-fb" id="cv-fb1" hidden></div>${rows ? `<div class="cv-files">${rows}</div>` : '<div class="muted small">"이미지·PDF 악보"에 악보를 올리면 여기서 복사·공유할 수 있어요. (사진 앱의 사진을 바로 Claude에 붙여도 돼요)</div>'}<div class="muted small">이미지는 복사 후 Claude 입력칸에 붙여넣거나 공유로 보내세요.</div></div></div>
+          <div class="${cls(2)}" data-step="2">${head(2)}<div class="grow"><b>가사 다듬기</b><div class="muted small">Claude가 준 가사에서 줄바꿈·오타를 고쳐요. 구간 줄 <code>{comment: V1}</code>과 표시 줄 <code>{ci: …}</code>은 그대로 두세요.</div></div></div>
+          <div class="${cls(3)}" data-step="3">${head(3)}<div class="grow"><b>코드 입히기</b> <button type="button" class="btn small primary${convDone[3] ? ' copied' : ''}" id="cv-copy2">${again(3)}</button><div class="muted small">같은 대화에 붙여넣고, 그 바로 아래에 다듬은 가사를 붙여넣어 보내요.</div><div class="cv-fb" id="cv-fb3" hidden></div></div></div>
+          <div class="${cls(4)}" data-step="4">${head(4)}<div class="grow"><b>결과 넣기</b> Claude의 답을 복사한 뒤 <button type="button" class="btn small primary" id="cv-paste">📥 붙여넣어 넣기</button></div></div>
+        </div>
         <details class="cv-man"><summary class="small">더 편하게: 프롬프트를 저장해 두기</summary>
           <p class="hint" style="margin:6px 0">Claude 프로젝트의 "지침"에 두 프롬프트를 이름 붙여 저장해 두고, 대화에서 "① 가사 뽑기" / "③ 코드 입히기"라고만 말해도 돼요. 가사만 필요하면 ①의 결과를 그대로 넣고 끝내도 됩니다.</p></details>
         <div class="row" style="margin-top:10px"><button type="button" class="btn" id="cv-no">닫기</button></div>`);
+      const status = sh.q('#cv-status');
+      const say = (msg, bad) => { status.textContent = msg; status.hidden = false; status.classList.toggle('error', !!bad); };
+      const mark = (n, on) => {
+        convDone[n] = on;
+        const st = sh.q(`.cv-step[data-step="${n}"]`);
+        st.classList.toggle('done', on);
+        const no = st.querySelector('.cv-no');
+        no.textContent = on ? '✓' : NO[n - 1];
+        no.setAttribute('aria-pressed', String(on));
+      };
+      // 버튼 글자를 잠깐 바꿔 눌렸는지 알려 준다
+      const flash = (b, text, ok, back) => {
+        b.textContent = text;
+        b.classList.toggle('copied', !!ok);
+        clearTimeout(b._t);
+        b._t = setTimeout(() => { if (!b.isConnected) return; b.classList.toggle('copied', !!back.ok); b.textContent = back.text; }, 2200);
+      };
+      // 복사가 막힌 기기를 위해, 프롬프트를 직접 선택해 복사할 수 있는 칸을 보여 준다
+      const fallback = (id, text) => {
+        const box = sh.q('#' + id);
+        box.hidden = false;
+        box.innerHTML = '<div class="small error" style="margin:4px 0">복사가 막혔어요. 아래 글자를 길게 눌러 전체 선택 → 복사해 주세요.</div><textarea readonly rows="4" spellcheck="false"></textarea>';
+        const ta2 = box.querySelector('textarea');
+        ta2.value = text;
+        ta2.onfocus = () => { try { ta2.select(); } catch {} };
+        try { ta2.focus(); ta2.select(); } catch {}
+      };
+      const bindPrompt = (btnId, text, n, fbId, label) => {
+        const b = sh.q('#' + btnId);
+        b.onclick = async () => {
+          const ok = await copyText(text, { quiet: true });
+          if (ok) {
+            mark(n, true);
+            sh.q('#' + fbId).hidden = true;
+            flash(b, '✓ 복사됨', true, { ok: true, text: '✓ 복사함 · 다시 복사' });
+            say(`${NO[n - 1]} ${label} 프롬프트를 복사했어요. Claude 앱 입력칸에 붙여넣으세요.`);
+          } else {
+            flash(b, '복사 안 됨', false, { ok: convDone[n], text: again(n) });
+            fallback(fbId, text);
+            say(`${NO[n - 1]} 복사하지 못했어요. 아래 칸에서 직접 복사해 주세요.`, true);
+          }
+        };
+      };
+      bindPrompt('cv-copy1', ImgConv.LYRICS_PROMPT, 1, 'cv-fb1', '가사 뽑기');
+      bindPrompt('cv-copy2', ImgConv.CHORD_PROMPT, 3, 'cv-fb3', '코드 입히기');
       sh.q('#cv-no').onclick = () => sh.close();
-      sh.q('#cv-copy1').onclick = () => copyText(ImgConv.LYRICS_PROMPT);
-      sh.q('#cv-copy2').onclick = () => copyText(ImgConv.CHORD_PROMPT);
-      sh.q('#cv-paste').onclick = () => clipPaste(() => sh.close());
-      sh.wrap.addEventListener('click', (ev) => {
+      sh.q('#cv-paste').onclick = () => clipPaste(() => { convDone[4] = true; sh.close(); });
+      sh.wrap.addEventListener('click', async (ev) => {
+        const no = ev.target.closest('button.cv-no');
+        if (no) { const n = +no.dataset.no; mark(n, !convDone[n]); return; }
         const b = ev.target.closest('button[data-cp],button[data-sh]');
         if (!b) return;
-        if (b.dataset.cp !== undefined) copyImage(files[+b.dataset.cp].url);
-        else shareFile(files[+b.dataset.sh], b.dataset.n);
+        if (b.dataset.cp !== undefined) {
+          const ok = await copyImage(files[+b.dataset.cp].url);
+          flash(b, ok ? '✓ 복사됨' : '복사 안 됨', ok, { ok: false, text: '복사' });
+          say(ok ? '악보 이미지를 복사했어요. Claude 앱 입력칸에 붙여넣으세요.' : '이미지를 복사하지 못했어요. "공유"를 쓰거나 악보를 길게 눌러 복사해 주세요.', !ok);
+        } else shareFile(files[+b.dataset.sh], b.dataset.n);
       });
     }
     // 본문 도구: 통째 복사·붙여넣기·지우기
@@ -1960,6 +2077,7 @@
           <button type="button" class="btn" data-t="copy">📄 본문 전체 복사</button>
           <button type="button" class="btn" data-t="paste">📥 클립보드에서 붙여넣기</button>
           <button type="button" class="btn" data-t="rep">↻ 반복 구간 정리</button>
+          ${TabEdit.memoCandidates(tm).length ? `<button type="button" class="btn" data-t="memos">📝 전조·괄호 표시를 메모로 바꾸기 <small class="muted">${TabEdit.memoCandidates(tm).length}곳</small></button>` : ''}
           <button type="button" class="btn" data-t="chords">🧹 코드만 모두 지우기 <small class="muted">가사는 그대로</small></button>
           <button type="button" class="btn danger" data-t="all">🗑 본문 전체 지우기</button>
           <button type="button" class="btn" data-t="close">닫기</button>
@@ -1972,6 +2090,12 @@
         if (t === 'copy') { if (!ta.value.trim()) toast('복사할 본문이 없어요.'); else copyText(ta.value); }
         else if (t === 'paste') clipPaste();
         else if (t === 'rep') repeatSheet();
+        else if (t === 'memos') {
+          const r = TabEdit.memoizeAll(tm);
+          if (!r.n) { toast('메모로 바꿀 표시 줄이 없어요.'); return; }
+          apply(r);
+          toast(`${r.n}곳을 메모로 바꿨어요. 이제 구간을 나누지 않아요. (↶로 되돌리기)`);
+        }
         else if (t === 'chords') {
           const r = TabEdit.clearAllChords(tm);
           if (!r.n) { toast('지울 코드가 없어요.'); return; }
@@ -2356,12 +2480,15 @@
   // 2차: 팀 · 콘티 · 관리자
   // =====================================================================
   const el = (id) => document.getElementById(id);
-  async function copyText(text) {
+  // 복사에 성공하면 true. opt.quiet이면 알림을 띄우지 않는다(버튼 글자로 직접 알려 주는 화면용, 27차)
+  async function copyText(text, opt) {
     try {
       await navigator.clipboard.writeText(text);
-      toast('복사했습니다.');
+      if (!(opt && opt.quiet)) toast('복사했습니다.');
+      return true;
     } catch {
-      toast('복사하지 못했습니다. 직접 선택해서 복사해 주세요.');
+      if (!(opt && opt.quiet)) toast('복사하지 못했습니다. 직접 선택해서 복사해 주세요.');
+      return false;
     }
   }
   const fmtDate = (d) => {

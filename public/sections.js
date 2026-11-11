@@ -82,6 +82,13 @@
     return m[1] === 'Outro' ? 'End' : m[1];
   }
 
+  // 구간 이름이 아니라 악보 표시(전조·괄호·D.S. 등)로 보이는 글자 (27차). {comment: 전조 Ab}처럼 예전에 구간 이름표로 넣은 표시 줄을 메모({ci:})로 옮길 때 쓴다.
+  const MEMO_HINT = /^(전조|key\s*[+\-:]|\d+\s*번|\d+\s*(?:st|nd|rd|th)\b|\d+\s*회|d\.?\s*s\.?(?:\s|$|[.(])|d\.?\s*c\.?(?:\s|$|[.(])|dal\s+segno|da\s+capo|fine\b|coda\b|to\s+coda|코다|반복|repeat|rit\b|리타|\u00d7\s*\d|x\s*\d)/i;
+  const isMemoLike = (text) => {
+    const t = String(text == null ? '' : text).trim();
+    return !!t && !canon(t) && MEMO_HINT.test(t);
+  };
+
   // 누르는 버튼 목록. code = 저장 글자, hint = 작은 풀네임(약어와 같으면 비움)
   const PICKS = ['Intro', 'V1', 'V2', 'V3', 'V4', 'V5', 'PC', 'C', 'B', 'Inter', 'Tag', 'Outro', 'End'];
   const PALETTE = PICKS.map((code) => ({ code, hint: display(code, 'full') === code ? '' : display(code, 'full') }));
@@ -131,5 +138,5 @@
     return { form: out, changed: out !== src, unknown };
   }
 
-  return { FULL, PICKS, PALETTE, canon, display, label, normalize, kindKey, makeId, migrateChordPro, migrateForm, KEYCHG_SRC, FORM_TOKEN, isKeyChange };
+  return { FULL, PICKS, PALETTE, isMemoLike, canon, display, label, normalize, kindKey, makeId, migrateChordPro, migrateForm, KEYCHG_SRC, FORM_TOKEN, isKeyChange };
 });

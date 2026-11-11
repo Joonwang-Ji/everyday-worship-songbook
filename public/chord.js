@@ -55,11 +55,22 @@
     return out;
   }
 
-  function transposeKey(keyStr, semis) {
+  // acc(27차): 'sharp'/'flat'이면 검은 건반 키 이름을 모두 그 표기로, 'auto'(기본)이면 흔히 쓰는 이름(Db·Eb·F#·Ab·Bb …)을 쓰되
+  // 두 가지가 비슷하게 쓰이는 F#/Gb(장조)·D#m/Ebm(단조)만 시작 키의 표기(샵 계열/플랫 계열)를 따른다.
+  function transposeKey(keyStr, semis, acc) {
     const k = parseKey(keyStr);
     if (!k) return keyStr;
-    const names = k.minor ? MINOR_NAMES : MAJOR_NAMES;
-    return names[mod12(k.idx + semis)] + (k.minor ? 'm' : '');
+    const idx = mod12(k.idx + semis);
+    let names = k.minor ? MINOR_NAMES : MAJOR_NAMES;
+    if (acc === 'sharp') names = SHARP;
+    else if (acc === 'flat') names = FLAT;
+    else {
+      const fam = keyUsesFlats(keyStr);
+      names = names.slice();
+      if (!k.minor && idx === 6) names[6] = fam ? 'Gb' : 'F#';
+      if (k.minor && idx === 3) names[3] = fam ? 'Eb' : 'D#';
+    }
+    return names[idx] + (k.minor ? 'm' : '');
   }
 
   // ---------- ChordPro 파싱 ----------
@@ -78,7 +89,9 @@
         else if (name === 'key') meta.key = val;
         else if (name === 'tempo') meta.tempo = val;
         else if (name === 'capo') meta.capo = val;
-        else if (['comment', 'c', 'comment_italic', 'ci'].includes(name)) lines.push({ type: 'comment', text: val });
+        else if (['comment', 'c'].includes(name)) lines.push({ type: 'comment', text: val });
+        // 메모 줄 (27차): {ci: 문구}는 구간을 나누지 않는 작은 표시(전조 Ab · 2nd time · D.S. …). 후렴 한가운데 있어도 후렴이 쪼개지지 않는다.
+        else if (['comment_italic', 'ci'].includes(name)) { if (val) lines.push({ type: 'memo', text: val, chorus: section === 'chorus' }); }
         else if (['column_break', 'colb'].includes(name)) lines.push({ type: 'colbreak' });
         // 구간 자리표시 (18차): {ref: C} = 앞에 나온 C 구간을 여기서 다시. 표준 ChordPro의 {chorus}도 {ref: C}로 읽는다.
         else if (name === 'ref' || name === 'chorus') {
@@ -195,8 +208,8 @@
   // shift: 원래 키에서 올린 반음 수, capo: 카포 프렛, acc: 'auto' | 'sharp' | 'flat'
   function plan(originalKey, shift, capo, acc) {
     const hasKey = !!parseKey(originalKey);
-    const soundKey = hasKey ? transposeKey(originalKey, shift) : '';
-    const shapeKey = hasKey ? transposeKey(originalKey, shift - capo) : '';
+    const soundKey = hasKey ? transposeKey(originalKey, shift, acc) : '';
+    const shapeKey = hasKey ? transposeKey(originalKey, shift - capo, acc) : '';
     const pick = (keyName) => (acc === 'sharp' ? false : acc === 'flat' ? true : keyUsesFlats(keyName));
     return {
       soundKey,
@@ -270,10 +283,11 @@
       } else if (ln.type === 'ref') {
         closeChorus();
         const txt = nameOf(ln.id + (ln.rest ? ' ' + ln.rest : ''));
+        // 27차: 구간 이름표 한 줄만 쓴다(아랫줄 없음). 이름 옆의 ↻가 "위와 같음"이고, 이름표를 탭하면 그 자리에서 펼친다.
         const chip =
           ln.src >= 0
-            ? '<div class="ref" data-ri="' + i + '" role="button" tabindex="0">↻ ' + esc(txt) + '<small>' + (o.hint === false ? '위와 같음' : '위와 같음 · 탭하면 펼침') + '</small></div>'
-            : '<div class="ref orphan" data-ri="' + i + '">↻ ' + esc(txt) + '<small>원본 구간이 없어요</small></div>';
+            ? '<div class="cm refc" data-ri="' + i + '" role="button" tabindex="0" title="탭하면 펼쳐요">' + esc(txt) + ' ↻</div>'
+            : '<div class="cm refc orphan" data-ri="' + i + '">' + esc(txt) + ' ↻ · 원본 구간이 없어요</div>';
         if (o.parts) {
           closePart();
           out.push('<div class="part refp" data-s="' + secAt(i) + '" data-ri="' + i + '" data-src="' + ln.src + '">' + chip + '</div>');
@@ -283,6 +297,18 @@
         closeChorus();
         const kc = '<div class="keychg">' + esc(ln.text || '♯ 전조') + '</div>';
         if (o.parts) { closePart(); out.push('<div class="part kcpart">' + kc + '</div>'); } else out.push(kc);
+      } else if (ln.type === 'memo') {
+        // 메모 줄: 구간을 시작하거나 끊지 않는다. 후렴 안에 있으면 후렴 막대 안에 그대로 둔다.
+        if (o.parts) {
+          if (ln.chorus && !inChorus && inPart && partHasBody) closePart();
+          openPart(sAttr(secAt(i)));
+        }
+        if (ln.chorus && !inChorus) {
+          out.push('<div class="chorus">');
+          inChorus = true;
+        }
+        if (!ln.chorus) closeChorus();
+        out.push('<div class="mline' + (/^\s*(전조|key\b)/i.test(ln.text) ? ' kc' : '') + '">' + esc(ln.text) + '</div>');
       } else if (ln.type === 'comment') {
         if (o.parts) {
           closePart();

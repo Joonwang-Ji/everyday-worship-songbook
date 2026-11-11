@@ -243,6 +243,19 @@
     const drawLn = (ln, si) => {
       if (ln.type === 'colbreak') return; // 단 나누기는 화면(2단 보기)에서만 쓴다
       if (ln.type === 'blank') { endBar(); inChorus = false; need(24 * scale); y += Math.round(24 * scale); return; }
+      if (ln.type === 'memo') {
+        // 메모 줄(27차): 작은 기울임 글씨. 구간을 끊지 않고, 후렴 안에 있으면 후렴 막대도 이어 간다.
+        if (!ln.chorus) { endBar(); inChorus = false; } else if (!inChorus) inChorus = true;
+        const kc = /^\s*(전조|key\b)/i.test(ln.text);
+        g.font = 'italic ' + font(24 * scale, kc ? 700 : 600);
+        const ls = wrap(g, ln.text, maxW - 20);
+        need(ls.length * Math.round(32 * scale) + 6);
+        if (inChorus && barY === null) barY = y;
+        g.fillStyle = kc ? CHORD : MUTED;
+        for (const l of ls) { g.fillText(l, M + 8, y + Math.round(25 * scale)); y += Math.round(32 * scale); }
+        if (si >= 0) pageSecs.add(si);
+        return;
+      }
       if (ln.type === 'comment') {
         endBar(); inChorus = false;
         g.font = font(28 * scale, 700);
@@ -290,7 +303,7 @@
       g.font = font(26 * scale, 700);
       need(Math.round(40 * scale) + 10);
       g.fillStyle = BRAND;
-      g.fillText('↻ ' + name + (ln.src >= 0 ? '  (위와 같음)' : ''), M, y + Math.round(30 * scale));
+      g.fillText(name + ' ↻' + (ln.src >= 0 ? '' : '  (원본 구간이 없어요)'), M, y + Math.round(30 * scale));
       y += Math.round(40 * scale);
     });
     endBar();

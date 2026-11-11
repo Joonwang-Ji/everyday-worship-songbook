@@ -19,7 +19,7 @@
     '[구간]',
     '- 구간은 한 줄에 {comment: 이름}으로 표시하고, 구간 사이는 빈 줄로 나눠줘. 이름은 Intro, V1, V2, V3, PC(프리코러스), C(후렴), B(브릿지), Inter(간주), Tag, Outro, End 중에서만 써줘.',
     '- 악보에 구간 이름이 적혀 있거나 구조가 분명할 때만 붙이고, 악보에 없는 구간을 지어내지 마. 확실하지 않으면 이름 없이 빈 줄로만 나눠줘.',
-    '- 1번 괄호, 2번 괄호, D.S., D.C., Fine, 코다 같은 반복 표시는 {comment: 1번 괄호}처럼 그 자리에 짧게 적어줘. 키가 바뀌는 곳은 {comment: 전조 Ab}처럼 적어줘.',
+    '- 구간 이름이 아닌 악보 표시(1번 괄호, 2번 괄호, D.S., D.C., Fine, 코다, 2nd time 같은 반복 표시와 키가 바뀌는 전조)는 구간 이름표로 쓰지 말고, 악보에 나온 그 자리(해당 줄 사이)에 {ci: 1번 괄호}, {ci: 전조 Ab}, {ci: 2nd time}처럼 한 줄로 짧게 적어줘. 구간 한가운데에 있어도 구간을 나누지 마.',
     '',
     '[기타]',
     '- 맨 위에 {key: 원래 키} 한 줄만 넣고, 제목·쪽 번호·저작권 문구는 넣지 마.',
@@ -30,11 +30,11 @@
     '첨부한 악보(이미지 또는 PDF)를 보고, 아래 [가사]에 코드만 얹어서 ChordPro 텍스트로 만들어줘. 설명 없이 결과만, 코드 블록 하나로 출력해줘.',
     '',
     '[반드시 지킬 것]',
-    '- 가사의 글자, 줄바꿈, 빈 줄, {comment: …} 줄, {key: …} 줄은 한 글자도 바꾸지 말고 그대로 둬. 합치거나 나누거나 고치거나 빼지 마. 악보와 달라 보여도 아래 가사가 기준이야.',
+    '- 가사의 글자, 줄바꿈, 빈 줄, {comment: …} 줄, {ci: …} 줄, {key: …} 줄은 한 글자도 바꾸지 말고 그대로 둬. 합치거나 나누거나 고치거나 빼지 마. 악보와 달라 보여도 아래 가사가 기준이야.',
     '- 할 일은 코드를 넣는 것뿐이야. 악보에서 가사 위에 있는 코드를 그 글자 바로 앞에 [코드]로 넣어줘. 예: [G]주님은 [C]나의 [D]힘이요',
     '- 코드 모양(7, maj7, sus4, add9, D/F# 같은 슬래시 코드)도 악보 그대로 적어줘. 보이지 않거나 불확실한 코드는 지어내지 말고 [?]로 표시해줘.',
     '- 악보에 1절·2절이 겹쳐 적혀 있어 코드가 한 번만 있으면, 아래 가사의 V1·V2 모두에 같은 코드를 같은 자리에 넣어줘.',
-    '- 키가 바뀐 뒤(전조)의 코드는 악보에 적힌 그대로 써줘. 코드가 필요 없는 {comment: …} 줄과 빈 줄은 그대로 둬.',
+    '- 키가 바뀐 뒤(전조)의 코드는 악보에 적힌 그대로 써줘. 코드가 필요 없는 {comment: …} 줄, {ci: …} 줄, 빈 줄은 그대로 둬.',
     '',
     '[가사]',
     '',
@@ -66,6 +66,7 @@
     let nUnknown = 0;
     let nBare = 0;
     let nRepeat = 0;
+    let nMemo = 0;
     const out = [];
     let run = 0;
     let prevLine = null;
@@ -82,9 +83,22 @@
           continue;
         }
         if (DROP_DIRECTIVE.test(name)) continue;
-        if (name === 'comment' || name === 'c' || name === 'ci' || name === 'comment_italic') {
-          const nv = Sections.normalize(val);
-          out.push('{comment: ' + (nv === null ? val : nv) + '}');
+        // 메모 줄 {ci: …} (27차): 구간을 나누지 않는 표시. 그대로 둔다(빈 것은 버린다).
+        if (name === 'ci' || name === 'comment_italic') {
+          const mv = val.replace(/[{}]/g, ' ').replace(/\s+/g, ' ').trim();
+          if (mv) { out.push('{ci: ' + mv + '}'); nMemo++; }
+          prevLine = null; run = 0;
+          continue;
+        }
+        if (name === 'comment' || name === 'c') {
+          // 구간 이름이 아니라 전조·괄호·D.S. 같은 표시로 보이면 구간을 쪼개지 않도록 메모 줄로 바꾼다
+          if (Sections.isMemoLike(val)) {
+            out.push('{ci: ' + val.replace(/[{}]/g, ' ').replace(/\s+/g, ' ').trim() + '}');
+            nMemo++;
+          } else {
+            const nv = Sections.normalize(val);
+            out.push('{comment: ' + (nv === null ? val : nv) + '}');
+          }
           prevLine = null; run = 0;
           continue;
         }
@@ -117,7 +131,7 @@
       out.push(fixed);
     }
     let text = out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '');
-    return { text, key, nChords, nUnknown, nBare, nRepeat };
+    return { text, key, nChords, nUnknown, nBare, nRepeat, nMemo };
   }
 
   // 여러 쪽 합치기. 키는 첫 번째로 읽은 것.
@@ -131,6 +145,7 @@
       nUnknown: sum('nUnknown'),
       nBare: sum('nBare'),
       nRepeat: sum('nRepeat'),
+      nMemo: sum('nMemo'),
       pages: ok.length,
     };
   }
@@ -143,6 +158,7 @@
     if (r.nUnknown) n.push(`읽기 어려운 코드 ${r.nUnknown}곳은 [?]로 표시했어요.`);
     if (r.nBare) n.push(`가사 없이 코드만 있던 ${r.nBare}줄은 [G] [C] 꼴로 넣었어요.`);
     if (r.nRepeat) n.push(`같은 줄이 끝없이 반복되어 ${r.nRepeat}줄을 잘랐어요.`);
+    if (r.nMemo) n.push(`전조·괄호 같은 표시 ${r.nMemo}곳은 메모 줄로 넣었어요. 구간을 나누지 않아요.`);
     return n;
   }
 

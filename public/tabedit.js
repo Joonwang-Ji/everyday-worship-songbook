@@ -2,7 +2,7 @@
 // 저장 형식(ChordPro 글자)은 그대로. 모델은 "줄 목록"이고, 손대지 않은 줄은 원문(raw)을 그대로 돌려준다.
 //   parse(text)      → { lines:[ {kind, raw, ...} ] }
 //   serialize(model) → 글자 (손대지 않았다면 parse 전 글자와 완전히 같다)
-// kind: 'lyric'(가사+[코드]) | 'blank' | 'comment'({comment:}) | 'ref'({ref: C} 구간 자리표시) | 'soc' | 'eoc' | 'other'(주석·모르는 지시어·괄호가 깨진 줄: 그대로 보존)
+// kind: 'lyric'(가사+[코드]) | 'blank' | 'comment'({comment:} 구간 이름표) | 'memo'({ci:} 구간을 나누지 않는 메모 줄) | 'ref'({ref: C} 구간 자리표시) | 'soc' | 'eoc' | 'other'(주석·모르는 지시어·괄호가 깨진 줄: 그대로 보존)
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./sections.js'));
   else root.TabEdit = factory(root.Sections);
@@ -51,7 +51,8 @@
     if (d) {
       const name = d[1].toLowerCase();
       const val = (d[2] || '').trim();
-      if (['comment', 'c', 'comment_italic', 'ci'].includes(name)) return { kind: 'comment', raw, label: val };
+      if (['comment', 'c'].includes(name)) return { kind: 'comment', raw, label: val };
+      if (['comment_italic', 'ci'].includes(name)) return { kind: 'memo', raw, label: val }; // 메모 줄 (27차): 구간을 나누지 않는다
       if (name === 'column_break' || name === 'colb') return { kind: 'colb', raw };
       if (name === 'ref' || name === 'chorus') { const c = Sections.canon(val); return { kind: 'ref', raw, id: c ? c.id : name === 'chorus' && !val ? 'C' : val, rest: c ? c.rest : '' }; }
       if (name === 'soc' || name === 'start_of_chorus') return { kind: 'soc', raw };
@@ -231,7 +232,9 @@
   }
   // li 줄이 들어 있는 한 덩어리(빈 줄·이름표·soc/eoc로 끊김)의 시작·끝
   function blockRange(model, li) {
-    const isBody = (i) => model.lines[i] && (model.lines[i].kind === 'lyric' || model.lines[i].kind === 'other');
+    // 메모 줄은 덩어리를 끊지 않는다(27차)
+    const isBody = (i) => model.lines[i] && (model.lines[i].kind === 'lyric' || model.lines[i].kind === 'other' || model.lines[i].kind === 'memo');
+    if (!model.lines[li] || model.lines[li].kind === 'memo') return null;
     if (!isBody(li)) return null;
     let a = li, b = li;
     while (isBody(a - 1)) a--;
@@ -337,6 +340,72 @@
     m.lines = out.length ? out : [parseLine('')];
     return { model: m, n };
   }
+  // ---------- 메모 줄 (27차) ----------
+  // {ci: 전조 Ab} · {ci: 2nd time} 처럼 구간을 나누지 않는 표시. 구간 복사·반복 정리·송폼에서는 그 구간의 일부로 따라다닌다.
+  const memoClean = (t) => String(t == null ? '' : t).replace(/[{}\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+  // 구간 이름이 아니라 악보 표시(전조·괄호·D.S. 등)로 보이는 글자인지는 sections.js가 판별한다.
+  const isMemoLike = (label) => Sections.isMemoLike(label);
+  // 메모 줄 한 개를 줄 번호 at 자리에 넣는다. 반환 {model, at} (빈 글자면 null)
+  function insertMemo(model, at, text) {
+    const t = memoClean(text);
+    if (!t) return null;
+    const m = clone(model);
+    const pos = Math.max(0, Math.min(m.lines.length, at));
+    m.lines.splice(pos, 0, parseLine('{ci: ' + t + '}'));
+    return { model: m, at: pos };
+  }
+  // 메모 줄 글자 고치기(글자를 비우면 null)
+  function setMemo(model, li, text) {
+    const l = model.lines[li];
+    const t = memoClean(text);
+    if (!l || l.kind !== 'memo' || !t) return null;
+    const m = clone(model);
+    m.lines[li] = parseLine('{ci: ' + t + '}');
+    return { model: m, at: li };
+  }
+  // 줄 li를 위(-1)/아래(+1)로 한 칸 옮긴다. 곡의 처음·끝이면 null. 반환 {model, at}
+  function moveLine(model, li, delta) {
+    const to = li + delta;
+    if (!model.lines[li] || to < 0 || to >= model.lines.length) return null;
+    const m = clone(model);
+    const x = m.lines[li];
+    m.lines[li] = m.lines[to];
+    m.lines[to] = x;
+    return { model: m, at: to };
+  }
+  // 구간 이름이 아닌 {comment: …} 줄을 메모 줄로 바꾼다. 구간 이름으로 쓰이는 이름이면 null.
+  function commentToMemo(model, li) {
+    const l = model.lines[li];
+    if (!l || l.kind !== 'comment' || !l.label.trim() || Sections.canon(l.label)) return null;
+    return setMemoRaw(model, li, l.label);
+  }
+  function setMemoRaw(model, li, label) {
+    const t = memoClean(label);
+    if (!t) return null;
+    const m = clone(model);
+    m.lines[li] = parseLine('{ci: ' + t + '}');
+    return { model: m, at: li };
+  }
+  // 메모로 바꿀 만한 {comment: …} 줄 번호들(전조·괄호·D.S. 같은 악보 표시로 보이는 것만)
+  function memoCandidates(model) {
+    const out = [];
+    model.lines.forEach((l, i) => { if (l.kind === 'comment' && isMemoLike(l.label)) out.push(i); });
+    return out;
+  }
+  function memoizeAll(model, rows) {
+    const m = clone(model);
+    let n = 0;
+    (rows || memoCandidates(model)).forEach((i) => {
+      const l = m.lines[i];
+      if (!l || l.kind !== 'comment') return;
+      const t = memoClean(l.label);
+      if (!t) return;
+      m.lines[i] = parseLine('{ci: ' + t + '}');
+      n++;
+    });
+    return { model: m, n };
+  }
+
   // 구간 안의 줄 번호 li가 속한 구간의 범위 {a, b(끝 다음 줄)}. 구간 이름표·{soc}~{eoc}까지 포함. 없으면 null.
   function sectionSpan(model, li) {
     const s = sectionAt(model, li);
@@ -375,12 +444,13 @@
   }
   const sectionAt = (model, li) => listSections(model).find((x) => li >= x.a && li < x.b) || null;
   // 구간 본문의 원문 줄들(이름표 제외, 단 나누기 제외). 같은 구간인지 비교하고 펼칠 때 쓴다.
-  function sectionRaws(model, sec) {
+  function sectionRaws(model, sec, opt) {
     const out = [];
     for (let i = sec.a; i < sec.b; i++) {
       const l = model.lines[i];
       if (i === sec.a && l.kind === 'comment') continue;
       if (l.kind === 'colb' || l.kind === 'ref') continue;
+      if (opt && opt.memo === false && l.kind === 'memo') continue; // 같은 구간인지 비교할 때는 메모를 빼고도 본다
       out.push(l.raw);
     }
     while (out.length && out[out.length - 1].trim() === '') out.pop();
@@ -410,7 +480,7 @@
     for (const o of secs) if (!o.isRef && o.hasLyrics && o.id === me.id && o.a < me.a) src = o;
     if (!src) return { need: 'source' };
     const same = sectionRaws(model, src).join('\n') === sectionRaws(model, me).join('\n');
-    if (!same && !(opt && opt.force)) return { diff: true, srcA: src.a };
+    if (!same && !(opt && opt.force)) return { diff: true, srcA: src.a, memoOnly: sectionRaws(model, src, { memo: false }).join('\n') === sectionRaws(model, me, { memo: false }).join('\n') };
     const m = clone(model);
     m.lines.splice(me.a, me.b - me.a, parseLine('{ref: ' + me.id + (me.rest ? ' ' + me.rest : '') + '}'));
     return { model: m, at: me.a };
@@ -439,7 +509,9 @@
       let why = '';
       if (!same) {
         const strip = (r) => lyricKey(r.replace(/\[[^\]]*\]/g, ''));
-        why = A.map(strip).join('|') === B.map(strip).join('|') ? '코드가 달라요' : '가사가 달라요';
+        const A2 = sectionRaws(model, src, { memo: false }), B2 = sectionRaws(model, me, { memo: false });
+        if (A2.join('\n') === B2.join('\n')) why = '메모가 달라요';
+        else why = A2.map(strip).join('|') === B2.map(strip).join('|') ? '코드가 달라요' : '가사가 달라요';
       }
       out.push({ a: me.a, b: me.b, id: me.id, label: me.label || me.id, srcA: src.a, same, why });
     });
@@ -545,6 +617,22 @@
     if (!ns) return false;
     return ((ns.match(/[\uAC00-\uD7A3]/g) || []).length * 2) >= ns.length;
   }
+  // 낱말을 소문자·글자만으로 비교해 가장 긴 공통 부분열(LCS)로 짝짓는다. 반환: 원본 낱말 번호 → 도착 낱말 번호(없으면 -1)
+  function alignWords(a, b, wa, wb) {
+    const nw = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    const A = wa.map((w) => nw(a.slice(w[0], w[1]))), B = wb.map((w) => nw(b.slice(w[0], w[1])));
+    const n = A.length, m = B.length;
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = A[i] && A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const out = new Array(n).fill(-1);
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (A[i] && A[i] === B[j]) { out[i] = j; i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+      else j++;
+    }
+    return out;
+  }
   function mapChords(src, dstText) {
     const a = src.text, b = String(dstText);
     if (a === b) return src.chords.map((c) => ({ pos: c.pos, c: c.c }));
@@ -566,6 +654,28 @@
         const off = Math.max(0, c.pos - wa[k][0]);
         return { pos: wb[k][0] + Math.min(off, wb[k][1] - wb[k][0] - 1), c: c.c };
       });
+    }
+    // 영어 등 낱말 수가 다른 줄(27차): 같은 낱말끼리 짝지어(LCS) 코드가 붙은 낱말을 따라가게 한다.
+    // 짝이 없는 낱말은 앞뒤로 짝지은 낱말 사이에서 비례해 옮기고, 낱말 안의 위치(음절)는 그대로 둔다.
+    if (!ko && wa.length && wb.length) {
+      const al = alignWords(a, b, wa, wb);
+      if (al.some((j) => j >= 0)) {
+        return src.chords.map((c) => {
+          if (c.pos >= a.length) return { pos: b.length, c: c.c };
+          const k = wa.findIndex((w) => c.pos < w[1]);
+          if (k < 0) return { pos: b.length, c: c.c };
+          const off = Math.max(0, c.pos - wa[k][0]);
+          let j = al[k];
+          if (j < 0) {
+            let pk = -1, pj = -1, nk = wa.length, nj = wb.length;
+            for (let x = k - 1; x >= 0; x--) if (al[x] >= 0) { pk = x; pj = al[x]; break; }
+            for (let x = k + 1; x < wa.length; x++) if (al[x] >= 0) { nk = x; nj = al[x]; break; }
+            j = pj + Math.round(((k - pk) * (nj - pj)) / (nk - pk));
+            j = Math.max(0, Math.min(wb.length - 1, j));
+          }
+          return { pos: wb[j][0] + Math.min(off, wb[j][1] - wb[j][0] - 1), c: c.c };
+        });
+      }
     }
     return src.chords.map((c) => {
       let np;
@@ -609,12 +719,16 @@
   }
   // 가사 덩어리(빈 줄·이름표·{soc}로 끊김) 목록. label = 바로 위 구간 이름표, chordLines = 코드가 달린 줄 수.
   function bodyBlocks(model) {
-    const isBody = (i) => model.lines[i] && (model.lines[i].kind === 'lyric' || model.lines[i].kind === 'other');
+    // 메모 줄은 덩어리를 끊지 않는다(27차). 단, 덩어리가 메모로만 이루어졌으면 덩어리로 세지 않는다.
+    const isBody = (i) => model.lines[i] && (model.lines[i].kind === 'lyric' || model.lines[i].kind === 'other' || model.lines[i].kind === 'memo');
     const out = [];
     for (let i = 0; i < model.lines.length; i++) {
       if (!isBody(i)) continue;
       let a = i, b = i;
       while (isBody(b + 1)) b++;
+      let onlyMemo = true;
+      for (let k = a; k <= b; k++) if (model.lines[k].kind !== 'memo') { onlyMemo = false; break; }
+      if (onlyMemo) { i = b; continue; }
       let j = a - 1;
       if (model.lines[j] && model.lines[j].kind === 'soc') j--;
       const lab = model.lines[j] && model.lines[j].kind === 'comment' ? model.lines[j].label : '';
@@ -631,12 +745,13 @@
     if (!src || !dst || src.a === dst.a) return { model, filled: 0, skipped: 0, extra: 0 };
     const m = clone(model);
     let filled = 0, skipped = 0, extra = 0;
-    const n = dst.b - dst.a + 1;
-    for (let k = 0; k < n; k++) {
-      const d = m.lines[dst.a + k];
-      if (!d || d.kind !== 'lyric') continue;
-      const s = k <= src.b - src.a ? m.lines[src.a + k] : null;
-      if (!s || s.kind !== 'lyric' || !s.chords.length) { if (!s) extra++; continue; }
+    // 메모 줄(27차)은 줄 수에 세지 않는다: 가사 줄끼리 k번째 줄을 짝짓는다
+    const lyricIdx = (r) => { const o = []; for (let i = r.a; i <= r.b; i++) if (m.lines[i] && m.lines[i].kind === 'lyric') o.push(i); return o; };
+    const si = lyricIdx(src), di = lyricIdx(dst);
+    for (let k = 0; k < di.length; k++) {
+      const d = m.lines[di[k]];
+      const s = k < si.length ? m.lines[si[k]] : null;
+      if (!s || !s.chords.length) { if (!s) extra++; continue; }
       if (d.chords.length && !(opt && opt.overwrite)) { skipped++; continue; }
       d.chords = mapChords(s, d.text);
       commitLine(d);
@@ -820,6 +935,7 @@
     addChord, appendChord, replaceChord, deleteChord, moveChord, reshape,
     insertLines, replaceLine, deleteLine, clearChords, setLyricText, instrumentalRaw,
     joinWithPrev, splitLine, rangeRaws, deleteRange, clearAllChords, sectionSpan,
+    insertMemo, setMemo, moveLine, commentToMemo, memoCandidates, memoizeAll, isMemoLike, memoClean,
     insertSection, belowAt, chorusAround, blockRange, toggleChorus, isInChorus,
     listSections, sectionAt, sectionRaws, refSource, sectionToRef, refToSection, repeatCandidates, collapseRepeats, insertRef, usedSectionIds, refProblems,
     colBreakAt, setColBreak, clearColBreaks,
