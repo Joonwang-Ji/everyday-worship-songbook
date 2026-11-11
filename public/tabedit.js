@@ -265,6 +265,84 @@
   const isInChorus = (model, li) => !!chorusAround(model, li);
 
   // ---------- 구간 자리표시 (18차) ----------
+  // ---------- 줄 합치기·나누기, 여러 줄 복사·삭제 (26차) ----------
+  // 가사 줄 li를 바로 위 가사 줄 뒤에 이어 붙인다. 두 줄 사이에는 띄어쓰기 하나(이미 있으면 안 넣음). 코드는 글자를 따라간다.
+  // 위 줄이 가사 줄이 아니면 null. 반환 {model, at(합쳐진 줄 번호), join(이어 붙인 자리의 글자 위치)}
+  function joinWithPrev(model, li) {
+    const a = model.lines[li - 1], b = model.lines[li];
+    if (!a || !b || a.kind !== 'lyric' || b.kind !== 'lyric') return null;
+    const m = clone(model);
+    const A = m.lines[li - 1], B = m.lines[li];
+    const sep = A.text && B.text && !/\s$/.test(A.text) && !/^\s/.test(B.text) ? ' ' : '';
+    const off = A.text.length + sep.length;
+    const join = A.text.length;
+    A.chords = A.chords.concat(B.chords.map((c) => ({ c: c.c, pos: c.pos + off })));
+    A.text = A.text + sep + B.text;
+    commitLine(A);
+    m.lines.splice(li, 1);
+    return { model: m, at: li - 1, join };
+  }
+  // 가사 줄 li를 글자 위치 pos 앞에서 둘로 나눈다. pos 앞의 코드는 위 줄에, pos 이후(pos 자리 포함)의 코드는 아래 줄에 간다.
+  // 나눈 자리의 띄어쓰기는 정리한다. 위 줄이나 아래 줄이 비게 되면 null. 반환 {model, at(아래 줄 번호)}
+  function splitLine(model, li, pos) {
+    const l = model.lines[li];
+    if (!l || l.kind !== 'lyric') return null;
+    const t = l.text;
+    if (!(pos > 0 && pos < t.length)) return null;
+    let head = t.slice(0, pos);
+    let tail = t.slice(pos);
+    const lostTail = head.length - head.replace(/\s+$/, '').length;
+    const lostHead = tail.length - tail.replace(/^\s+/, '').length;
+    head = head.slice(0, head.length - lostTail);
+    tail = tail.slice(lostHead);
+    if (!head.trim() || !tail.trim()) return null;
+    const c1 = [], c2 = [];
+    for (const c of l.chords) {
+      if (c.pos < pos) c1.push({ c: c.c, pos: Math.min(c.pos, head.length) });
+      else c2.push({ c: c.c, pos: Math.max(0, c.pos - pos - lostHead) });
+    }
+    const m = clone(model);
+    m.lines.splice(li, 1, parseLine(lyricRaw(head, c1)), parseLine(lyricRaw(tail, c2)));
+    return { model: m, at: li + 1 };
+  }
+  // 줄 범위 [a, b)의 원문 줄들
+  function rangeRaws(model, a, b) {
+    return model.lines.slice(a, b).map((l) => l.raw);
+  }
+  // 줄 범위 [a, b) 삭제. 지운 자리에 빈 줄이 겹치면 하나만 남긴다. 곡이 통째로 비면 빈 줄 하나.
+  function deleteRange(model, a, b) {
+    if (a < 0 || b > model.lines.length || a >= b) return model;
+    const m = clone(model);
+    const tail = b >= model.lines.length;
+    m.lines.splice(a, b - a);
+    const blankAt = (i) => m.lines[i] && m.lines[i].kind === 'blank';
+    if (blankAt(a) && (a === 0 || blankAt(a - 1))) m.lines.splice(a, 1);
+    while (m.lines.length > 1 && blankAt(m.lines.length - 1) && (tail || blankAt(m.lines.length - 2))) m.lines.pop();
+    if (!m.lines.length) m.lines.push(parseLine(''));
+    return m;
+  }
+  // 모든 코드만 지우기(가사·구간 이름은 그대로). 코드만 있던 줄(간주 등)은 줄째 지운다. 반환 {model, n(지운 코드 수)}
+  function clearAllChords(model) {
+    const m = clone(model);
+    let n = 0;
+    const out = [];
+    for (const l of m.lines) {
+      if (l.kind !== 'lyric' || !l.chords.length) { out.push(l); continue; }
+      n += l.chords.length;
+      if (!l.text.trim()) continue;
+      l.chords = [];
+      commitLine(l);
+      out.push(l);
+    }
+    m.lines = out.length ? out : [parseLine('')];
+    return { model: m, n };
+  }
+  // 구간 안의 줄 번호 li가 속한 구간의 범위 {a, b(끝 다음 줄)}. 구간 이름표·{soc}~{eoc}까지 포함. 없으면 null.
+  function sectionSpan(model, li) {
+    const s = sectionAt(model, li);
+    return s ? { a: s.a, b: s.b, label: s.label || s.id || '' } : null;
+  }
+
   // {ref: C} 한 줄이 "앞에 나온 C 구간을 여기서 다시"를 뜻한다. 같은 가사·코드가 반복되는 구간은 처음 한 번만 쓰고 나머지는 자리표시로 둔다.
   // 구간 목록 [{a, b(끝 다음 줄, 끝의 빈 줄 제외), id, label, isRef, hasLyrics, implicit}]
   function listSections(model) {
@@ -741,6 +819,7 @@
     parse, serialize, parseLyric, lyricRaw,
     addChord, appendChord, replaceChord, deleteChord, moveChord, reshape,
     insertLines, replaceLine, deleteLine, clearChords, setLyricText, instrumentalRaw,
+    joinWithPrev, splitLine, rangeRaws, deleteRange, clearAllChords, sectionSpan,
     insertSection, belowAt, chorusAround, blockRange, toggleChorus, isInChorus,
     listSections, sectionAt, sectionRaws, refSource, sectionToRef, refToSection, repeatCandidates, collapseRepeats, insertRef, usedSectionIds, refProblems,
     colBreakAt, setColBreak, clearColBreaks,

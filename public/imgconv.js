@@ -5,17 +5,41 @@
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./chord.js'), require('./sections.js'), require('./chordedit.js'));
   else root.ImgConv = factory(root.Chord, root.Sections, root.ChordEdit);
 })(typeof self !== 'undefined' ? self : this, function (Chord, Sections, ChordEdit) {
-  // 사용자가 직접 Claude 채팅에 붙여 넣을 때 쓰는 프롬프트 (서버의 앱 안 변환 프롬프트와 같은 규칙)
-  const MANUAL_PROMPT = [
-    '첨부한 악보 이미지를 ChordPro 형식으로 변환해줘.',
-    '- 가사 위에 있는 코드는 해당 글자 바로 앞에 [코드] 형태로 넣어줘 (예: [G]주님은 [C]나의 [D]힘이요)',
-    '- 가사는 인쇄된 그대로 적고, 번역하거나 지어내지 마',
-    '- 구간은 한 줄에 {comment: V1} {comment: V2} {comment: PC} {comment: C} {comment: B} {comment: Inter} {comment: Tag} {comment: Outro} {comment: End} 중 하나로 표시해줘 (V=절, PC=프리코러스, C=후렴, B=브릿지). 이름이 없으면 모양을 보고 추측해줘',
-    '- 원래 키가 적혀 있으면 맨 위에 {key: G} 를 넣어줘',
-    '- 보이지 않거나 불확실한 코드는 [?]로 표시해줘',
-    '- 제목·쪽 번호·저작권 문구는 넣지 마',
-    '- 설명 없이 변환 결과만 출력해줘',
+  // Claude 앱에 붙여 넣는 프롬프트 2개 (26차). 순서: ① 가사 뽑기 → 사람이 가사·줄바꿈을 다듬음 → ② 코드 입히기.
+  // ① 악보에서 가사만 뽑는다. 줄은 뜻 단위로, 구간은 {comment: 이름}으로. 코드는 아직 다루지 않는다.
+  const LYRICS_PROMPT = [
+    '첨부한 악보(이미지 또는 PDF)에서 가사만 뽑아줘. 코드는 쓰지 마. 설명 없이 결과만, 코드 블록 하나로 출력해줘.',
+    '',
+    '[가사]',
+    '- 가사는 인쇄된 그대로 적어줘. 번역하거나 고치거나 지어내지 마. 잘 안 보이는 글자는 ?로 표시해줘.',
+    '- 악보 오선 줄의 줄바꿈을 따르지 말고, 가사의 뜻(문장·구절) 단위로 줄을 나눠줘. 한 줄은 노래로 한 호흡(대략 한 소절) 정도로 해줘.',
+    '- 한 멜로디 아래에 1절·2절 가사가 위아래로 겹쳐 적혀 있으면 V1, V2로 나눠서 각각 따로 적어줘.',
+    '- 같은 구간이 악보에 여러 번 인쇄되어 있어도 줄이거나 합치지 말고 인쇄된 대로 적어줘.',
+    '',
+    '[구간]',
+    '- 구간은 한 줄에 {comment: 이름}으로 표시하고, 구간 사이는 빈 줄로 나눠줘. 이름은 Intro, V1, V2, V3, PC(프리코러스), C(후렴), B(브릿지), Inter(간주), Tag, Outro, End 중에서만 써줘.',
+    '- 악보에 구간 이름이 적혀 있거나 구조가 분명할 때만 붙이고, 악보에 없는 구간을 지어내지 마. 확실하지 않으면 이름 없이 빈 줄로만 나눠줘.',
+    '- 1번 괄호, 2번 괄호, D.S., D.C., Fine, 코다 같은 반복 표시는 {comment: 1번 괄호}처럼 그 자리에 짧게 적어줘. 키가 바뀌는 곳은 {comment: 전조 Ab}처럼 적어줘.',
+    '',
+    '[기타]',
+    '- 맨 위에 {key: 원래 키} 한 줄만 넣고, 제목·쪽 번호·저작권 문구는 넣지 마.',
   ].join('\n');
+
+  // ② 사람이 확정한 가사 위에 코드만 얹는다. 가사·줄·구간 이름표는 절대 바꾸지 않는다. 맨 아래에 다듬은 가사를 붙여 넣는다.
+  const CHORD_PROMPT = [
+    '첨부한 악보(이미지 또는 PDF)를 보고, 아래 [가사]에 코드만 얹어서 ChordPro 텍스트로 만들어줘. 설명 없이 결과만, 코드 블록 하나로 출력해줘.',
+    '',
+    '[반드시 지킬 것]',
+    '- 가사의 글자, 줄바꿈, 빈 줄, {comment: …} 줄, {key: …} 줄은 한 글자도 바꾸지 말고 그대로 둬. 합치거나 나누거나 고치거나 빼지 마. 악보와 달라 보여도 아래 가사가 기준이야.',
+    '- 할 일은 코드를 넣는 것뿐이야. 악보에서 가사 위에 있는 코드를 그 글자 바로 앞에 [코드]로 넣어줘. 예: [G]주님은 [C]나의 [D]힘이요',
+    '- 코드 모양(7, maj7, sus4, add9, D/F# 같은 슬래시 코드)도 악보 그대로 적어줘. 보이지 않거나 불확실한 코드는 지어내지 말고 [?]로 표시해줘.',
+    '- 악보에 1절·2절이 겹쳐 적혀 있어 코드가 한 번만 있으면, 아래 가사의 V1·V2 모두에 같은 코드를 같은 자리에 넣어줘.',
+    '- 키가 바뀐 뒤(전조)의 코드는 악보에 적힌 그대로 써줘. 코드가 필요 없는 {comment: …} 줄과 빈 줄은 그대로 둬.',
+    '',
+    '[가사]',
+    '',
+  ].join('\n');
+  const MANUAL_PROMPT = CHORD_PROMPT; // 이전 이름 호환
 
   const CHATTER_HEAD = /^(here\b|here's|sure\b|certainly|okay\b|ok\b|below\b|the following|this is|i['’]?(m|ve|ll)\b|물론|다음은|아래는|변환 결과|변환된)/i;
   const CHATTER_TAIL = /^(note\s*:|notes\s*:|i hope|let me know|please note|참고\s*[:：]|※)/i;
@@ -122,5 +146,5 @@
     return n;
   }
 
-  return { MANUAL_PROMPT, clean, merge, notes };
+  return { LYRICS_PROMPT, CHORD_PROMPT, MANUAL_PROMPT, clean, merge, notes };
 });
