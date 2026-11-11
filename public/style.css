@@ -701,3 +701,9 @@ summary { padding: 6px 0; }
 .play-info .kstep { display: inline-flex; align-items: center; gap: 6px; flex: none; }
 .play-info .kstep .pbtn { min-width: 40px; font-size: 20px; line-height: 1; padding-top: 2px; padding-bottom: 2px; }
 .play-info .kstep .keybadge.big { min-width: 34px; text-align: center; }
+
+/* 25차: 이미지 → 코드 악보 변환 */
+.cv-pages { max-height: 40vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; padding: 4px 10px; }
+.cv-pages .chk-row { margin: 2px 0; }
+.cv-note { background: var(--accent-bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 0 0 8px; line-height: 1.5; }
+.cv-man summary { cursor: pointer; min-height: 32px; }

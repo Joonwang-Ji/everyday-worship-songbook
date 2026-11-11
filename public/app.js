@@ -1165,7 +1165,8 @@
           <div class="card">
             <div id="draftbar" class="draftbar" hidden></div>
             <div class="row between" style="margin-bottom:8px"><span class="lbl-like">악보 본문</span></div>
-            <div class="row" style="margin:0 0 8px;flex-wrap:wrap"><button type="button" class="btn small" id="refbtn">📖 원본 악보 옆에 놓기</button><button type="button" class="btn small" id="pastebtn">📋 가사 붙여넣기로 시작</button><button type="button" class="btn small" id="repbtn">↻ 반복 구간 정리</button></div>
+            <div class="row" style="margin:0 0 8px;flex-wrap:wrap"><button type="button" class="btn small" id="refbtn">📖 원본 악보 옆에 놓기</button><button type="button" class="btn small" id="pastebtn">📋 가사 붙여넣기로 시작</button><button type="button" class="btn small" id="convbtn">🪄 이미지에서 코드 악보 만들기</button><button type="button" class="btn small" id="repbtn">↻ 반복 구간 정리</button></div>
+            <div id="cv-note" class="cv-note hint" hidden></div>
             <div id="tabpane" class="te">
               <div id="te-lines" class="te-lines"></div>
               <div class="te-pal" id="te-pal"></div>
@@ -1780,6 +1781,188 @@
         else if (a === 'expand') { blocks[i].expand = t.checked; TabEdit.markRefs(blocks); render2(); }
       });
     }
+    // ----- 이미지 → 코드 악보 변환 (25차) -----
+    // 올려 둔 이미지·PDF 쪽을 AI가 읽어 코드 악보 초안을 만든다. 결과는 아래 탭 편집기에 넣고, 원본 악보 패널을 옆에 열어 검수하게 한다.
+    // 초안은 틀릴 수 있다(특히 코드 위치와 한글 가사). 그래서 바로 저장하지 않고 항상 편집기에 넣는다. 되돌리기로 넣기 전으로 돌아간다.
+    const CV_EDGE = 1568; // 보내는 이미지의 긴 변(px)
+    const CV_MAX = 8; // 한 번에 변환할 최대 쪽 수
+    let pdfjsLoading = null;
+    function loadPdfJs() {
+      if (window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+      if (pdfjsLoading) return pdfjsLoading;
+      pdfjsLoading = new Promise((res, rej) => {
+        const s = document.createElement('script');
+        s.src = 'vendor/pdf.min.js';
+        s.onload = () => {
+          if (!window.pdfjsLib) { rej(new Error('PDF 읽기 도구를 불러오지 못했습니다.')); return; }
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
+          res(window.pdfjsLib);
+        };
+        s.onerror = () => { pdfjsLoading = null; rej(new Error('PDF 읽기 도구를 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.')); };
+        document.head.appendChild(s);
+      });
+      return pdfjsLoading;
+    }
+    const canvasToJpeg = (c) => new Promise((r) => c.toBlob(r, 'image/jpeg', 0.85));
+    async function pageBlob(it) {
+      if (it.kind === 'image') {
+        const bmp = await createImageBitmap(await (await fetch(it.url)).blob(), { imageOrientation: 'from-image' });
+        const sc = Math.min(1, CV_EDGE / Math.max(bmp.width, bmp.height));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(bmp.width * sc));
+        c.height = Math.max(1, Math.round(bmp.height * sc));
+        const x = c.getContext('2d');
+        x.fillStyle = '#fff';
+        x.fillRect(0, 0, c.width, c.height);
+        x.drawImage(bmp, 0, 0, c.width, c.height);
+        return canvasToJpeg(c);
+      }
+      const page = await it.pdf.getPage(it.page);
+      const v1 = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: CV_EDGE / Math.max(v1.width, v1.height) });
+      const c = document.createElement('canvas');
+      c.width = Math.round(vp.width);
+      c.height = Math.round(vp.height);
+      const x = c.getContext('2d');
+      x.fillStyle = '#fff';
+      x.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: x, viewport: vp }).promise;
+      return canvasToJpeg(c);
+    }
+    async function transcribeOne(blob, signal) {
+      let res;
+      try {
+        res = await fetch('/api/transcribe', { method: 'POST', headers: { 'Content-Type': 'image/jpeg', ...authHeaders() }, body: blob, signal });
+      } catch (e) {
+        throw new Error(e && e.name === 'AbortError' ? '시간이 너무 오래 걸려 멈췄습니다.' : '인터넷 연결을 확인해 주세요.');
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || '변환에 실패했습니다.');
+      return data.text || '';
+    }
+    // 변환 결과를 편집기에 넣는다. 이미 본문이 있으면 뒤에 이어 붙일지 묻는다.
+    function applyConv(r) {
+      const cur = ta.value.replace(/\s+$/, '');
+      if (cur && !confirm('지금 악보 본문이 있어요.\n[확인] 뒤에 이어 붙이기\n[취소] 넣지 않기')) return false;
+      setBody(cur ? cur + '\n\n' + r.text : r.text);
+      const kel = $('key');
+      if (r.key && !kel.value && [...kel.options].some((o) => o.value === r.key)) {
+        kel.value = r.key;
+        kel.dispatchEvent(new Event('change'));
+      }
+      const nt = ImgConv.notes(r);
+      const note = $('cv-note');
+      note.innerHTML = '<b>AI가 만든 초안이에요.</b> 코드 위치와 가사가 틀릴 수 있으니 원본 악보와 비교해서 고쳐 주세요.' + (r.key ? ` 읽은 키: <b>${esc(r.key)}</b>.` : '') + (nt.length ? '<br>' + nt.map(esc).join(' ') : '') + ' <button type="button" class="btn small" id="cv-note-x">닫기</button>';
+      note.hidden = false;
+      $('cv-note-x').onclick = () => { note.hidden = true; };
+      if (dockFiles().length && !dockOpen()) setDock(true);
+      return true;
+    }
+    function convSheet() {
+      if (!dockFiles().length) { toast('아래 "이미지·PDF 악보"에 악보 사진이나 PDF를 먼저 올려 주세요.'); return; }
+      let items = []; // {label, kind, url, page, pdf, on}
+      let running = false;
+      let ctl = null;
+      let gone = false;
+      const sh = showSheet(
+        `<h2 style="margin-top:0">이미지에서 코드 악보 만들기</h2>
+        <p class="hint" style="margin:0 0 8px">AI가 악보 사진을 읽어 <b>초안</b>을 만들어요. 코드 위치와 한글 가사는 틀릴 수 있어서, 결과는 편집기에 넣고 <b>원본 악보를 옆에 열어</b> 확인하게 됩니다. 한 쪽에 10~30초쯤 걸려요.</p>
+        <div id="cv-pages" class="cv-pages"><span class="muted small">쪽을 확인하는 중…</span></div>
+        <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="cv-go" disabled>변환 시작</button><button type="button" class="btn" id="cv-no">닫기</button></div>
+        <div id="cv-stat" class="small" style="margin-top:6px" aria-live="polite"></div>
+        <details class="cv-man" style="margin-top:12px"><summary class="small">AI가 잘 못 읽을 때: 직접 변환 (프롬프트 복사)</summary>
+          <p class="hint" style="margin:6px 0">① 프롬프트를 복사해서 Claude 앱에 악보 사진과 함께 붙여넣고 ② 돌아온 결과를 아래에 붙여넣으세요.</p>
+          <div class="row"><button type="button" class="btn small" id="cv-copy">프롬프트 복사</button></div>
+          <textarea id="cv-paste" rows="5" spellcheck="false" placeholder="Claude가 돌려준 결과를 여기에 붙여넣기" style="margin-top:6px"></textarea>
+          <div class="row" style="margin-top:6px"><button type="button" class="btn small primary" id="cv-ins">붙여넣은 결과 넣기</button></div>
+        </details>`,
+        () => { gone = true; if (ctl) ctl.abort(); }
+      );
+      const stat = sh.q('#cv-stat');
+      const go = sh.q('#cv-go');
+      sh.q('#cv-no').onclick = () => sh.close();
+      sh.q('#cv-copy').onclick = () => copyText(ImgConv.MANUAL_PROMPT);
+      sh.q('#cv-ins').onclick = () => {
+        const r = ImgConv.clean(sh.q('#cv-paste').value);
+        if (!r.text) { stat.textContent = '붙여넣은 내용이 비어 있어요.'; return; }
+        if (applyConv(r)) sh.close();
+      };
+      const box = sh.q('#cv-pages');
+      const drawPages = () => {
+        const n = items.filter((i) => i.on).length;
+        box.innerHTML = items.length
+          ? items.map((it, k) => `<label class="chk-row"><input type="checkbox" data-k="${k}" ${it.on ? 'checked' : ''} ${running ? 'disabled' : ''}> ${esc(it.label)}</label>`).join('') +
+            `<div class="muted small">${n}쪽 선택${items.length > CV_MAX ? ` · 한 번에 ${CV_MAX}쪽까지` : ''}</div>`
+          : '<span class="muted small">변환할 이미지·PDF 쪽이 없어요.</span>';
+        go.disabled = running || !n || n > CV_MAX;
+      };
+      box.onchange = (ev) => {
+        const k = ev.target.dataset && ev.target.dataset.k;
+        if (k !== undefined) { items[+k].on = ev.target.checked; drawPages(); }
+      };
+      (async () => {
+        let ni = 0;
+        let np = 0;
+        for (const f of dockFiles()) {
+          if (f.kind === 'image') { ni++; items.push({ label: `악보 이미지 ${ni}`, kind: 'image', url: f.url, on: true }); continue; }
+          np++;
+          try {
+            const lib = await loadPdfJs();
+            const pdf = await lib.getDocument({ data: await (await fetch(f.url)).arrayBuffer() }).promise;
+            const cnt = Math.min(pdf.numPages, 12);
+            for (let p = 1; p <= cnt; p++) items.push({ label: `PDF ${np} · ${p}쪽`, kind: 'pdf', pdf, page: p, on: true });
+          } catch (e) {
+            items.push({ label: `PDF ${np} (읽지 못함: ${e.message})`, kind: 'bad', on: false });
+          }
+          if (gone) return;
+        }
+        let left = CV_MAX;
+        for (const it of items) { if (it.kind === 'bad') continue; it.on = left > 0; if (it.on) left--; }
+        if (gone) return;
+        drawPages();
+      })();
+      go.onclick = async () => {
+        const sel = items.filter((i) => i.on && i.kind !== 'bad');
+        if (!sel.length || running) return;
+        running = true;
+        ctl = new AbortController();
+        drawPages();
+        const done = [];
+        let fail = '';
+        for (let i = 0; i < sel.length; i++) {
+          if (gone) return;
+          stat.textContent = `변환 중… (${i + 1}/${sel.length}) ${sel[i].label}`;
+          try {
+            const blob = await pageBlob(sel[i]);
+            if (!blob) throw new Error('이미지를 준비하지 못했습니다.');
+            const t = setTimeout(() => ctl.abort(), 120000);
+            let text;
+            try { text = await transcribeOne(blob, ctl.signal); } finally { clearTimeout(t); }
+            done.push(ImgConv.clean(text));
+            ctl = new AbortController();
+          } catch (e) {
+            if (gone) return;
+            fail = `${sel[i].label}: ${e.message}`;
+            break;
+          }
+        }
+        if (gone) return;
+        running = false;
+        drawPages();
+        const r = ImgConv.merge(done);
+        if (!r.text) {
+          stat.innerHTML = `<span class="error">${esc(fail || '읽어 낸 내용이 없어요. 사진이 선명한지 확인하거나 아래 직접 변환을 써 보세요.')}</span>`;
+          return;
+        }
+        if (applyConv(r)) {
+          sh.close();
+          if (fail) toast('일부 쪽은 변환하지 못했어요: ' + fail);
+        } else {
+          stat.textContent = '넣지 않았어요. 다시 변환하려면 시작을 누르세요.';
+        }
+      };
+    }
+    $('convbtn').onclick = convSheet;
     $('repbtn').onclick = repeatSheet;
     $('pastebtn').onclick = pasteSheet;
     // 키(원래 키)를 바꾸면 코드 칩도 그 키에 맞춰 다시 그린다

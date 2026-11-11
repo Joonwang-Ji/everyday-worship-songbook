@@ -68,6 +68,71 @@ function magicOk(type, buf) {
 function requireBucket(env) {
   if (!env.BUCKET) throw new HttpError(500, '이미지 저장소(R2)가 연결되지 않았습니다. 설치 안내의 R2 연결 단계(변수 이름: BUCKET)를 확인해 주세요.');
 }
+
+// ---------- 이미지 → 코드 변환 (25차) ----------
+// 변환기는 TRANSCRIBERS 한 곳에서 고른다. 다른 AI로 바꾸려면 함수 하나를 더 만들고 TRANSCRIBER 환경변수(또는 아래 기본값)만 바꾸면 된다.
+// 각 변환기는 (env, 이미지 종류, 이미지 바이트) → 글자(ChordPro 초안) 를 돌려준다.
+const TRANSCRIBE_MAX_BYTES = 4 * 1024 * 1024;
+const DEFAULT_VISION_MODEL = '@cf/meta/llama-3.2-11b-vision-instruct';
+const TRANSCRIBE_SYSTEM = 'You convert photos of worship song sheet music into ChordPro text. Output only the ChordPro text, no explanation.';
+const TRANSCRIBE_PROMPT = [
+  'Convert the attached sheet music image into ChordPro.',
+  '- Put each chord in square brackets immediately before the syllable it sits above, e.g. [G]주님은 [C]나의 [D]힘이요',
+  '- Keep the lyrics exactly as printed (Korean or English). Do not translate or invent lyrics.',
+  '- Mark each section on its own line with one of: {comment: Intro} {comment: V1} {comment: V2} {comment: PC} {comment: C} {comment: B} {comment: Inter} {comment: Tag} {comment: Outro} {comment: End}',
+  '  (V = verse, PC = pre-chorus, C = chorus, B = bridge). If the section is not labelled, guess from the layout.',
+  '- If the original key is printed, add {key: G} on the first line.',
+  '- If a chord is unreadable, write [?] instead of guessing.',
+  '- Do not add the title, page numbers, or copyright text.',
+  '- Output only the ChordPro text.',
+].join('\n');
+function bytesToDataUri(type, buf) {
+  const u = new Uint8Array(buf);
+  let bin = '';
+  for (let i = 0; i < u.length; i += 0x8000) bin += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return `data:${type};base64,${btoa(bin)}`;
+}
+const aiText = (r) => {
+  if (r == null) return '';
+  if (typeof r === 'string') return r;
+  if (typeof r.response === 'string') return r.response;
+  const c = r.choices && r.choices[0] && r.choices[0].message && r.choices[0].message.content;
+  return typeof c === 'string' ? c : '';
+};
+async function transcribeCloudflare(env, type, buf) {
+  if (!env.AI) throw new HttpError(500, '앱 안 변환(Cloudflare AI)이 연결되지 않았습니다. 설치 안내의 "AI 변환 연결" 단계(변수 이름: AI)를 확인해 주세요.');
+  const model = env.AI_MODEL || DEFAULT_VISION_MODEL;
+  const input = {
+    messages: [
+      { role: 'system', content: TRANSCRIBE_SYSTEM },
+      { role: 'user', content: TRANSCRIBE_PROMPT },
+    ],
+    image: bytesToDataUri(type, buf),
+    max_tokens: 2048,
+    temperature: 0.1,
+  };
+  const run = () => env.AI.run(model, input);
+  let out;
+  try {
+    out = await run();
+  } catch (e) {
+    // 이 모델은 처음 한 번 Meta 이용 약관 동의("agree")를 요구한다. 한 번 보내면 이후로는 필요 없다.
+    if (/agree|license/i.test(String((e && e.message) || ''))) {
+      try {
+        await env.AI.run(model, { prompt: 'agree' });
+        out = await run();
+      } catch (e2) {
+        throw new HttpError(502, 'AI 변환에 실패했습니다: ' + String((e2 && e2.message) || e2).slice(0, 200));
+      }
+    } else {
+      throw new HttpError(502, 'AI 변환에 실패했습니다: ' + String((e && e.message) || e).slice(0, 200));
+    }
+  }
+  const text = aiText(out).trim();
+  if (!text) throw new HttpError(502, 'AI가 빈 결과를 돌려주었습니다. 이미지를 더 선명하게 하거나 한 쪽씩 다시 시도해 주세요.');
+  return { text, model };
+}
+const TRANSCRIBERS = { cloudflare: transcribeCloudflare };
 // 파일은 <img> 로 바로 불러야 하므로, 한두 시간 유효한 서명 주소를 만들어 준다.
 // (같은 시간대에는 같은 주소가 나와서 브라우저 캐시가 잘 먹는다)
 async function fileUrl(env, fid) {
@@ -1360,6 +1425,23 @@ export async function onRequest({ request, env }) {
         await db.batch([db.prepare('DELETE FROM vault_sl_items WHERE setlist_id=?').bind(lid), db.prepare('DELETE FROM setlist_items WHERE setlist_id=?').bind(lid), db.prepare('DELETE FROM setlists WHERE id=?').bind(lid)]);
         return json({ ok: true });
       }
+    }
+
+    // ===== 이미지 → 코드 변환 (25차) =====
+    // 본문은 이미지 한 장(JPG·PNG·WEBP)이다. 곡에 올리지 않은 새 곡의 사진도 변환할 수 있도록 곡 번호 없이 받는다.
+    if (parts[0] === 'transcribe' && !parts[1] && method === 'POST') {
+      requireEdit(env, ctx);
+      const type = (request.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(type)) throw new HttpError(400, '변환은 JPG·PNG·WEBP 이미지 한 장씩만 됩니다. (PDF는 앱이 쪽마다 이미지로 바꿔서 보냅니다)');
+      if (parseInt(request.headers.get('Content-Length') || '0', 10) > TRANSCRIBE_MAX_BYTES) throw new HttpError(413, '이미지가 너무 큽니다. (최대 4MB)');
+      const buf = await request.arrayBuffer();
+      if (!buf.byteLength) throw new HttpError(400, '빈 이미지입니다.');
+      if (buf.byteLength > TRANSCRIBE_MAX_BYTES) throw new HttpError(413, '이미지가 너무 큽니다. (최대 4MB)');
+      if (!magicOk(type, buf)) throw new HttpError(400, '이미지 내용이 형식과 맞지 않습니다.');
+      const fn = TRANSCRIBERS[env.TRANSCRIBER || 'cloudflare'];
+      if (!fn) throw new HttpError(500, '알 수 없는 변환기입니다. (TRANSCRIBER 환경변수)');
+      const r = await fn(env, type, buf);
+      return json({ text: r.text, model: r.model });
     }
 
     // ===== 곡 =====
