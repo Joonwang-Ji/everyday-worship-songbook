@@ -1306,7 +1306,8 @@ export async function onRequest({ request, env }) {
         const { results } = await db
           .prepare(
             `SELECT i.id,i.uid,i.position,i.song_id,i.key,i.form,i.memo,i."view" AS view,
-              s.title,s.original_key,s.time_sig,s.chordpro,
+              s.title,s.original_key,s.time_sig,
+              (TRIM(s.chordpro, ' ' || char(9) || char(10) || char(13)) <> '') AS has_chords,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = i.song_id) AS file_count
              FROM setlist_items i LEFT JOIN songs s ON s.id = i.song_id
              WHERE i.setlist_id=? ORDER BY i.position`
@@ -1323,7 +1324,7 @@ export async function onRequest({ request, env }) {
         const tkMap = Object.fromEntries(tk.map((r) => [r.song_id, r.key]));
         const svc = list.service_id ? await db.prepare(`SELECT name FROM team_options WHERE id=? AND kind='service'`).bind(list.service_id).first() : null;
         const svcName = svc ? svc.name : '';
-        const items = results.map(({ chordpro, ...it }) => ({ ...it, title: it.title || '(삭제된 곡)', has_chords: /\S/.test(chordpro || ''), team_key: tkMap[it.song_id] || '' }));
+        const items = results.map((it) => ({ ...it, title: it.title || '(삭제된 곡)', has_chords: !!it.has_chords, team_key: tkMap[it.song_id] || '' }));
         return json({ setlist: { id: list.id, date: list.date, title: list.title, memo: list.memo, service_id: list.service_id, service_name: svcName, leaders: list.leaders || '', is_temp: list.is_temp ? 1 : 0, items }, canEdit: ctx.leader });
       }
 
@@ -1366,9 +1367,17 @@ export async function onRequest({ request, env }) {
       // 목록 + 검색(제목·아티스트·태그·가사)
       if (!id && method === 'GET') {
         const pq = parseQuery(url.searchParams.get('q') || '');
+        // 21차: 검색어가 없으면 악보 본문(수 KB × 곡 수)을 읽지 않고 DB 안에서 "코드 악보 있음"만 계산한다 (목록·오늘 화면이 가벼워짐).
+        // 검색할 때만 본문이 필요하다(가사 검색·미리보기 조각).
         const { results } = await db
           .prepare(
-            `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,tags,chordpro,lyrics_extra,updated_at,
+            pq.all
+              ? `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,tags,chordpro,lyrics_extra,updated_at,
+              (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
+              (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds
+             FROM songs ORDER BY title`
+              : `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,tags,updated_at,
+              (TRIM(chordpro, ' ' || char(9) || char(10) || char(13)) <> '') AS has_chords,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
               (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds
              FROM songs ORDER BY title`
@@ -1410,7 +1419,7 @@ export async function onRequest({ request, env }) {
           return {
             ...rest,
             file_kinds: rest.file_kinds || '',
-            has_chords: /\S/.test(chordpro),
+            has_chords: chordpro === undefined ? !!rest.has_chords : /\S/.test(chordpro),
             team_key: tkMap[s.id] || '',
             last_used: lu ? lu.last : '',
             use_count: lu ? lu.n : 0,

@@ -5,7 +5,7 @@
 (function () {
   'use strict';
   const FONT = '-apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", "Malgun Gothic", sans-serif';
-  const INK = '#1d2430', MUTED = '#6b7280', BRAND = '#1f3a5f', CHORD = '#b4472a', LINE = '#d9d6cc', SOFT = '#eef2f8';
+  const INK = '#1d2430', MUTED = '#6b7280', BRAND = '#2a6670', CHORD = '#bf4b32', LINE = '#d9d6cc', SOFT = '#e8f1f1';
   const A4 = { w: 1240, h: 1754 }; // 150dpi
   const PT = { w: 595.28, h: 841.89 }; // A4 (pt)
   const M = 90; // 바깥 여백

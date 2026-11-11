@@ -105,6 +105,7 @@
     return h;
   }
   function clearSession() {
+    meAt = 0;
     ['ews_token', 'ews_admin', 'ews_teams', 'ews_team_active', 'ews_team', 'ews_leader', 'ews_team_skip'].forEach((k) => ls.del(k));
     // 오프라인용으로 저장해 둔 악보·콘티도 이 기기에서 지운다 (다른 사람이 같은 기기를 쓸 때를 위해)
     try { if (window.Ink) Ink.wipeLocal(); } catch {}
@@ -163,7 +164,22 @@
     return data.file;
   }
 
+  // 21차: 화면을 옮길 때마다 서버에 "나는 누구인가"(/me)를 물어보고 기다리던 것을 줄인다.
+  // 열쇠(접속암호·관리자·팀·팀장)가 그대로이고 1분 안에 확인했다면 그 결과를 그대로 쓴다. 열쇠가 바뀌거나 1분이 지나면 다시 묻는다.
+  // (PIN 입력·팀 가입·로그아웃은 열쇠가 바뀌므로 자동으로 새로 확인된다. 직접 새로 확인하고 싶을 땐 loadMe()를 부른다.)
+  let meKey = '';
+  let meAt = 0;
+  const authKey = () => JSON.stringify(authHeaders());
+  async function ensureMe() {
+    if (meAt && meKey === authKey() && Date.now() - meAt < 60000 && !servedFromCache) return;
+    await loadMe();
+  }
   async function loadMe() {
+    await loadMeNow();
+    meKey = authKey();
+    meAt = Date.now();
+  }
+  async function loadMeNow() {
     migrateLegacy();
     ensureActive();
     // 지금 보는 팀의 열쇠가 더 이상 안 통하면(가입코드 재발급·팀 삭제 등) "다시 입장 필요"로 표시하고 다른 팀으로 넘어간다.
@@ -304,7 +320,7 @@
     document.querySelector('main').classList.remove('wide');
     try {
       if (!ls.get('ews_token', '')) return viewLogin();
-      await loadMe();
+      await ensureMe();
       $top.hidden = false;
       renderNav(hash);
       // 처음 들어오면 팀 가입 화면부터. ("팀 없이 곡만 보기"를 고르면 건너뜀)
@@ -346,6 +362,7 @@
     $nav.hidden = true;
     $app.innerHTML = `
       <div class="login">
+        <div class="login-mark" aria-hidden="true"><svg viewBox="0 0 64 64" width="32" height="32"><path fill="currentColor" d="M26 14v26.5a7 7 0 1 1-4-6.3V20l22-5v21.5a7 7 0 1 1-4-6.3V18z"/></svg></div>
         <h1>Everyday Worship Songbook</h1>
         <p class="muted center">찬양 악보집</p>
         <form class="card" id="f">
@@ -408,7 +425,7 @@
     }
     const teamSorts = me.team ? '<option value="old">오래 안 부른 순</option><option value="recent">최근 부른 순</option>' : '';
     $app.innerHTML = `
-      <div class="row between"><h1>곡 목록</h1>${lockBtn('song', '+ 새 곡', '#/new', 'primary')}</div>
+      <div class="row between"><h1>곡 목록</h1>${lockBtn('song', '+ 새 곡', '#/new', 'primary', true)}</div>
       <input type="search" id="q" placeholder="제목 · 원제 · 가사(후렴) · 아티스트 · 태그 검색" value="${esc(listState.q)}">
       <details class="filter" id="filter"><summary id="fsum">분류·키·박자로 찾기</summary><div id="chips"></div><p class="row" style="margin:8px 0 0"><button type="button" class="btn small" id="fclear">선택 모두 지우기</button></p></details>
       <div class="row sortrow"><span class="ctl-label">정렬</span><select id="sort" aria-label="정렬"><option value="title">제목순</option><option value="key">키순 (C→B, 단조는 뒤)</option>${teamSorts}</select></div>
@@ -475,8 +492,10 @@
         $ext.hidden = true;
       }
     }
+    let tagInfo = null; // 추천 태그 목록은 화면을 연 뒤 한 번만 받는다 (검색어를 칠 때마다 다시 받지 않음)
     async function load() {
-      const [r, info] = await Promise.all([api('/songs?q=' + encodeURIComponent(listState.q)), api('/tags')]);
+      const [r, info] = await Promise.all([api('/songs?q=' + encodeURIComponent(listState.q)), tagInfo ? Promise.resolve(tagInfo) : api('/tags')]);
+      tagInfo = info;
       songs = r.songs;
       groups = groupTags(info);
       kchips = SongFilter.keyChips(songs);
@@ -1936,12 +1955,14 @@
   // ---------- 권한 열기: 필요한 순간에 그 자리에서 PIN 묻기 (6차 전 개편) ----------
   // kind: 'leader' = 콘티 편집(팀장 PIN) · 'song' = 악보 편집(관리자 PIN, 또는 악보 권한이 있는 팀장 PIN)
   // 권한이 있으면 보통 버튼, 없지만 열 수 있으면 🔒 버튼(누르면 PIN 창), 열 방법이 없으면 보이지 않는다.
-  function lockBtn(kind, label, go, cls) {
+  // quiet=true: 권한이 아직 안 열려 있으면 버튼 자체를 숨긴다. (21차: 한 화면에 🔒 버튼이 여러 개 줄지어 보이던 것을 줄이려고,
+  // 잠긴 상태에서는 그 화면의 대표 버튼 하나만 🔒로 보여 주고 나머지는 숨긴다. 권한은 더보기 > 편집 권한에서도 열 수 있다.)
+  function lockBtn(kind, label, go, cls, quiet) {
     const allowed = kind === 'leader' ? !!(me.team && me.team.isLeader) : !!me.canEdit;
     const c = cls || '';
     if (allowed) return `<a class="btn ${c}" href="${go}">${label}</a>`;
     const lockable = kind === 'leader' ? !!me.team : !!me.adminRequired;
-    if (!lockable) return '';
+    if (!lockable || quiet) return '';
     return `<button type="button" class="btn locked ${c.replace('primary', '').trim()}" data-lock="${kind}" data-go="${esc(go)}">🔒 ${label}</button>`;
   }
   // 아래에서 올라오는 창. 바깥을 누르거나 Esc로 닫는다.
@@ -2082,6 +2103,8 @@
   });
 
   // ---------- 오늘 (처음 화면): 이번 주 콘티와 바로 연주 ----------
+  // 21차: 순서를 "콘티 → 검색 → 이어지는 콘티 → (편집자) 보완 제안"으로 정리하고, 아래 메뉴와 겹치던 버튼(콘티 전체·곡 목록)을 없앴다.
+  // 보완 제안은 화면이 먼저 뜬 뒤에 따로 불러온다(곡 목록 전체를 읽느라 첫 화면이 늦어지지 않게).
   async function viewHome() {
     const search = `<form class="card home-search" id="hs"><input type="search" id="hq" placeholder="곡 검색 (제목 · 가사 · 원제)" enterkeyhint="search" aria-label="곡 검색"></form>`;
     const bindSearch = () => {
@@ -2100,11 +2123,12 @@
           <p class="muted" style="margin:0 0 12px">팀장에게 받은 가입코드로 입장하면 콘티를 보고 바로 연주할 수 있어요.</p>
           <a class="btn primary big" href="#/team">팀 가입하기</a>
         </div>
-        ${search}
-        <p><a class="btn" href="#/songs">곡 목록 보기</a></p>`;
+        ${search}`;
       bindSearch();
       return;
     }
+    // 곡 목록(보완 제안용)은 콘티 목록과 동시에 요청해 둔다. 결과는 화면이 뜬 뒤에 쓴다.
+    const songsP = me.canEdit ? api('/songs').catch(() => null) : null;
     const { setlists } = await api('/setlists');
     const today = todayKst();
     const byDate = (a, b) => (a.date || '').localeCompare(b.date || '');
@@ -2112,15 +2136,17 @@
     const past = setlists.filter((l) => !l.date || l.date < today).sort((a, b) => byDate(b, a));
     const featured = upcoming[0] || past[0] || null;
     let hero;
+    let heroItems = null;
     if (!featured) {
       hero = `<div class="card hero">
         <div class="hero-label">${esc(me.team.name)}</div>
         <h2 class="hero-title">아직 콘티가 없어요</h2>
         <p class="muted" style="margin:0 0 12px">콘티를 만들면 이번 주 곡이 여기에 나타나고, 한 번에 연주 모드로 들어갈 수 있어요.</p>
-        <div class="row">${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary big')}${lockBtn('leader', '⚡ 빠른 콘티', '#/setlist/new?quick=1', 'big')}</div>
+        <div class="row">${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary big')}${lockBtn('leader', '⚡ 빠른 콘티', '#/setlist/new?quick=1', 'big', true)}</div>
       </div>`;
     } else {
       const { setlist: s } = await api('/setlists/' + featured.id);
+      heroItems = { id: s.id, items: s.items };
       const label = featured.date === today ? '오늘 콘티' : upcoming[0] ? '다가오는 콘티' : '가장 최근 콘티';
       const shown = s.items.slice(0, 8);
       hero = `<div class="card hero">
@@ -2132,25 +2158,27 @@
       </div>`;
     }
     const others = upcoming.slice(1, 3);
-    // 오늘의 보완 제안 (악보 편집 권한이 있는 사람에게만): 코드·이미지 악보 중 빈 곡을 하루 3곡까지
-    let fixHtml = '';
-    let fixBind = () => {};
-    if (me.canEdit) {
-      try {
-        const fx = await loadFixCard(upcoming);
-        fixHtml = fx.html;
-        fixBind = fx.bind;
-      } catch {}
-    }
+    const quick = featured ? lockBtn('leader', '⚡ 빠른 콘티', '#/setlist/new?quick=1', 'small', true) : '';
     $app.innerHTML = `
       ${teamChip()}
       ${hero}
-      ${fixHtml}
-      ${others.length ? `<h2>이어지는 콘티</h2><ul class="songs">${others.map((l) => `<li class="song-item"><a href="#/setlist/${l.id}"><div class="row between"><div class="song-title">${esc(setlistTitle(l))}</div>${l.date ? `<span class="keybadge">${esc(fmtDate(l.date))}</span>` : ''}</div><div class="song-meta">${tempTag(l)}${leaderTag(l)}<span>${l.item_count}곡</span></div></a></li>`).join('')}</ul>` : ''}
       ${search}
-      <div class="row"><a class="btn" href="#/setlists">콘티 전체</a>${lockBtn('leader', '⚡ 빠른 콘티', '#/setlist/new?quick=1', '')}<a class="btn" href="#/songs">곡 목록</a></div>`;
+      ${others.length ? `<h2>이어지는 콘티</h2><ul class="songs">${others.map((l) => `<li class="song-item"><a href="#/setlist/${l.id}"><div class="row between"><div class="song-title">${esc(setlistTitle(l))}</div>${l.date ? `<span class="keybadge">${esc(fmtDate(l.date))}</span>` : ''}</div><div class="song-meta">${tempTag(l)}${leaderTag(l)}<span>${l.item_count}곡</span></div></a></li>`).join('')}</ul>` : ''}
+      <div id="fixslot"></div>
+      ${quick ? `<div class="row">${quick}</div>` : ''}`;
     bindSearch();
-    fixBind();
+    // 오늘의 보완 제안 (악보 편집 권한이 있는 사람에게만): 코드·이미지 악보 중 빈 곡을 하루 3곡까지 — 화면이 뜬 뒤에 채운다
+    if (songsP) {
+      const gen = routeGen;
+      loadFixCard(upcoming, songsP, heroItems)
+        .then((fx) => {
+          const slot = el('fixslot');
+          if (gen !== routeGen || !slot || !fx.html) return;
+          slot.innerHTML = fx.html;
+          fx.bind();
+        })
+        .catch(() => {});
+    }
   }
 
   // ---------- 악보 보완 제안 (13차) ----------
@@ -2164,12 +2192,14 @@
     if (changed) ls.set(FIX_HIDE_KEY, JSON.stringify(h));
     return h;
   }
-  async function loadFixCard(upcoming) {
+  async function loadFixCard(upcoming, songsP, known) {
     const lists = upcoming.slice(0, 3);
-    const [{ songs }, details] = await Promise.all([
-      api('/songs'),
-      Promise.all(lists.map((l) => api('/setlists/' + l.id).then((r) => r.setlist.items).catch(() => []))),
+    const [songsRes, details] = await Promise.all([
+      songsP || api('/songs'),
+      Promise.all(lists.map((l) => (known && known.id === l.id ? Promise.resolve(known.items) : api('/setlists/' + l.id).then((r) => r.setlist.items).catch(() => [])))),
     ]);
+    if (!songsRes) return { html: '', bind() {} };
+    const { songs } = songsRes;
     const soon = new Set(details.flat().map((it) => it.song_id));
     const stat = SongFilter.stats(songs);
     const pick = SongFilter.suggest(songs, { upcoming: soon, hidden: fixHidden(), max: 3 });
@@ -2235,31 +2265,42 @@
       <p><a class="btn" href="#/songs?fmt=missing">곡 목록에서 빠진 것만 보기</a></p>`;
   }
 
-  // ---------- 더보기: 내 권한 · 우리 팀 · 앱 관리 · 로그아웃 ----------
+  // ---------- 더보기: 우리 팀 · 내 필기 · 편집 권한 · 관리 · 기기 정보 · 로그아웃 ----------
+  // 21차: 자주 쓰는 것(팀·내 필기)을 위에, 권한·관리는 아래에 묶고, 진단·저장 공간 같은 기기 정보는 접어 둔다.
   async function viewMore() {
     const t = me.team;
     const leader = !!(t && t.isLeader);
+    const saved = teamsGet();
+    const stale = saved.some((x) => x.stale);
     const perm = (name, ok, hint, kind) =>
       `<div class="perm"><div class="grow"><b>${name}</b><div class="small muted">${hint}</div></div>${ok ? '<span class="pill ok">가능</span>' : lockBtn(kind, '열기', '', 'small') || '<span class="pill">불가</span>'}</div>`;
+    const link = (href, title, sub) => `<a class="rowlink" href="${href}"><span class="grow"><b>${title}</b><span class="small muted">${sub}</span></span><span class="chev" aria-hidden="true">›</span></a>`;
+    const showPerm = !!t || me.adminRequired;
+    const adminRows = [
+      me.canEdit ? link('#/status', '악보 현황', '코드·이미지 악보가 빠진 곡 보기') : '',
+      me.adminRequired ? link('#/admin', '앱 관리', me.isAdmin ? '팀 · 초대코드 · 추천 태그 · 백업' : '관리자 PIN 필요') : '',
+    ].filter(Boolean);
     $app.innerHTML = `
       <h1>더보기</h1>
+      <h2 class="grp">우리 팀</h2>
+      <div class="card rows">
+        ${link('#/team', t ? esc(t.name) : '팀 가입', t ? '가입코드 · 팀장 PIN · 팀 나가기' : '팀장에게 받은 가입코드로 입장하기')}
+        ${saved.length ? `<button type="button" class="rowlink" data-teamsw><span class="grow"><b>팀 전환 · 추가</b><span class="small muted">가입한 팀 ${saved.length}개${stale ? ' · 다시 입장이 필요한 팀이 있어요' : ''}</span></span><span class="chev" aria-hidden="true">›</span></button>` : ''}
+      </div>
+      <div class="card" id="vaultcard"></div>
+      ${showPerm ? `<h2 class="grp">편집 · 관리</h2>
       <div class="card">
-        <h2>내 편집 권한</h2>
         ${t ? perm('콘티 편집', leader, leader ? '팀장 PIN으로 열려 있어요' : '팀장 PIN을 입력하면 열려요', 'leader') : ''}
         ${perm('악보 편집', !!me.canEdit, me.canEdit ? '이 기기에서 열려 있어요' : me.adminRequired ? '관리자 PIN을 입력하면 열려요' : '관리자 PIN이 설정되지 않았어요', 'song')}
         ${me.isAdmin || leader ? '<p style="margin:10px 0 0"><button class="btn small" id="closeperm" type="button">이 기기에서 편집 권한 닫기</button></p>' : ''}
-      </div>
-      <ul class="songs menu">
-        <li class="song-item"><a href="#/team"><div class="song-title">${t ? esc(t.name) : '팀 가입'}</div><div class="song-meta">${t ? '가입코드 · 팀장 PIN · 팀 나가기' : '팀장에게 받은 가입코드로 입장하기'}</div></a></li>
-        ${teamsGet().length ? `<li class="song-item"><a href="#" data-teamsw><div class="song-title">팀 전환 · 팀 추가</div><div class="song-meta">가입한 팀 ${teamsGet().length}개${teamsGet().some((x) => x.stale) ? ' · 다시 입장이 필요한 팀이 있어요' : ''}</div></a></li>` : ''}
-        ${me.canEdit ? `<li class="song-item"><a href="#/status"><div class="song-title">악보 현황</div><div class="song-meta">코드·이미지 악보가 빠진 곡 보기</div></a></li>` : ''}
-        ${me.adminRequired ? `<li class="song-item"><a href="#/admin"><div class="song-title">앱 관리</div><div class="song-meta">${me.isAdmin ? '초대코드 · 팀 목록 · 추천 태그' : '관리자 PIN 필요'}</div></a></li>` : ''}
-      </ul>
-      <div class="card" id="vaultcard"></div>
-      <div class="footer"><button id="logout" type="button">로그아웃</button></div>
-      <p class="muted small">교회 내부용 악보집입니다. 저작권 보호를 위해 외부 공유를 삼가 주세요.</p>
-      <p class="muted small" id="persistnote"></p>
-      <div class="row"><button class="btn small" id="viewdbgbtn" type="button">화면 진단 ${viewDbgOn() ? '끄기' : '켜기'}</button></div>`;
+      </div>` : ''}
+      ${adminRows.length ? `<div class="card rows">${adminRows.join('')}</div>` : ''}
+      <details class="card fold"><summary>기기 · 앱 정보</summary>
+        <p class="muted small" id="persistnote" style="margin-top:0"></p>
+        <p class="muted small">교회 내부용 악보집입니다. 저작권 보호를 위해 외부 공유를 삼가 주세요.</p>
+        <div class="row"><button class="btn small" id="viewdbgbtn" type="button">화면 진단 ${viewDbgOn() ? '끄기' : '켜기'}</button></div>
+      </details>
+      <div class="footer"><button id="logout" type="button">로그아웃</button></div>`;
     el('viewdbgbtn').onclick = () => {
       ls.set('ews_view_dbg', viewDbgOn() ? '0' : '1');
       el('viewdbgbtn').textContent = '화면 진단 ' + (viewDbgOn() ? '끄기' : '켜기');
@@ -2459,7 +2500,7 @@
       $app.innerHTML = `
         ${teamChip()}
         <div class="row between"><h1>콘티</h1>${lockBtn('leader', '+ 새 콘티', '#/setlist/new', 'primary')}</div>
-        <div class="row" style="margin-bottom:6px">${lockBtn('leader', '⚡ 빠른 콘티', '#/setlist/new?quick=1', '')}${canEdit && setlists.length ? `<button type="button" class="btn" id="pickmode">${pickMode ? '정리 끝' : '여러 개 정리'}</button>` : ''}</div>
+        <div class="row" style="margin-bottom:6px">${lockBtn('leader', '⚡ 빠른 콘티', '#/setlist/new?quick=1', '', true)}${canEdit && setlists.length ? `<button type="button" class="btn" id="pickmode">${pickMode ? '정리 끝' : '여러 개 정리'}</button>` : ''}</div>
         ${svcRow}
         ${pickMode ? `<div class="row card" style="padding:8px 10px;margin:6px 0"><span class="small grow">${picked.size}개 선택</span>${tmpCount() ? '<button type="button" class="btn small" id="picktmp">⚡ 임시 모두 선택</button>' : ''}<button type="button" class="btn small danger" id="pickdel" ${picked.size ? '' : 'disabled'}>삭제</button></div>` : ''}
         ${shown.length ? `<ul class="songs">${shown.map(row).join('')}</ul>` : `<p class="muted center">${setlists.length ? '이 종류의 콘티가 없습니다.' : '아직 콘티가 없습니다.'}${canEdit && !setlists.length ? ' “+ 새 콘티”로 만들어 보세요.' : ''}</p>`}`;
@@ -2517,14 +2558,14 @@
         <div class="row between"><div class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</div>${key || it.time_sig ? `<span class="row" style="gap:6px">${key ? `<span class="keybadge">${esc(key)}</span>` : ''}${SongFilter.tsigHTML(it.time_sig, esc)}</span>` : ''}</div>
         <div class="song-meta">
           ${it.form ? `<span>송폼 ${esc(it.form)}</span>` : ''}
-          ${imageOnly ? '<span class="fmt img" title="이미지 악보" aria-label="이미지 악보">🖼</span>' : it.has_chords ? '<span class="fmt chord" title="코드 악보" aria-label="코드 악보">🎼</span>' : ''}
+          ${imageOnly ? '<span class="fmt img" title="이미지 악보" aria-label="이미지 악보">🎼</span>' : it.has_chords ? '<span class="fmt chord" title="코드 악보" aria-label="코드 악보"><b class="cmk">Chord</b></span>' : ''}
           ${it.memo ? `<span>${esc(it.memo)}</span>` : ''}
         </div>
         ${imgKeyNote ? `<div class="hint" style="margin:2px 0 0">이미지 악보는 원래 키(${esc(it.original_key)}) 기준 · 이 콘티에서는 ${esc(it.key)}로 부름</div>` : ''}
       </a></li>`;
     });
     $app.innerHTML = `
-      <div class="row between"><a href="#/setlists" class="small">← 콘티 목록</a><span class="row" style="gap:6px">${lockBtn('leader', '복사', '#/setlist/new?copy=' + id, 'small')}${lockBtn('leader', '편집', '#/setlist/' + id + '/edit', 'small')}</span></div>
+      <div class="row between"><a href="#/setlists" class="small">← 콘티 목록</a><span class="row" style="gap:6px">${lockBtn('leader', '복사', '#/setlist/new?copy=' + id, 'small', true)}${lockBtn('leader', '편집', '#/setlist/' + id + '/edit', 'small')}</span></div>
       <h1>${esc(shownTitle)}</h1>
       <div class="song-meta" style="margin-bottom:10px">${tempTag(s)}${s.date ? `<span class="keybadge">${esc(fmtDate(s.date))}</span>` : ''}${s.service_name && (s.title || '').trim() ? `<span class="tag">${esc(s.service_name)}</span>` : ''}${leaderTag(s)}<span>${s.items.length}곡</span></div>
       ${s.is_temp && canEdit ? '<div class="card tempbar"><span class="small grow">⚡ 급하게 만든 임시 콘티예요. 정리가 끝나면 확정해 두세요.</span><button class="btn small primary" id="confirmtmp" type="button">확정</button></div>' : ''}
@@ -3519,7 +3560,7 @@
       </div>`;
     const itemsCard = `<h2>곡 순서</h2><div id="items"></div>`;
     const infoCard = `
-      <details class="card infocard" id="info" ${quick ? '' : 'open'}>
+      <details class="card infocard" id="info" ${quick || id ? '' : 'open'}>
         <summary id="infosum">정보</summary>
         <div class="grid2">
           <div><label for="sd" style="margin-top:0">날짜</label><input id="sd" type="date" value="${esc(data.date)}"></div>
@@ -3930,64 +3971,97 @@
 
     const [inv, tr, tg] = await Promise.all([api('/admin/invite'), api('/admin/teams'), api('/tags')]);
     const teams = tr.teams;
+    // 21차: 한 줄로 길게 이어지던 관리 화면을 세 칸으로 나눈다 — 팀·초대 / 추천 태그 / 백업·정리. 마지막에 보던 칸을 기억한다.
+    const nTags = Object.keys(tg.usage).length;
     $app.innerHTML = `
       <div class="row between"><a href="#/more" class="small">← 더보기</a></div>
       <h1>앱 관리</h1>
-      <div class="card">
-        <h2>팀 만들기 초대코드</h2>
-        ${inv.code ? `<div class="bigcode" id="invcode">${esc(inv.code)}</div>` : '<p class="muted">초대코드가 없습니다. 재발급하면 팀 만들기가 열립니다.</p>'}
-        <div class="row">${inv.code ? '<button class="btn small" id="invcopy">복사</button>' : ''}<button class="btn small danger" id="invnew">${inv.code ? '재발급' : '초대코드 만들기'}</button></div>
-        <p class="hint">새 팀을 만들 사람에게만 알려 주세요. 재발급하면 이전 코드는 바로 쓸 수 없습니다.${inv.source === 'env' ? ' (지금은 Cloudflare 환경변수 값이며, 재발급하면 앱 안의 값으로 바뀝니다.)' : ''}</p>
+      <div class="seg-tabs" id="atabs" role="tablist">
+        <button type="button" data-tab="teams" role="tab">팀 · 초대 <small>${teams.length}</small></button>
+        <button type="button" data-tab="tags" role="tab">추천 태그 <small>${nTags}</small></button>
+        <button type="button" data-tab="data" role="tab">백업 · 정리</button>
       </div>
-      <h2>팀 목록 (${teams.length})</h2>
-      <div id="teams">
-        ${
-          teams
-            .map(
-              (t) => `<div class="card" data-t="${t.id}">
-              <div class="row between"><div class="song-title">${esc(t.name)}</div><span class="song-meta" style="margin:0"><span>콘티 ${t.setlist_count}개</span>${t.has_leader ? '' : '<span class="error" style="margin:0">팀장 없음</span>'}</span></div>
-              <label>가입코드</label>
-              <div class="row"><span class="bigcode small">${esc(t.join_code)}</span><button class="btn small" data-a="copy" data-code="${esc(t.join_code)}">복사</button><button class="btn small" data-a="code">재발급</button></div>
-              <label class="check"><input type="checkbox" data-a="edit" ${t.can_edit_songs ? 'checked' : ''}> 이 팀 팀장에게 악보 편집 권한 주기</label>
-              <div class="row" style="margin-top:8px">
-                <button class="btn small" data-a="pin">팀장 PIN 재지정</button>
-                <button class="btn small" data-a="rename">이름 변경</button>
-                <button class="btn small danger" data-a="del" style="margin-left:auto">팀 삭제</button>
-              </div>
-            </div>`
-            )
-            .join('') || '<p class="muted">아직 팀이 없습니다.</p>'
-        }
-      </div>
-      <details class="card fold"><summary>팀 직접 만들기</summary>
-      <form id="nf">
-        <div class="grid2">
-          <div><label for="nn" style="margin-top:0">팀 이름</label><input id="nn" type="text" maxlength="40"></div>
-          <div><label for="np" style="margin-top:0">팀장 PIN (4자 이상)</label><input id="np" type="password" autocomplete="new-password"></div>
-        </div>
-        <p class="error" id="nerr"></p>
-        <p><button class="btn">팀 만들기</button></p>
-      </form></details>
-      <h2>구간 이름 영어 통일</h2>
-      <div class="card">
-        <p class="hint" style="margin-top:0">악보 구간 이름표와 콘티 송폼의 한글 이름(1절·후렴·간주 …)을 영어 약어(V1 · C · Inter …)로 바꿉니다. 곡은 바꾸기 전 내용이 <b>수정 이력</b>에 남고, 콘티 송폼은 이전 글자를 따로 보관해요. 몇 번 눌러도 결과는 같아요. 알아보지 못하는 이름(예: Hook)은 건드리지 않고 목록으로 보여 드려요.</p>
-        <div id="mgres" class="small"></div>
-        <div class="row"><button class="btn small" id="mgbak" type="button">① 백업 받기</button><button class="btn small" id="mgprev" type="button">② 미리 보기</button><button class="btn small danger" id="mgrun" type="button" disabled>③ 변환 실행</button></div>
-      </div>
-      <h2>추천 태그 (주제 · 빠르기 · 절기)</h2>
-      <div class="card">
-        <p class="hint" style="margin-top:0">곡 편집 화면과 곡 목록 필터에 칩으로 나오는 목록입니다. 곡에는 이 목록에 없는 태그도 자유롭게 쓸 수 있어요. ◀ ▶ ▲ ▼ 로 순서를 바꾸면 곡에 표시되는 태그 순서도 이 순서를 따릅니다. 고친 뒤 <b>추천 목록 저장</b>을 눌러야 반영됩니다.</p>
-        <div id="presets"></div>
-        <p class="error" id="perr"></p>
-        <div class="row"><button class="btn small" id="pnew" type="button">+ 분류 추가</button><button class="btn primary" id="psave" type="button">추천 목록 저장</button></div>
-      </div>
-      <details class="card fold"><summary>곡에 쓰인 태그 정리</summary>
-        <p class="hint" style="margin-top:0">이름을 바꾸면 모든 곡의 태그가 함께 바뀝니다. 이미 있는 태그 이름으로 바꾸면 하나로 합쳐져요.</p>
-        <div id="usedtags"></div>
-      </details>
-      <div class="footer"><button id="aout">관리자 권한 닫기</button></div>`;
 
-    const refresh = () => route();
+      <section data-pane="teams">
+        <div class="card">
+          <h2>팀 만들기 초대코드</h2>
+          ${inv.code ? `<div class="bigcode" id="invcode">${esc(inv.code)}</div>` : '<p class="muted">초대코드가 없습니다. 재발급하면 팀 만들기가 열립니다.</p>'}
+          <div class="row">${inv.code ? '<button class="btn small" id="invcopy">복사</button>' : ''}<button class="btn small danger" id="invnew">${inv.code ? '재발급' : '초대코드 만들기'}</button></div>
+          <p class="hint">새 팀을 만들 사람에게만 알려 주세요. 재발급하면 이전 코드는 바로 쓸 수 없습니다.${inv.source === 'env' ? ' (지금은 Cloudflare 환경변수 값이며, 재발급하면 앱 안의 값으로 바뀝니다.)' : ''}</p>
+        </div>
+        <h2>팀 목록 (${teams.length})</h2>
+        <div id="teams">
+          ${
+            teams
+              .map(
+                (t) => `<div class="card tcard" data-t="${t.id}">
+                <div class="row between"><div class="song-title">${esc(t.name)}</div><span class="song-meta" style="margin:0"><span>콘티 ${t.setlist_count}개</span>${t.has_leader ? '' : '<span class="error" style="margin:0">팀장 없음</span>'}${t.can_edit_songs ? '<span class="tag">악보 편집 가능</span>' : ''}</span></div>
+                <div class="row" style="margin-top:6px"><span class="muted small">가입코드</span><span class="bigcode small">${esc(t.join_code)}</span><button class="btn small" data-a="copy" data-code="${esc(t.join_code)}">복사</button></div>
+                <details class="tmore"><summary>팀 관리</summary>
+                  <label class="check"><input type="checkbox" data-a="edit" ${t.can_edit_songs ? 'checked' : ''}> 이 팀 팀장에게 악보 편집 권한 주기</label>
+                  <div class="row" style="margin-top:8px">
+                    <button class="btn small" data-a="code">가입코드 재발급</button>
+                    <button class="btn small" data-a="pin">팀장 PIN 재지정</button>
+                    <button class="btn small" data-a="rename">이름 변경</button>
+                    <button class="btn small danger" data-a="del" style="margin-left:auto">팀 삭제</button>
+                  </div>
+                </details>
+              </div>`
+              )
+              .join('') || '<p class="muted">아직 팀이 없습니다.</p>'
+          }
+        </div>
+        <details class="card fold"><summary>팀 직접 만들기</summary>
+        <form id="nf">
+          <div class="grid2">
+            <div><label for="nn" style="margin-top:0">팀 이름</label><input id="nn" type="text" maxlength="40"></div>
+            <div><label for="np" style="margin-top:0">팀장 PIN (4자 이상)</label><input id="np" type="password" autocomplete="new-password"></div>
+          </div>
+          <p class="error" id="nerr"></p>
+          <p><button class="btn">팀 만들기</button></p>
+        </form></details>
+      </section>
+
+      <section data-pane="tags" hidden>
+        <div class="card">
+          <h2>추천 태그 (주제 · 빠르기 · 절기)</h2>
+          <p class="hint" style="margin-top:0">곡 편집 화면과 곡 목록 필터에 칩으로 나오는 목록이에요. 곡에는 이 목록에 없는 태그도 자유롭게 쓸 수 있어요. ◀ ▶ ▲ ▼ 로 순서를 바꾸면 곡에 표시되는 태그 순서도 따라가요. 고친 뒤 <b>추천 목록 저장</b>을 눌러야 반영돼요.</p>
+          <div id="presets"></div>
+          <p class="error" id="perr"></p>
+          <div class="row"><button class="btn small" id="pnew" type="button">+ 분류 추가</button><button class="btn primary" id="psave" type="button">추천 목록 저장</button></div>
+        </div>
+        <details class="card fold"><summary>곡에 쓰인 태그 정리 (${nTags})</summary>
+          <p class="hint" style="margin-top:0">이름을 바꾸면 모든 곡의 태그가 함께 바뀌어요. 이미 있는 태그 이름으로 바꾸면 하나로 합쳐져요.</p>
+          <div id="usedtags"></div>
+        </details>
+      </section>
+
+      <section data-pane="data" hidden>
+        <div class="card">
+          <h2>데이터 백업</h2>
+          <p class="hint" style="margin-top:0">곡 · 콘티 · 태그 · 팀 설정을 파일 하나로 내려받아요. 큰 정리를 하기 전이나 가끔 한 번씩 받아 두면 안전해요.</p>
+          <div class="row"><button class="btn primary" id="mgbak" type="button">백업 파일 받기</button></div>
+        </div>
+        <div class="card">
+          <h2>구간 이름 영어 통일</h2>
+          <p class="hint" style="margin-top:0">악보 구간 이름표와 콘티 송폼의 한글 이름(1절·후렴·간주 …)을 영어 약어(V1 · C · Inter …)로 바꿔요. 곡은 바꾸기 전 내용이 <b>수정 이력</b>에 남고, 콘티 송폼은 이전 글자를 따로 보관해요. 몇 번 눌러도 결과는 같아요. 알아보지 못하는 이름(예: Hook)은 건드리지 않고 목록으로 보여 드려요. <b>① 백업 → ② 미리 보기 → ③ 변환 실행</b> 순서로 하세요.</p>
+          <div id="mgres" class="small"></div>
+          <div class="row"><button class="btn small" id="mgprev" type="button">② 미리 보기</button><button class="btn small danger" id="mgrun" type="button" disabled>③ 변환 실행</button></div>
+        </div>
+      </section>
+
+      <div class="footer"><button id="aout">관리자 권한 닫기</button></div>`;
+    const showTab = (t) => {
+      if (!['teams', 'tags', 'data'].includes(t)) t = 'teams';
+      ls.set('ews_admin_tab', t);
+      document.querySelectorAll('#atabs button').forEach((b) => { const on = b.dataset.tab === t; b.classList.toggle('on', on); b.setAttribute('aria-selected', on ? 'true' : 'false'); });
+      document.querySelectorAll('[data-pane]').forEach((x) => { x.hidden = x.dataset.pane !== t; });
+    };
+    el('atabs').onclick = (ev) => { const b = ev.target.closest && ev.target.closest('button[data-tab]'); if (b) { showTab(b.dataset.tab); window.scrollTo(0, 0); } };
+    showTab(ls.get('ews_admin_tab', 'teams'));
+
+    // 팀 코드 재발급·이름 변경 같은 동작 뒤에 화면을 다시 그릴 때 스크롤 위치를 그대로 둔다
+    const refresh = async () => { const y = window.scrollY; await route(); window.scrollTo(0, y); };
     const act = async (fn) => {
       try {
         await fn();

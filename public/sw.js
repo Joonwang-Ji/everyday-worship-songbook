@@ -35,19 +35,25 @@ function markCached(res) {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
 }
 
-// 인터넷이 되면 새것을 받아 저장하고, 안 되거나 너무 느리면(timeout) 저장해 둔 것을 쓴다.
-async function networkFirst(req, cacheName, timeoutMs, fallbackUrl) {
+// 인터넷이 되면 새것을 받아 저장하고, 안 되거나 너무 느리면(timeout) 저장해 둔 것을 먼저 보여 준다.
+// 21차: 느려서 저장본을 먼저 보여 준 경우에도 받던 새것은 끝까지 받아 저장해 두므로, 다음에 열 때는 새것이 나온다.
+// (저장본이 아예 없으면 새것이 올 때까지 기다린다.)
+async function networkFirst(req, cacheName, timeoutMs, fallbackUrl, evt) {
   const cache = await caches.open(cacheName);
-  try {
-    const res = await Promise.race([
-      fetch(req),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs)),
-    ]);
+  const net = fetch(req).then((res) => {
     if (res && res.ok) cache.put(req, res.clone()).catch(() => {});
     return res;
+  });
+  net.catch(() => {});
+  try {
+    return await Promise.race([net, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs))]);
   } catch (err) {
     const hit = (await cache.match(req)) || (fallbackUrl ? await cache.match(fallbackUrl) : null);
-    if (hit) return cacheName === DATA ? markCached(hit) : hit;
+    if (hit) {
+      if (evt && evt.waitUntil) evt.waitUntil(net.catch(() => {}));
+      return cacheName === DATA ? markCached(hit) : hit;
+    }
+    if (err && err.message === 'timeout') return net; // 저장본이 없고 느릴 뿐이면 계속 기다린다
     throw err;
   }
 }
@@ -85,15 +91,15 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   if (p.startsWith('/api/')) {
-    if (DATA_PATHS.some((re) => re.test(p))) e.respondWith(networkFirst(req, DATA, 6000));
+    if (DATA_PATHS.some((re) => re.test(p))) e.respondWith(networkFirst(req, DATA, 4000, undefined, e));
     return; // 그 밖의 API(로그인·관리자·검색 목록 등)는 저장하지 않는다
   }
   // 앱 화면 파일
   if (req.mode === 'navigate') {
-    e.respondWith(networkFirst(req, SHELL, 4000, '/index.html'));
+    e.respondWith(networkFirst(req, SHELL, 2500, '/index.html', e));
     return;
   }
   if (SHELL_FILES.includes(p) || p === '/sw.js') {
-    e.respondWith(networkFirst(req, SHELL, 4000));
+    e.respondWith(networkFirst(req, SHELL, 2500, undefined, e));
   }
 });

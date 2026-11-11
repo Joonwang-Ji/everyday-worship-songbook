@@ -85,8 +85,9 @@
   function badgesHTML(s, esc) {
     const f = formatOf(s);
     const out = [];
-    if (f.chord) out.push('<span class="fmt chord" title="코드 악보(키를 바꿀 수 있어요)" aria-label="코드 악보">🎼</span>');
-    if (f.image) out.push(`<span class="fmt img" title="이미지 악보" aria-label="이미지 악보">🖼${!f.both && f.n > 1 ? ' ' + f.n : ''}</span>`);
+    // 21차: 코드 악보는 "Cm" 같은 코드 기호로, 이미지 악보는 높은음자리표(🎼)로 보여 준다. (악보 모양이 있는 쪽이 이미지라서)
+    if (f.chord) out.push('<span class="fmt chord" title="코드 악보(키를 바꿀 수 있어요)" aria-label="코드 악보"><b class="cmk">Chord</b></span>');
+    if (f.image) out.push(`<span class="fmt img" title="이미지 악보" aria-label="이미지 악보">🎼${!f.both && f.n > 1 ? ' ' + f.n : ''}</span>`);
     if (f.pdf) out.push(`<span class="fmt pdf" title="PDF 악보" aria-label="PDF 악보">📄${!f.both && f.n > 1 ? ' ' + f.n : ''}</span>`);
     if (!out.length) out.push('<span class="fmt none">악보 없음</span>');
     return out.join('');
@@ -187,7 +188,7 @@
     const parts = groups.map((g) => grp(g.label, g.items.map((t) => chip(st.tags.includes(t), `data-t="${esc(t)}"`, esc(t))).join('')));
     if (chips.length) parts.push(grp('키 (팀 키 기준)', chips.map((c) => chip(st.keys.includes(c.key), `data-k="${esc(c.key)}"`, `${esc(c.key)} <small>${c.n}</small>`)).join('')));
     if (tsChips && tsChips.length) parts.push(grp('박자', tsChips.map((c) => chip(st.tsigs.includes(c.key), `data-ts="${esc(c.key)}"`, `${esc(c.key)} <small>${c.n}</small>`)).join('')));
-    parts.push(grp('악보', chip(st.fmt === 'chord', 'data-fmt="chord"', '🎼 코드') + chip(st.fmt === 'file', 'data-fmt="file"', '🖼 이미지·PDF') + chip(st.fmt === 'missing', 'data-fmt="missing"', '⚠ 빠진 것 있음') + chip(st.fmt === 'full', 'data-fmt="full"', '✓ 둘 다 있음')));
+    parts.push(grp('악보', chip(st.fmt === 'chord', 'data-fmt="chord"', '<b class="cmk">Chord</b> 악보') + chip(st.fmt === 'file', 'data-fmt="file"', '🎼 이미지·PDF') + chip(st.fmt === 'missing', 'data-fmt="missing"', '⚠ 빠진 것 있음') + chip(st.fmt === 'full', 'data-fmt="full"', '✓ 둘 다 있음')));
     return parts.join('');
   }
 
