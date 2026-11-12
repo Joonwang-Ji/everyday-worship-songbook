@@ -49,8 +49,64 @@
   const isChordTok = (s) => ChordEdit.isChord(s) && s !== '?';
 
   // 한 쪽(한 번의 AI 답)을 다듬는다. → {text, key, nChords, nUnknown, nBare, nRepeat}
+  // 29차: 코드가 가사 위 줄에 따로 적힌 글자(Ultimate Guitar 등에서 복사한 것)를 ChordPro로 바꾼다.
+  // 위 줄 코드의 글자 칸(열) 위치를 아래 가사 줄의 같은 칸에 [코드]로 끼워 넣는다. 글자 폭이 같은 글꼴로 복사된 글자(공백으로 맞춘 것)여야 정확하다.
+  const HEAD_RE = /^\[?\s*((?:pre[- ]?)?chorus|verse|bridge|intro|outro|inter(?:lude)?|instrumental|tag|ending|refrain|interlude)\s*\d*\s*[:\]]?\s*$/i;
+  const isHeadLine = (t) => HEAD_RE.test(t.trim()) || /^\[[^\]]{1,24}\]$/.test(t.trim()) && !isChordTok(t.trim().slice(1, -1));
+  const chordToks = (line) => {
+    const t = line.trim();
+    if (!t || /[\[\]{}]/.test(t)) return null;
+    const toks = t.split(/\s+/);
+    return toks.every(isChordTok) ? toks : null;
+  };
+  function looksChordOverLyrics(raw) {
+    const ls = String(raw || '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n');
+    let pairs = 0;
+    for (let i = 0; i < ls.length - 1; i++) {
+      if (chordToks(ls[i]) && ls[i + 1].trim() && !chordToks(ls[i + 1]) && !isHeadLine(ls[i + 1]) && !/[\[{]/.test(ls[i + 1])) pairs++;
+    }
+    return pairs >= 2;
+  }
+  function fromChordsOverLyrics(raw) {
+    const ls = String(raw || '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/\t/g, '    ').split('\n').map((l) => l.replace(/\s+$/, ''));
+    const out = [];
+    for (let i = 0; i < ls.length; i++) {
+      const line = ls[i];
+      const t = line.trim();
+      if (!t) { out.push(''); continue; }
+      if (isHeadLine(t) && !chordToks(line)) {
+        const nm = t.replace(/^\[|\]$/g, '').replace(/:$/, '').trim();
+        const nv = Sections.normalize(nm);
+        if (out.length && out[out.length - 1] !== '') out.push('');
+        out.push('{comment: ' + (nv === null ? nm : nv) + '}');
+        continue;
+      }
+      const toks = chordToks(line);
+      if (!toks) { out.push(line); continue; }
+      const nxt = ls[i + 1];
+      if (nxt === undefined || !nxt.trim() || chordToks(nxt) || isHeadLine(nxt) || /[\[{]/.test(nxt)) {
+        out.push(toks.map((c) => '[' + c + ']').join(' '));
+        continue;
+      }
+      // 코드 위치(열) 수집 → 가사 줄에 오른쪽부터 끼워 넣는다
+      const pos = [];
+      const re = /\S+/g;
+      let m;
+      while ((m = re.exec(line))) pos.push([m.index, m[0]]);
+      let lyric = nxt;
+      for (let k = pos.length - 1; k >= 0; k--) {
+        const at = Math.min(pos[k][0], lyric.length);
+        lyric = lyric.slice(0, at) + '[' + pos[k][1] + ']' + lyric.slice(at);
+      }
+      out.push(lyric);
+      i++;
+    }
+    return out.join('\n');
+  }
+
   function clean(raw) {
-    let s = String(raw == null ? '' : raw).replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+    let s = String(raw == null ? '' : raw).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    if (looksChordOverLyrics(s)) s = fromChordsOverLyrics(s);
     // 코드 울타리(```chordpro … ```)
     const fence = /```[a-zA-Z]*\n([\s\S]*?)```/.exec(s);
     if (fence) s = fence[1];
@@ -176,5 +232,5 @@
     const i = p.indexOf('\n\n[');
     return i < 0 ? p + '\n\n' + block : p.slice(0, i) + '\n\n' + block + p.slice(i);
   }
-  return { LYRICS_PROMPT, CHORD_PROMPT, MANUAL_PROMPT, withPages, clean, merge, notes };
+  return { LYRICS_PROMPT, CHORD_PROMPT, MANUAL_PROMPT, withPages, looksChordOverLyrics, fromChordsOverLyrics, clean, merge, notes };
 });

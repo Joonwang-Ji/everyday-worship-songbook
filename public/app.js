@@ -1209,7 +1209,7 @@
           <div class="card">
             <div id="draftbar" class="draftbar" hidden></div>
             <div class="row between" style="margin-bottom:8px"><span class="lbl-like">악보 본문</span></div>
-            <div class="row" style="margin:0 0 8px;flex-wrap:wrap"><button type="button" class="btn small" id="refbtn">📖 원본 악보 옆에 놓기</button><button type="button" class="btn small" id="convbtn">🪄 Claude로 변환</button><button type="button" class="btn small" id="pastebtn">📋 가사 붙여넣기로 시작</button><button type="button" class="btn small" id="toolsbtn">⋯ 본문 도구</button></div>
+            <div class="row" style="margin:0 0 8px;flex-wrap:wrap"><button type="button" class="btn small" id="refbtn">📖 원본 악보 옆에 놓기</button><button type="button" class="btn small" id="convbtn">🪄 Claude로 변환</button><button type="button" class="btn small" id="pastebtn">📋 가사·코드 붙여넣기</button><button type="button" class="btn small" id="toolsbtn">⋯ 본문 도구</button></div>
             <div id="cv-note" class="cv-note hint" hidden></div>
             <div id="tabpane" class="te">
               <div id="te-lines" class="te-lines"></div>
@@ -1851,8 +1851,8 @@
     function pasteSheet() {
       const sh = showSheet(`<h2 style="margin-top:0">가사 붙여넣기</h2>
         <div id="ps-step1">
-          <p class="hint" style="margin:0 0 6px">가사를 통째로 붙여넣으세요. 빈 줄을 기준으로 구간을 나누고, <b>V1 · Chorus · 1절 · [후렴]</b> 같은 이름만 적힌 줄이 있으면 이름표로 읽어요. 빈 줄이 없어도 반복되는 줄을 보고 나눠 봐요.</p>
-          <textarea id="ps-in" rows="8" spellcheck="false" placeholder="여기에 가사를 붙여넣기"></textarea>
+          <p class="hint" style="margin:0 0 6px">가사를 통째로 붙여넣으세요. <b>Ultimate Guitar처럼 코드가 가사 위 줄에 있는 글자</b>를 붙여넣으면 코드 위치 그대로 코드 악보로 바꿔 줘요. 빈 줄을 기준으로 구간을 나누고, <b>V1 · Chorus · 1절 · [후렴]</b> 같은 이름만 적힌 줄이 있으면 이름표로 읽어요. 빈 줄이 없어도 반복되는 줄을 보고 나눠 봐요.</p>
+          <textarea id="ps-in" rows="8" spellcheck="false" placeholder="여기에 가사를 붙여넣기 (코드가 가사 위에 있는 글자도 돼요)"></textarea>
           <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="ps-next">구간 나누기</button><button type="button" class="btn" id="ps-no">닫기</button></div>
         </div>
         <div id="ps-step2" hidden></div>`);
@@ -1892,6 +1892,8 @@
         if (nb) nb.scrollTop = sc;
       }
       sh.q('#ps-next').onclick = () => {
+        // 29차: 코드가 가사 위 줄에 적힌 글자(Ultimate Guitar 등)면 구간 나누기 없이 바로 코드 악보로 바꿔 넣는다
+        if (ImgConv.looksChordOverLyrics(inp.value)) { const v = inp.value; sh.close(); putText(v); return; }
         blocks = TabEdit.splitLyrics(inp.value);
         if (!blocks.length) { toast('가사가 비어 있어요.'); return; }
         brkNote = !!blocks.guessedBreaks;
