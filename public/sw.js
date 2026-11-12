@@ -7,7 +7,7 @@ const VER = 'v1';
 const SHELL = `ews-shell-${VER}`;
 const DATA = `ews-data-${VER}`;
 const IMG = `ews-img-${VER}`;
-const SHELL_FILES = ['/', '/index.html', '/style.css', '/sections.js', '/chord.js', '/songfilter.js', '/files.js', '/ink.js', '/songform.js', '/chordedit.js', '/tabedit.js', '/imgconv.js', '/export.js', '/vendor/pdf-lib.min.js', '/app.js', '/manifest.webmanifest', '/icon-192.png'];
+const SHELL_FILES = ['/', '/index.html', '/style.css', '/sections.js', '/variants.js', '/chord.js', '/songfilter.js', '/files.js', '/ink.js', '/songform.js', '/chordedit.js', '/tabedit.js', '/imgconv.js', '/export.js', '/vendor/pdf-lib.min.js', '/app.js', '/manifest.webmanifest', '/icon-192.png'];
 const MAX_IMG = 150;
 
 self.addEventListener('install', (e) => {

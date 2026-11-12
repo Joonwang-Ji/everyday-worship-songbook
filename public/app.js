@@ -150,12 +150,12 @@
   if (window.Ink) Ink.init({ headers: () => authHeaders(), toast });
 
   // 이미지·PDF 한 장 올리기 (사진은 먼저 줄인다)
-  async function uploadFile(songId, file) {
+  async function uploadFile(songId, file, variantId) {
     const { blob, type } = await Files.prepare(file);
     const headers = { 'Content-Type': type, ...authHeaders() };
     let res;
     try {
-      res = await fetch(`/api/songs/${songId}/files`, { method: 'POST', headers, body: blob });
+      res = await fetch(`/api/songs/${songId}/files${variantId ? '?variant=' + variantId : ''}`, { method: 'POST', headers, body: blob });
     } catch {
       throw new Error('인터넷 연결을 확인해 주세요.');
     }
@@ -393,11 +393,12 @@
   const groupTags = SongFilter.groupTags; // 추천 목록의 분류별 태그 + 곡에 쓰인 "기타" (songfilter.js)
   const extLinksHTML = (q) => {
     const e = encodeURIComponent;
-    return [
-      ['Google', `https://www.google.com/search?q=${e(q + ' 코드 악보')}`],
-      ['YouTube', `https://www.youtube.com/results?search_query=${e(q + ' 찬양')}`],
-      ['Ultimate Guitar', `https://www.ultimate-guitar.com/search.php?search_type=title&value=${e(q)}`],
-    ]
+    // 28차: 영어 제목이면 Ultimate Guitar(코드 악보 사이트)를 맨 앞에, 한글 제목이면 Google 검색을 맨 앞에. YouTube는 "원곡 듣기" 용도(찾으면 곡 정보의 '원곡 영상 링크'에 붙여 두기)
+    const en = /[A-Za-z]/.test(q) && !/[가-힣]/.test(q);
+    const g = ['Google', `https://www.google.com/search?q=${e(q + ' 코드 악보')}`];
+    const yt = ['YouTube 원곡', `https://www.youtube.com/results?search_query=${e(en ? q : q + ' 찬양')}`];
+    const ug = ['Ultimate Guitar', `https://www.ultimate-guitar.com/search.php?search_type=title&value=${e(q)}`];
+    return (en ? [ug, g, yt] : [g, yt, ug])
       .map(([n, u]) => `<a class="btn small" href="${esc(u)}" target="_blank" rel="noopener noreferrer">${n}</a>`)
       .join(' ');
   };
@@ -426,7 +427,7 @@
     const teamSorts = me.team ? '<option value="old">오래 안 부른 순</option><option value="recent">최근 부른 순</option>' : '';
     $app.innerHTML = `
       <div class="row between"><h1>곡 목록</h1>${lockBtn('song', '+ 새 곡', '#/new', 'primary', true)}</div>
-      <input type="search" id="q" placeholder="제목 · 원제 · 가사(후렴) · 아티스트 · 태그 검색" value="${esc(listState.q)}">
+      <input type="search" id="q" placeholder="제목 · 원제 · 가사(후렴) · 작곡자 · 태그 검색" value="${esc(listState.q)}">
       <details class="filter" id="filter"><summary id="fsum">분류·키·박자로 찾기</summary><div id="chips"></div><p class="row" style="margin:8px 0 0"><button type="button" class="btn small" id="fclear">선택 모두 지우기</button></p></details>
       <div class="row sortrow"><span class="ctl-label">정렬</span><select id="sort" aria-label="정렬"><option value="title">제목순</option><option value="key">키순 (C→B, 단조는 뒤)</option>${teamSorts}</select></div>
       <ul class="songs" id="list"></ul>
@@ -487,7 +488,7 @@
         $ext.innerHTML = `<p class="small" style="margin:0 0 8px">${shown.length ? '다른 곡도 찾고 있나요?' : '앱에 없는 곡이에요.'} 외부에서 “${esc(listState.q)}” 검색하기</p>
           <div class="row">${extLinksHTML(listState.q)}</div>
           ${me.canEdit ? `<p style="margin:10px 0 0"><a class="btn small primary" href="#/new?title=${encodeURIComponent(listState.q)}">+ “${esc(listState.q.slice(0, 20))}” 새 곡으로 등록</a></p>` : ''}
-          <p class="hint" style="margin-bottom:0">외부 사이트의 악보는 저작권이 있을 수 있으니, 교회 내부 용도로만 확인해 주세요.</p>`;
+          <p class="hint" style="margin-bottom:0">찾았다면 위 “새 곡으로 등록”을 눌러 <b>📋 가사 붙여넣기로 시작</b>이나 <b>🪄 Claude로 변환</b>(악보 캡처)을 쓰면 빨라요. 외국곡은 Ultimate Guitar의 코드 악보를 복사해 붙여넣을 수 있어요. 외부 사이트의 악보는 저작권이 있을 수 있으니, 교회 내부 용도로만 확인해 주세요.</p>`;
       } else {
         $ext.hidden = true;
       }
@@ -535,7 +536,12 @@
   // q: 콘티에서 열었을 때 넘어오는 값 (key=그날의 키, view=chord|image, sl=콘티 번호)
   async function viewSong(id, q) {
     q = q || new URLSearchParams();
-    const { song } = await api('/songs/' + id);
+    const fullSong = (await api('/songs/' + id)).song;
+    // 28차: 버전(한글·영어 가사 등). 주소의 v → 이 기기에서 마지막으로 고른 버전 → 기본 버전
+    const vLabels = Variants.labels(fullSong);
+    let vSel = q.has('v') ? parseInt(q.get('v'), 10) || 0 : parseInt(ls.get('ews_sv_' + id, '0'), 10) || 0;
+    if (!vLabels.some((x) => x.id === vSel)) vSel = 0;
+    const song = Variants.apply(fullSong, { variant_id: vSel });
     document.title = song.title + ' · Everyday Worship Songbook';
     const parsed = Chord.parseChordPro(song.chordpro);
     const gk = Chord.guessKey(parsed, song.original_key);
@@ -576,7 +582,7 @@
     const playHref = '#/play/' + (slId ? slId + '?song=' + id : 'song/' + id + (q.toString() ? '?' + q.toString() : ''));
     // ⋯ 메뉴: 편집(권한이 없으면 🔒 PIN) · 수정 이력
     const menuRows = [
-      me.canEdit ? `<a class="menu-row" href="#/edit/${id}">곡 편집</a>` : me.adminRequired ? `<button type="button" class="menu-row" data-lock="song" data-go="#/edit/${id}">🔒 곡 편집 <span class="muted small">PIN 필요</span></button>` : '',
+      me.canEdit ? `<a class="menu-row" href="#/edit/${id}${vSel ? '?v=' + vSel : ''}">${vSel ? '이 버전 편집' : '곡 편집'}</a>` : me.adminRequired ? `<button type="button" class="menu-row" data-lock="song" data-go="#/edit/${id}${vSel ? '?v=' + vSel : ''}">🔒 곡 편집 <span class="muted small">PIN 필요</span></button>` : '',
       me.canEdit ? `<a class="menu-row" href="#/history/${id}">수정 이력</a>` : '',
       hasText ? `<button type="button" class="menu-row" id="m-lyr">가사 복사</button>` : '',
     ].filter(Boolean);
@@ -606,10 +612,11 @@
         ${song.artist ? `<span>${esc(song.artist)}</span>` : ''}
         <span id="keymeta" class="keymeta">${keyMetaHTML()}</span>
         ${song.tempo ? `<span>♩${song.tempo}</span>` : ''}
-        ${yt ? `<a href="${esc(yt)}" target="_blank" rel="noopener noreferrer">▶ 유튜브</a>` : ''}
+        ${yt ? `<a href="${esc(yt)}" target="_blank" rel="noopener noreferrer">▶ 원곡 영상</a>` : ''}
       </div>
       ${SongFilter.tagsLineHTML(song.tags, esc)}
       ${usageHTML(song.usage)}
+      ${vLabels.length > 1 ? `<div class="chips vchips" id="vchips" role="tablist" aria-label="악보 버전">${vLabels.map((x) => `<button type="button" class="chip${x.id === vSel ? ' on' : ''}" role="tab" aria-selected="${x.id === vSel}" data-v="${x.id}">${x.lang ? `<span class="vlang">${esc(x.lang.toUpperCase())}</span> ` : ''}${esc(x.text)}</button>`).join('')}</div>` : ''}
       ${hasText && files.length ? '<div class="tabs" id="tabs"><button class="tab" data-tab="chord">코드 악보</button><button class="tab" data-tab="img">이미지 악보</button></div>' : ''}
       ${isLeader && files.length && !hasText ? `<div class="row" id="imgkeyrow" style="margin:6px 0"><span class="ctl-label">우리 팀 키</span><select id="imgkey" aria-label="우리 팀 기본 키">${['', ...(Chord.parseKey(origKey) && Chord.parseKey(origKey).minor ? KEYS_MINOR : KEYS_MAJOR)].map((k) => `<option value="${k}">${k || '선택'}</option>`).join('')}</select><button class="btn small" id="imgkeysave" type="button">팀 기본 키로 저장</button></div><p class="hint" style="margin-top:0">이미지 악보는 화면에서 키가 바뀌지 않아요. 우리 팀이 부르는 키를 기록해 두면 콘티에 곡을 넣을 때 기본값이 됩니다.</p>` : ''}
       ${!hasText && !files.length ? `<p class="muted">등록된 악보가 아직 없습니다.${me.canEdit ? ' 편집에서 코드 악보를 입력하거나 이미지·PDF를 올려 주세요.' : ''}</p>` : ''}
@@ -653,6 +660,15 @@
           <button class="btn primary" id="kclose" type="button" style="width:100%">닫기</button>
         </div>
       </div>`;
+    const $vc = document.getElementById('vchips');
+    if ($vc) $vc.onclick = (ev) => {
+      const b = ev.target.closest && ev.target.closest('button[data-v]');
+      if (!b || +b.dataset.v === vSel) return;
+      ls.set('ews_sv_' + id, b.dataset.v);
+      const nq = new URLSearchParams(q);
+      nq.set('v', b.dataset.v);
+      location.hash = '#/song/' + id + '?' + nq.toString();
+    };
     const $ks = document.getElementById('ksheet');
     const $kc = document.getElementById('keychip');
     if ($kc) $kc.onclick = () => { $ks.hidden = false; };
@@ -1120,26 +1136,54 @@
     }
     document.querySelector('main').classList.add('wide');
     let song = { title: '', orig_title: '', lyrics_extra: '', artist: '', original_key: '', tempo: '', time_sig: '', base_form: '', youtube_url: '', tags: '', chordpro: '', memo: '' };
-    if (id) song = (await api('/songs/' + id)).song;
+    let fullSong = null;
+    if (id) { fullSong = (await api('/songs/' + id)).song; song = fullSong; }
     else if (q && q.get('title')) song.title = q.get('title').slice(0, 200); // 목록에서 "새 곡으로 등록"으로 넘어온 검색어
+    // 28차: 버전. 주소의 v가 있으면 그 추가 버전의 본문·이미지를 편집한다(곡 정보는 기본 버전 화면에서 고친다). 없으면 기본 버전.
+    const editVid = id && q && q.get('v') && (fullSong.variants || []).some((x) => x.id === parseInt(q.get('v'), 10)) ? parseInt(q.get('v'), 10) : 0;
+    const vLabels = id ? Variants.labels(fullSong) : [];
+    if (id) {
+      const cur = Variants.get(fullSong, editVid);
+      song = Object.assign({}, fullSong, { chordpro: cur.chordpro, files: cur.files });
+    }
+    const curV = id ? Variants.get(fullSong, editVid) : null;
+    const vHash = (n) => '#/song/' + id + (n ? '?v=' + n : '');
     const tagInfo = await api('/tags');
     document.title = (id ? '편집 · ' + song.title : '새 곡') + ' · Everyday Worship Songbook';
     const keyOptions = ['', ...KEYS_MAJOR, ...KEYS_MINOR];
 
     $app.innerHTML = `
-      <div class="editbar"><a href="${id ? '#/song/' + id : '#/songs'}" class="small">← ${id ? '곡 보기' : '목록'}</a><h2>${id ? '악보 편집' : '새 곡 등록'}</h2><button class="btn primary small" id="save2" type="button">저장</button></div>
+      <div class="editbar"><a href="${id ? vHash(editVid) : '#/songs'}" class="small">← ${id ? '곡 보기' : '목록'}</a><h2>${id ? (editVid ? '버전 편집' : '악보 편집') : '새 곡 등록'}</h2><button class="btn primary small" id="save2" type="button">저장</button></div>
       <div class="edit-wrap">
         <div class="refdock" id="refdock" hidden>
           <div class="rd-bar"><b>원본 악보</b><span class="muted small">보면서 가사·코드를 입력해요</span><button type="button" class="btn small" id="rdclose">닫기</button></div>
           <div class="rd-body" id="rdbody"></div>
         </div>
         <div>
-          <div class="card">
+          ${id ? `<div class="card vcard" id="vcard">
+            <div class="row between"><b>악보 버전</b><span class="muted small">한글·영어 가사, 쉬운 코드 등을 따로 보관해요</span></div>
+            <div class="chips vchips" id="vedchips">${vLabels.map((x) => `<button type="button" class="chip${x.id === editVid ? ' on' : ''}" data-ev="${x.id}">${x.lang ? `<span class="vlang">${esc(x.lang.toUpperCase())}</span> ` : ''}${esc(x.text)}</button>`).join('')}<button type="button" class="chip add" id="vadd">+ 버전 추가</button></div>
+            <div class="grid2">
+              <div><label for="vname">이 버전 이름</label><input id="vname" type="text" maxlength="20" placeholder="${editVid ? '예: 영어' : '예: 한글 (비워도 돼요)'}" value="${esc(curV.name)}"></div>
+              <div><label for="vlang">언어</label><select id="vlang"><option value="">(지정 안 함)</option>${Variants.LANGS.map(([c, n]) => `<option value="${c}" ${c === curV.lang ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+            </div>
+            <div id="vnew" hidden>
+              <div class="grid2">
+                <div><label for="vnname">새 버전 이름</label><input id="vnname" type="text" maxlength="20" placeholder="예: 영어"></div>
+                <div><label for="vnlang">언어</label><select id="vnlang"><option value="">(지정 안 함)</option>${Variants.LANGS.map(([c, n]) => `<option value="${c}">${n}</option>`).join('')}</select></div>
+              </div>
+              <label class="check"><input type="checkbox" id="vncopy" checked> 지금 보고 있는 악보 본문을 복사해서 시작</label>
+              <div class="row"><button type="button" class="btn small primary" id="vnmake">만들기</button><button type="button" class="btn small" id="vncancel">취소</button></div>
+            </div>
+            ${editVid ? '<div class="row"><button type="button" class="btn small danger" id="vdel">이 버전 삭제</button><span class="muted small">이 버전의 코드 악보와 이미지가 함께 지워져요</span></div>' : ''}
+            ${editVid ? '<p class="hint" style="margin:6px 0 0">곡 제목·키·태그 같은 곡 정보는 <b>기본 버전</b>(맨 앞 칩)에서 고쳐요. 여기서는 이 버전의 코드 악보와 이미지만 다룹니다.</p>' : ''}
+          </div>` : ''}
+          <div class="card" id="metacard" ${editVid ? 'hidden' : ''}>
             <label for="title">제목</label><input id="title" type="text" value="${esc(song.title)}">
             <div class="hint" id="extfind" style="margin:6px 0 0"></div>
             <label for="otitle">원제 (원곡이 영어 등일 때 · 선택)</label><input id="otitle" type="text" placeholder="예: The Heart of Worship" value="${esc(song.orig_title)}">
             <div class="grid2">
-              <div><label for="artist">아티스트</label><input id="artist" type="text" value="${esc(song.artist)}"></div>
+              <div><label for="artist">작곡자</label><input id="artist" type="text" value="${esc(song.artist)}"></div>
               <div><label for="key">원래 키</label><select id="key">${keyOptions.map((k) => `<option value="${k}" ${k === song.original_key ? 'selected' : ''}>${k || '(모름)'}</option>`).join('')}</select></div>
             </div>
             <label for="tsig-o">박자 <span class="hint" style="margin:0">때에 따라 다르면 여러 개 고를 수 있어요</span></label>
@@ -1153,10 +1197,10 @@
             </details>
             <label for="tags">태그 (쉼표로 구분 · 아래 추천 칩을 눌러도 돼요)</label><input id="tags" type="text" placeholder="경배, 빠른곡" value="${esc(song.tags)}">
             <div id="tagchips"></div>
-            <details class="moreinfo" id="moreinfo" ${song.tempo || song.youtube_url || song.memo || song.lyrics_extra ? 'open' : ''}>
-              <summary>더 적을 정보 <span class="muted small">템포 · 유튜브 · 메모 · 검색용 가사</span></summary>
+            <label for="yt">원곡 영상 링크 <span class="muted small">(유튜브 · 연습할 때 곡 화면에서 바로 열려요)</span></label><input id="yt" type="url" placeholder="https://" value="${esc(song.youtube_url)}">
+            <details class="moreinfo" id="moreinfo" ${song.tempo || song.memo || song.lyrics_extra ? 'open' : ''}>
+              <summary>더 적을 정보 <span class="muted small">템포 · 메모 · 검색용 가사</span></summary>
               <label for="tempo">템포(BPM)</label><input id="tempo" type="number" inputmode="numeric" min="20" max="300" value="${esc(song.tempo || '')}">
-              <label for="yt">유튜브 링크</label><input id="yt" type="url" placeholder="https://" value="${esc(song.youtube_url)}">
               <label for="memo">메모</label><textarea id="memo" rows="2">${esc(song.memo)}</textarea>
               <label for="lx">검색용 가사 · 후렴 (선택)</label><textarea id="lx" rows="3" placeholder="후렴 한두 줄을 적어 두면 가사로 검색돼요">${esc(song.lyrics_extra)}</textarea>
               <div class="hint">코드 악보 본문의 가사는 자동으로 검색됩니다. <b>이미지·PDF 악보만 있는 곡</b>은 가사가 글자로 없어서 검색되지 않으니, 후렴 몇 줄을 여기에 적어 주세요. (악보 화면에는 보이지 않고 검색에만 쓰입니다)</div>
@@ -1185,8 +1229,8 @@
           <p class="error" id="err"></p>
           <div class="row">
             <button class="btn primary" id="save">저장</button>
-            <a class="btn" href="${id ? '#/song/' + id : '#/songs'}">취소</a>
-            ${id ? '<button class="btn danger" id="del" style="margin-left:auto">삭제</button>' : ''}
+            <a class="btn" href="${id ? vHash(editVid) : '#/songs'}">취소</a>
+            ${id && !editVid ? '<button class="btn danger" id="del" style="margin-left:auto">삭제</button>' : ''}
           </div>
         </div>
         <div>
@@ -1995,6 +2039,8 @@
           return `<div class="cv-file"><span>${f.kind === 'image' ? '악보 이미지' : 'PDF'} ${n}</span>${f.kind === 'image' ? `<button type="button" class="btn small" data-cp="${k}">복사</button>` : ''}<button type="button" class="btn small" data-sh="${k}" data-n="${n}">공유</button></div>`;
         })
         .join('');
+      const nImg = files.filter((f) => f.kind === 'image').length;
+      const multi = files.length > 1;
       const NO = ['①', '②', '③', '④'];
       const head = (n) => `<button type="button" class="cv-no" data-no="${n}" aria-pressed="${convDone[n]}" aria-label="${NO[n - 1]}단계 끝냄 표시">${convDone[n] ? '✓' : NO[n - 1]}</button>`;
       const cls = (n) => `cv-step${convDone[n] ? ' done' : ''}`;
@@ -2003,7 +2049,7 @@
         <p class="hint" style="margin:0 0 8px">가사를 먼저 뽑아 다듬은 뒤, 코드를 얹어요. 변환은 Claude 앱에서 하고 결과만 여기로 붙여넣어요. 추가 비용이 없어요. <span class="muted">(번호를 누르면 끝낸 단계로 표시돼요)</span></p>
         <div class="cv-status small" id="cv-status" role="status" aria-live="polite" hidden></div>
         <div class="cv-steps2">
-          <div class="${cls(1)}" data-step="1">${head(1)}<div class="grow"><b>가사 뽑기</b> <button type="button" class="btn small primary${convDone[1] ? ' copied' : ''}" id="cv-copy1">${again(1)}</button><div class="muted small">Claude 앱 새 대화에 붙여넣고, 아래 악보도 함께 보내요.</div><div class="cv-fb" id="cv-fb1" hidden></div>${rows ? `<div class="cv-files">${rows}</div>` : '<div class="muted small">"이미지·PDF 악보"에 악보를 올리면 여기서 복사·공유할 수 있어요. (사진 앱의 사진을 바로 Claude에 붙여도 돼요)</div>'}<div class="muted small">이미지는 복사 후 Claude 입력칸에 붙여넣거나 공유로 보내세요.</div></div></div>
+          <div class="${cls(1)}" data-step="1">${head(1)}<div class="grow"><b>가사 뽑기</b> <button type="button" class="btn small primary${convDone[1] ? ' copied' : ''}" id="cv-copy1">${again(1)}</button><div class="muted small">Claude 앱 새 대화에 붙여넣고, 아래 악보도 함께 보내요.</div><div class="cv-fb" id="cv-fb1" hidden></div>${multi ? `<div class="cv-multi small"><b>악보가 ${files.length}장이에요.</b> 프롬프트에 "1쪽 → ${files.length}쪽 순서로 이어진 한 곡" 안내가 자동으로 들어가요. Claude에는 아래 순서대로 한 번에 보내세요.${nImg > 1 ? `<div class="row" style="margin-top:6px;flex-wrap:wrap"><span class="muted small">또는 세로로 이어 붙인 한 장으로</span><button type="button" class="btn small" data-mg="copy">합쳐서 복사</button><button type="button" class="btn small" data-mg="share">합쳐서 공유</button><button type="button" class="btn small" data-mg="save">합쳐서 저장</button></div>` : ''}</div>` : ''}${rows ? `<div class="cv-files">${rows}</div>` : '<div class="muted small">"이미지·PDF 악보"에 악보를 올리면 여기서 복사·공유할 수 있어요. (사진 앱의 사진을 바로 Claude에 붙여도 돼요)</div>'}<div class="muted small">이미지는 복사 후 Claude 입력칸에 붙여넣거나 공유로 보내세요.</div></div></div>
           <div class="${cls(2)}" data-step="2">${head(2)}<div class="grow"><b>가사 다듬기</b><div class="muted small">Claude가 준 가사에서 줄바꿈·오타를 고쳐요. 구간 줄 <code>{comment: V1}</code>과 표시 줄 <code>{ci: …}</code>은 그대로 두세요.</div></div></div>
           <div class="${cls(3)}" data-step="3">${head(3)}<div class="grow"><b>코드 입히기</b> <button type="button" class="btn small primary${convDone[3] ? ' copied' : ''}" id="cv-copy2">${again(3)}</button><div class="muted small">같은 대화에 붙여넣고, 그 바로 아래에 다듬은 가사를 붙여넣어 보내요.</div><div class="cv-fb" id="cv-fb3" hidden></div></div></div>
           <div class="${cls(4)}" data-step="4">${head(4)}<div class="grow"><b>결과 넣기</b> Claude의 답을 복사한 뒤 <button type="button" class="btn small primary" id="cv-paste">📥 붙여넣어 넣기</button></div></div>
@@ -2054,8 +2100,73 @@
           }
         };
       };
-      bindPrompt('cv-copy1', ImgConv.LYRICS_PROMPT, 1, 'cv-fb1', '가사 뽑기');
-      bindPrompt('cv-copy2', ImgConv.CHORD_PROMPT, 3, 'cv-fb3', '코드 입히기');
+      bindPrompt('cv-copy1', ImgConv.withPages(ImgConv.LYRICS_PROMPT, files.length), 1, 'cv-fb1', '가사 뽑기');
+      bindPrompt('cv-copy2', ImgConv.withPages(ImgConv.CHORD_PROMPT, files.length), 3, 'cv-fb3', '코드 입히기');
+      // 28차: 악보 이미지 여러 장을 세로로 이어 붙인 한 장(폭 1600px 이하, 너무 길면 같은 비율로 줄임). 한 번 만들면 다시 쓴다.
+      let mergedP = null;
+      const mergedPng = () => {
+        if (mergedP) return mergedP;
+        const urls = files.filter((f) => f.kind === 'image').map((f) => f.url);
+        mergedP = (async () => {
+          const bmps = [];
+          for (const u of urls) bmps.push(await createImageBitmap(await (await fetch(u)).blob(), { imageOrientation: 'from-image' }));
+          const W = Math.min(1600, Math.max(...bmps.map((b) => b.width)));
+          const GAP = 12;
+          let hs = bmps.map((b) => Math.round((b.height * W) / b.width));
+          let total = hs.reduce((a, h) => a + h, 0) + GAP * (bmps.length - 1);
+          const k = total > 12000 ? 12000 / total : 1;
+          const w = Math.max(1, Math.round(W * k));
+          hs = hs.map((h) => Math.max(1, Math.round(h * k)));
+          total = hs.reduce((a, h) => a + h, 0) + Math.round(GAP * k) * (bmps.length - 1);
+          const c = document.createElement('canvas');
+          c.width = w;
+          c.height = total;
+          const x = c.getContext('2d');
+          x.fillStyle = '#fff';
+          x.fillRect(0, 0, c.width, c.height);
+          let y = 0;
+          bmps.forEach((b, i) => {
+            x.drawImage(b, 0, y, w, hs[i]);
+            y += hs[i];
+            if (i < bmps.length - 1) { x.fillStyle = '#d0d0d0'; x.fillRect(0, y + Math.floor(GAP * k / 2), w, 2); y += Math.round(GAP * k); }
+          });
+          return new Promise((r) => c.toBlob(r, 'image/png'));
+        })();
+        mergedP.catch(() => { mergedP = null; });
+        return mergedP;
+      };
+      sh.wrap.addEventListener('click', async (ev) => {
+        const b = ev.target.closest('button[data-mg]');
+        if (!b) return;
+        const mode = b.dataset.mg;
+        const label = b.textContent;
+        b.disabled = true;
+        b.textContent = '만드는 중…';
+        try {
+          if (mode === 'copy') {
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': mergedPng() })]);
+            say('이어 붙인 악보를 복사했어요. Claude 앱 입력칸에 붙여넣으세요.');
+          } else {
+            const blob = await mergedPng();
+            const file = new File([blob], '악보-합침.png', { type: 'image/png' });
+            if (mode === 'share' && navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file] });
+            else {
+              const a = document.createElement('a');
+              a.href = URL.createObjectURL(blob);
+              a.download = '악보-합침.png';
+              document.body.appendChild(a);
+              a.click();
+              setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+              say(mode === 'share' ? '이 기기에서는 공유를 쓸 수 없어 파일로 저장했어요.' : '이어 붙인 악보를 저장했어요.');
+            }
+          }
+        } catch (e) {
+          if (!(e && e.name === 'AbortError')) say('합치지 못했어요. 한 장씩 보내거나, "합쳐서 저장"을 써 보세요.', true);
+        } finally {
+          b.disabled = false;
+          b.textContent = label;
+        }
+      });
       sh.q('#cv-no').onclick = () => sh.close();
       sh.q('#cv-paste').onclick = () => clipPaste(() => { convDone[4] = true; sh.close(); });
       sh.wrap.addEventListener('click', async (ev) => {
@@ -2193,7 +2304,7 @@
     // ----- 외부에서 악보 찾기 (검색 페이지로만 연결) -----
     const drawExt = () => {
       const t = $('title').value.trim();
-      $('extfind').innerHTML = t ? `외부에서 찾아보기: ${extLinksHTML(t)}` : '제목을 입력하면 Google · YouTube · Ultimate Guitar 검색 링크가 나옵니다.';
+      $('extfind').innerHTML = t ? `외부에서 찾아보기: ${extLinksHTML(t)}` : '제목을 입력하면 악보(Google · Ultimate Guitar)와 원곡 영상(YouTube) 검색 링크가 나옵니다. 영어 제목이면 Ultimate Guitar가 맨 앞에 나와요.';
     };
     $('title').oninput = drawExt;
     drawExt();
@@ -2221,10 +2332,10 @@
     function drawFiles() {
       $('files').innerHTML =
         files
-          .map((f) => `<div class="file-item">${f.kind === 'image' ? `<img class="thumb" src="${esc(f.url)}" alt="">` : '<div class="thumb">📄</div>'}<button class="btn small danger" type="button" data-del="${f.id}">삭제</button></div>`)
+          .map((f, i) => `<div class="file-item">${f.kind === 'image' ? `<img class="thumb" src="${esc(f.url)}" alt="">` : '<div class="thumb">📄</div>'}<div class="row mv" style="gap:4px;justify-content:center"><span class="muted small">${i + 1}</span>${i > 0 ? `<button class="btn small" type="button" data-mv="${i}:-1" aria-label="앞으로">◀</button>` : ''}${i < files.length - 1 ? `<button class="btn small" type="button" data-mv="${i}:1" aria-label="뒤로">▶</button>` : ''}</div><button class="btn small danger" type="button" data-del="${f.id}">삭제</button></div>`)
           .join('') +
         pending
-          .map((p, i) => `<div class="file-item"><div class="thumb">⏳</div><div>${esc(p.name.slice(0, 12))}</div><button class="btn small" type="button" data-rm="${i}">빼기</button></div>`)
+          .map((p, i) => `<div class="file-item"><div class="thumb">⏳</div><div>${esc(p.name.slice(0, 12))}</div><div class="row mv" style="gap:4px;justify-content:center">${i > 0 ? `<button class="btn small" type="button" data-pmv="${i}:-1" aria-label="앞으로">◀</button>` : ''}${i < pending.length - 1 ? `<button class="btn small" type="button" data-pmv="${i}:1" aria-label="뒤로">▶</button>` : ''}</div><button class="btn small" type="button" data-rm="${i}">빼기</button></div>`)
           .join('');
       $('fnote').hidden = !pending.length;
       if (dockPane && dockOpen()) { if (dockFiles().length) dockPane.redraw(); else setDock(false); }
@@ -2234,7 +2345,7 @@
       for (let i = 0; i < list.length; i++) {
         $('fstat').textContent = `올리는 중… (${i + 1}/${list.length})`;
         try {
-          files.push(await uploadFile(songId, list[i]));
+          files.push(await uploadFile(songId, list[i], editVid));
           drawFiles();
         } catch (e) {
           $('fstat').textContent = '';
@@ -2260,6 +2371,20 @@
     };
     $('files').onclick = async (ev) => {
       const d = ev.target.dataset;
+      if (d.mv !== undefined || d.pmv !== undefined) {
+        // 28차: 올린 이미지 순서 바꾸기 (앞으로 ◀ / 뒤로 ▶). 저장된 곡은 바로 서버에 순서를 저장한다.
+        const [ix, dir] = (d.mv !== undefined ? d.mv : d.pmv).split(':').map(Number);
+        const arr = d.mv !== undefined ? files : pending;
+        const j = ix + dir;
+        if (j < 0 || j >= arr.length) return;
+        [arr[ix], arr[j]] = [arr[j], arr[ix]];
+        drawFiles();
+        if (d.mv !== undefined && id) {
+          try { await api(`/songs/${id}/files/order`, { method: 'PUT', body: { ids: files.map((f) => f.id) } }); }
+          catch (e) { $('err').textContent = e.message; }
+        }
+        return;
+      }
       if (d.rm !== undefined) {
         pending.splice(+d.rm, 1);
         drawFiles();
@@ -2293,9 +2418,58 @@
     $('key').addEventListener('change', () => { bfData.items[0].original_key = $('key').value; bfEd.draw(0); });
     bfDraw();
 
+    // ----- 악보 버전 (28차): 칩으로 다른 버전 편집 화면으로 가고, 새 버전을 만들고, 지운다 -----
+    if (id) {
+      const dirty = () => JSON.stringify(readForm()) !== baseline;
+      const leave = (hash) => {
+        if (dirty() && !confirm('저장하지 않은 변경이 있어요. 그대로 이동할까요?\n(입력한 내용은 이 기기에 임시저장돼 있어서, 돌아오면 이어서 작업할 수 있어요.)')) return;
+        saveDraft();
+        location.hash = hash;
+      };
+      $('vedchips').onclick = (ev) => {
+        const b = ev.target.closest && ev.target.closest('button');
+        if (!b) return;
+        if (b.id === 'vadd') { $('vnew').hidden = !$('vnew').hidden; if (!$('vnew').hidden) $('vnname').focus(); return; }
+        const n = +b.dataset.ev;
+        if (n === editVid) return;
+        leave('#/edit/' + id + (n ? '?v=' + n : ''));
+      };
+      $('vncancel').onclick = () => { $('vnew').hidden = true; };
+      $('vnmake').onclick = async () => {
+        const btn = $('vnmake');
+        btn.disabled = true;
+        $('err').textContent = '';
+        try {
+          if (dirty() && !confirm('저장하지 않은 변경이 있어요. 새 버전을 만들면 이 화면을 떠납니다. 계속할까요?\n(입력한 내용은 이 기기에 임시저장돼요.)')) return;
+          saveDraft();
+          const r = await api(`/songs/${id}/variants`, { method: 'POST', body: { name: $('vnname').value, lang: $('vnlang').value, chordpro: $('vncopy').checked ? $('cp').value : '' } });
+          toast('새 버전을 만들었어요.');
+          location.hash = '#/edit/' + id + '?v=' + r.id;
+        } catch (e) {
+          if (e.status === 403) await loadMe();
+          $('err').textContent = e.message;
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      const vdel = $('vdel');
+      if (vdel) vdel.onclick = async () => {
+        if (!confirm('이 버전을 삭제할까요?\n이 버전의 코드 악보와 이미지가 모두 지워지고, 되돌릴 수 없어요.')) return;
+        try {
+          await api(`/songs/${id}/variants/${editVid}`, { method: 'DELETE' });
+          ls.del(draftKey);
+          if (ls.get('ews_sv_' + id, '0') === String(editVid)) ls.set('ews_sv_' + id, '0');
+          toast('버전을 삭제했어요.');
+          location.hash = '#/song/' + id;
+        } catch (e) {
+          $('err').textContent = e.message;
+        }
+      };
+    }
+
     // ----- 입력 중 자동 임시저장 (이 기기 안에만 저장. 앱이 닫히거나 새로고침돼도 이어서 쓸 수 있다) -----
-    const draftKey = 'ews_draft_' + (id || 'new');
-    const FIELDS = { title: 'title', orig_title: 'otitle', artist: 'artist', original_key: 'key', tempo: 'tempo', time_sig: 'tsig', base_form: 'bform', tags: 'tags', youtube_url: 'yt', memo: 'memo', lyrics_extra: 'lx', chordpro: 'cp' };
+    const draftKey = 'ews_draft_' + (id || 'new') + (editVid ? '_v' + editVid : '');
+    const FIELDS = { title: 'title', orig_title: 'otitle', artist: 'artist', original_key: 'key', tempo: 'tempo', time_sig: 'tsig', base_form: 'bform', tags: 'tags', youtube_url: 'yt', memo: 'memo', lyrics_extra: 'lx', chordpro: 'cp', ...(id ? { vname: 'vname', vlang: 'vlang' } : {}) };
     const readForm = () => Object.fromEntries(Object.entries(FIELDS).map(([k, i]) => [k, $(i).value]));
     const baseline = JSON.stringify(readForm());
     let draftTimer;
@@ -2335,7 +2509,8 @@
           if (!confirm(`악보에 확인할 곳이 ${warns.length}곳 있습니다.\n\n${list}${warns.length > 6 ? '\n· …' : ''}\n\n그래도 저장할까요?`)) return;
         }
       }
-      const body = {
+      const body = id && editVid ? { name: $('vname').value, lang: $('vlang').value, chordpro: $('cp').value } : {
+        ...(id ? { chart_name: $('vname').value, chart_lang: $('vlang').value } : {}),
         title: $('title').value, orig_title: $('otitle').value, lyrics_extra: $('lx').value, artist: $('artist').value, original_key: $('key').value, tempo: $('tempo').value, time_sig: $('tsig').value, base_form: $('bform').value,
         youtube_url: $('yt').value, tags: $('tags').value, chordpro: $('cp').value, memo: $('memo').value, force: !!force,
       };
@@ -2344,7 +2519,7 @@
       btn.disabled = true;
       btn2.disabled = true;
       try {
-        const r = id ? await api('/songs/' + id, { method: 'PUT', body }) : await api('/songs', { method: 'POST', body });
+        const r = id && editVid ? await api(`/songs/${id}/variants/${editVid}`, { method: 'PUT', body }) : id ? await api('/songs/' + id, { method: 'PUT', body }) : await api('/songs', { method: 'POST', body });
         clearTimeout(draftTimer);
         ls.del(draftKey);
         if (!id && pending.length) {
@@ -2356,7 +2531,8 @@
           }
         }
         toast('저장했습니다.');
-        location.hash = '#/song/' + r.id;
+        if (editVid) ls.set('ews_sv_' + id, String(editVid)); else if (id) ls.set('ews_sv_' + id, '0');
+        location.hash = '#/song/' + r.id + (editVid ? '?v=' + editVid : '');
       } catch (e) {
         if (e.status === 409 && confirm(`"${e.data.duplicate.title}" 곡이 이미 있습니다.\n그래도 새 곡으로 저장할까요?`)) return save(true, true);
         if (e.status === 403) { await loadMe(); }
@@ -2494,7 +2670,9 @@
   const fmtDate = (d) => {
     if (!d) return '';
     const [y, m, dd] = d.split('-').map(Number);
-    return `${m}/${dd}(${'일월화수목금토'[new Date(y, m - 1, dd).getDay()]})`;
+    // 28차: 올해가 아닌 해의 날짜는 연도를 붙인다 (예: 2027.1/3(일))
+    const yr = y !== Number(todayKst().slice(0, 4)) ? `${y}.` : '';
+    return `${yr}${m}/${dd}(${'일월화수목금토'[new Date(y, m - 1, dd).getDay()]})`;
   };
   function nextSunday() {
     const d = new Date();
@@ -3216,6 +3394,7 @@
       const p = new URLSearchParams();
       if (it.key) p.set('key', it.key);
       if (it.view !== 'auto') p.set('view', it.view);
+      if (it.variant_id) p.set('v', it.variant_id);
       p.set('sl', id);
       if (it.uid) p.set('u', it.uid);
       const imgKeyNote = imageOnly && it.key && it.original_key && it.key !== it.original_key;
@@ -3224,6 +3403,7 @@
         <div class="song-meta">
           ${it.form ? `<span>송폼 ${formHtml(it.form, key)}</span>` : ''}
           ${imageOnly ? '<span class="fmt img" title="이미지 악보" aria-label="이미지 악보">🎼</span>' : it.has_chords ? '<span class="fmt chord" title="코드 악보" aria-label="코드 악보"><b class="cmk">Chord</b></span>' : ''}
+          ${it.variant_name ? `<span class="vbadge">${esc(it.variant_name)}</span>` : ''}${Variants.hasMap(it) ? '<span class="vbadge mix" title="구간마다 버전을 다르게 지정했어요">구간별</span>' : ''}
           ${it.memo ? `<span>${esc(it.memo)}</span>` : ''}
         </div>
         ${imgKeyNote ? `<div class="hint" style="margin:2px 0 0">이미지 악보는 원래 키(${esc(it.original_key)}) 기준 · 이 콘티에서는 ${esc(it.key)}로 부름</div>` : ''}
@@ -3391,7 +3571,7 @@
     if (src.sl) {
       items = (await api('/setlists/' + src.sl)).setlist.items;
     } else {
-      items = [{ song_id: src.songId, title: '', key: q.get('key') || '', form: '', memo: '', view: ['chord', 'image'].includes(q.get('view')) ? q.get('view') : 'auto' }];
+      items = [{ song_id: src.songId, title: '', key: q.get('key') || '', form: '', memo: '', variant_id: parseInt(q.get('v') || '', 10) || 0, variant_map: {}, view: ['chord', 'image'].includes(q.get('view')) ? q.get('view') : 'auto' }];
     }
     if (!items.length) {
       $app.innerHTML = noteBox(`<p>이 콘티에는 아직 곡이 없습니다.</p><a class="btn" href="#/setlist/${src.sl}">콘티로 돌아가기</a>`);
@@ -3468,7 +3648,8 @@
     }
 
     // ----- 곡마다 시작 상태: 키는 콘티 ▶ 이 기기에서 바꿔 둔 키 ▶ 팀 기본 키 ▶ 원래 키 -----
-    function buildState(song, it) {
+    function buildState(fullSong, it) {
+      const song = Variants.apply(fullSong, it); // 28차: 콘티 칸이 고른 버전의 악보·이미지
       const parsed = Chord.parseChordPro(song.chordpro);
       const gk = Chord.guessKey(parsed, song.original_key);
       const origKey = gk.key;
@@ -3495,7 +3676,7 @@
       if (hasText && files.length) tab = it.view === 'image' ? 'img' : it.view === 'chord' ? 'chord' : ls.get('ews_tab_' + song.id, '') === 'img' ? 'img' : 'chord';
       else if (hasText) tab = 'chord';
       else if (files.length) tab = 'img';
-      return { song, it, parsed, origKey, hasKey, files, pages, hasText, shift, base, delta, capo, tab, page: 0 };
+      return { song, full: fullSong, it, parsed, origKey, hasKey, files, pages, hasText, shift, base, delta, capo, tab, page: 0 };
     }
     // 곡 칸마다(같은 곡이 두 번 있어도 따로) 임시 키 변화량을 메모리에만 둔다
     const kd = new Map();
@@ -3543,9 +3724,10 @@
       g('pinfo').innerHTML = [
         keyHtml,
         song.time_sig ? `<span class="pi tsig" title="박자"><b>${esc(SongFilter.tsigText(song.time_sig))}</b></span>` : '',
-        it.form ? `<span class="pi"><b>송폼</b> ${formHtml(it.form, keyTxt)}</span>` : '',
-        SongForm.keyPathText(it.form, keyTxt) ? `<span class="pi kcpath" title="전조"><b>♯ 키</b> ${esc(SongForm.keyPathText(it.form, keyTxt))}</span>` : '',
+        it.form ? `<span class="pi"><b>송폼</b> ${formHtml(formEff(cur), keyTxt)}</span>` : '',
+        SongForm.keyPathText(formEff(cur), keyTxt) ? `<span class="pi kcpath" title="전조"><b>♯ 키</b> ${esc(SongForm.keyPathText(formEff(cur), keyTxt))}</span>` : '',
         it.memo ? `<span class="pi"><b>메모</b> ${esc(it.memo)}</span>` : '',
+        song.variant_label || Variants.hasMap(it) ? `<span class="pi vbadge" title="악보 버전">${esc(song.variant_label || '')}${Variants.hasMap(it) ? (song.variant_label ? ' · ' : '') + '구간별' : ''}</span>` : '',
         extra ? `<span class="pi muted">${esc(extra)}</span>` : '',
         hasText && files.length ? `<button class="pbtn mini" id="pswap" type="button">${isImg ? '코드 악보로' : '이미지 악보로'}</button>` : '',
         !isImg && hasText && it.form && arrangedFor(cur) ? `<button class="pbtn mini" id="pform" type="button">${formViewOn(cur) ? '악보 순서로' : '송폼 순서로'}</button>` : '',
@@ -3596,11 +3778,26 @@
     }
     // 23차: 송폼이 있으면 기본은 송폼 순서로 다시 배열한 악보(전조 뒤는 새 키 코드). 곡마다 악보 순서로 바꿔 볼 수 있다(ews_fv_<곡번호>=score).
     const formViewOn = (st) => !!(st.it && st.it.form && st.song && ls.get('ews_fv_' + st.song.id, '') !== 'score');
+    // 28차: 연주 모드에서 키를 임시로 바꾸면 도착 키(Key:A)로 적은 전조도 같은 간격만큼 함께 옮겨 계산한다
+    const formEff = (st) => (st.delta && st.it ? SongForm.shiftTargets(st.it.form, st.delta) : st.it ? st.it.form : '');
     function arrangedFor(st) {
       if (!st.it || !st.it.form || !st.parsed) return null;
       const sound = Chord.plan(st.origKey, st.shift, 0, P.acc).soundKey || st.origKey;
-      const k = st.it.form + '|' + sound;
-      if (!st._arr || st._arr.k !== k) st._arr = { k, v: SongForm.arrangeByForm(st.parsed, st.it.form, sound, Chord) };
+      const k = formEff(st) + '|' + sound;
+      // 28차: 구간별로 버전을 지정한 곡은 그 구간의 악보를 지정한 버전에서 가져온다
+      const opt = Variants.hasMap(st.it)
+        ? {
+            pick: (id, nth) => Variants.pick(st.it, id, nth),
+            parsedFor: (vid) => {
+              if (vid === (st.it.variant_id || 0)) return st.parsed;
+              const v = Variants.get(st.full, vid);
+              if (v.id !== vid || !/\S/.test(v.chordpro || '')) return null;
+              st._vp = st._vp || {};
+              return st._vp[vid] || (st._vp[vid] = Chord.parseChordPro(v.chordpro));
+            },
+          }
+        : null;
+      if (!st._arr || st._arr.k !== k) st._arr = { k, v: SongForm.arrangeByForm(st.parsed, formEff(st), sound, Chord, opt) };
       return st._arr.v;
     }
     function drawChord(body, varEl, st0, wantPage) {
@@ -4117,7 +4314,7 @@
         const i = next++;
         const it = items[i];
         try {
-          out[i] = { title: it.title, form: it.form, song: (await api('/songs/' + it.song_id)).song };
+          out[i] = { title: it.title, form: it.form, song: Variants.apply((await api('/songs/' + it.song_id)).song, it) }; // 28차: 콘티 칸이 고른 버전
         } catch {
           out[i] = { title: it.title, form: it.form, song: null, failed: true };
         }
@@ -4232,10 +4429,10 @@
     const pickTs = SongFilter.tsigChips(songs);
     const byId = Object.fromEntries(songs.map((s) => [s.id, s]));
     // keepUid: 콘티를 고칠 때만 곡 칸 번호(uid)를 이어 간다 → 콘티용 필기가 따라간다. 복사·다른 콘티에서 가져오기는 새 칸이다.
-    const itemsOf = (setlist, keepUid) => setlist.items.filter((it) => byId[it.song_id]).map((it) => ({ song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view, ...(keepUid && it.uid ? { uid: it.uid } : {}) }));
+    const itemsOf = (setlist, keepUid) => setlist.items.filter((it) => byId[it.song_id]).map((it) => ({ song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view, variant_id: it.variant_id || 0, variant_map: it.variant_map || {}, ...(keepUid && it.uid ? { uid: it.uid } : {}) }));
     const startDate = (sid) => {
       const o = services.find((x) => String(x.id) === String(sid));
-      return svcDay(o) >= 0 ? nextWeekday(svcDay(o)) : nextSunday();
+      return svcDay(o) >= 0 ? nextWeekday(svcDay(o)) : todayKst(); // 28차: 예배 종류가 없으면(미분류) 오늘
     };
     const data = listRes
       ? {
@@ -4247,7 +4444,7 @@
           is_temp: id ? !!listRes.setlist.is_temp : false,
           items: itemsOf(listRes.setlist, !!id),
         }
-      : { date: quick ? todayKst() : nextSunday(), title: '', memo: '', service_id: '', leaders: [], is_temp: quick, items: [] };
+      : { date: todayKst(), title: '', memo: '', service_id: '', leaders: [], is_temp: quick, items: [] };
     // 새 콘티에서 목록의 예배 종류 필터가 하나로 골라져 있으면 그 종류로 시작한다 (기본 요일이 있으면 날짜도 그 요일로)
     if (!id && !quick && !copyId) {
       const f = ls.get('ews_sl_svc', '');
@@ -4267,7 +4464,7 @@
         <h2>곡 추가</h2>
         ${!id && prevLists.length ? `<select id="prevsl" aria-label="지난 콘티에서 곡 가져오기"><option value="">↺ 지난 콘티의 곡 전부 가져오기…</option>${prevLists.map((l) => `<option value="${l.id}">${esc(setlistTitle(l))}${l.date ? ' · ' + esc(mmdd(l.date)) : ''} (${l.item_count}곡)</option>`).join('')}</select>` : ''}
         ${recentSongs.length ? `<div class="small muted" style="margin:8px 0 2px">최근 부른 곡</div><div class="chips" id="recentchips">${recentSongs.map((x) => `<button type="button" class="chip" data-add="${x.id}">${esc(x.title)}</button>`).join('')}</div>` : ''}
-        <input type="search" id="sq" placeholder="제목 · 아티스트 · 태그로 찾기">
+        <input type="search" id="sq" placeholder="제목 · 작곡자 · 태그로 찾기">
         <details class="filter" id="pfilter"><summary id="pfsum">분류·키·박자로 찾기</summary><div id="pchips"></div></details>
         <div id="res" class="pick-list"></div>
       </div>`;
@@ -4384,12 +4581,19 @@
                 <option value="chord" ${it.view === 'chord' ? 'selected' : ''}>코드 악보</option>
                 <option value="image" ${it.view === 'image' ? 'selected' : ''}>이미지 악보</option></select></div>`
             : '';
+          // 28차: 버전이 있는 곡이면 쓸 버전을 고른다. 송폼이 있으면 구간마다 다르게도 지정할 수 있다.
+          const vl = Variants.labels({ chart_name: s.chart_name, chart_lang: s.chart_lang, variants: s.variants_brief || [] });
+          const mixN = Object.keys(it.variant_map || {}).length;
+          const verUI = vl.length > 1
+            ? `<div class="vsel"><label>악보 버전</label><div class="row" style="flex-wrap:wrap"><select data-f="variant_id" data-i="${i}">${vl.map((x) => `<option value="${x.id}" ${x.id === (it.variant_id || 0) ? 'selected' : ''}>${esc(x.text)}</option>`).join('')}</select>${it.form ? `<button type="button" class="btn small" data-a="vmix" data-i="${i}">구간별로 다르게${mixN ? ` (${mixN})` : ''}</button>` : '<span class="muted small">송폼을 만들면 구간별로도 고를 수 있어요</span>'}</div></div>`
+            : '';
           return `<div class="card si">
             <div class="row between">
               <div class="song-title"><span class="num">${i + 1}</span>${esc(s.title)}</div>
               <span class="row" style="gap:4px"><button class="btn small" data-a="up" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="위로">↑</button><button class="btn small" data-a="down" data-i="${i}" ${i === data.items.length - 1 ? 'disabled' : ''} aria-label="아래로">↓</button><button class="btn small danger" data-a="rm" data-i="${i}" aria-label="빼기">빼기</button></span>
             </div>
             <div class="grid2">${keyUI}${viewUI}</div>
+            ${verUI}
             <div class="formed" data-i="${i}">${formInner(i)}</div>
             <label>메모</label><input type="text" data-f="memo" data-i="${i}" maxlength="500" placeholder="예: 천천히 시작" value="${esc(it.memo)}">
           </div>`;
@@ -4420,12 +4624,20 @@
       if (!(it.song_id in songDetail)) {
         try { songDetail[it.song_id] = (await api('/songs/' + it.song_id)).song; } catch { songDetail[it.song_id] = null; toast('악보를 불러오지 못했어요. 송폼만 입력할 수 있어요.'); }
       }
-      openFormWindow(it, songDetail[it.song_id], lastForms, () => drawForm(i));
+      openFormWindow(it, Variants.apply(songDetail[it.song_id], it), lastForms, () => { drawItems(); });
     }
     // 입력칸은 다시 그리지 않고 값만 저장해서, 타이핑 중에 커서가 튀지 않게 한다.
     const onField = (ev) => {
       const t = ev.target;
-      if (t.dataset && t.dataset.f !== undefined && data.items[+t.dataset.i]) data.items[+t.dataset.i][t.dataset.f] = t.value;
+      if (t.dataset && t.dataset.f !== undefined && data.items[+t.dataset.i]) {
+        const it = data.items[+t.dataset.i];
+        if (t.dataset.f === 'key') {
+          // 28차: 곡 키를 바꾸면 송폼의 도착 키(Key:A) 전조도 같은 간격만큼 함께 바꾼다
+          const d = SongForm.semisBetween(it.key, t.value);
+          if (d && it.form) { it.form = SongForm.shiftTargets(it.form, d); drawForm(+t.dataset.i); }
+        }
+        it[t.dataset.f] = t.dataset.f === 'variant_id' ? parseInt(t.value, 10) || 0 : t.value;
+      }
     };
     el('items').addEventListener('input', onField);
     el('items').addEventListener('change', onField);
@@ -4436,6 +4648,7 @@
       if (!b) return;
       const i = +b.dataset.i;
       const a = b.dataset.a;
+      if (a === 'vmix') return openVariantMix(i);
       if (a === 'rm') data.items.splice(i, 1);
       else {
         const j = a === 'up' ? i - 1 : i + 1;
@@ -4444,6 +4657,39 @@
       }
       drawItems();
     };
+    // 28차: 구간별로 쓸 악보 버전 정하기. 송폼의 구간(V1·C·V2·C …)을 순서대로 보여 주고 구간마다 버전을 고른다.
+    //  곡 칸의 기본 버전과 같게 두면 따로 저장하지 않는다. 같은 구간이 두 번 나오면(예: C) 번째마다 따로 고를 수 있다.
+    function openVariantMix(i) {
+      const it = data.items[i];
+      const s = it && byId[it.song_id];
+      if (!s) return;
+      const vl = Variants.labels({ chart_name: s.chart_name, chart_lang: s.chart_lang, variants: s.variants_brief || [] });
+      const occ = SongForm.occurrences(it.form);
+      if (!occ.length) { toast('송폼에 구간이 없어요. 송폼을 먼저 만들어 주세요.'); return; }
+      const def = it.variant_id || 0;
+      const map = Object.assign({}, it.variant_map || {});
+      const keyOf = (o) => o.id + '#' + o.nth;
+      const valOf = (o) => (Object.prototype.hasOwnProperty.call(map, keyOf(o)) ? map[keyOf(o)] : Object.prototype.hasOwnProperty.call(map, o.id) ? map[o.id] : def);
+      const sh = showSheet(`<h2 style="margin-top:0">구간별 악보 버전</h2>
+        <p class="hint" style="margin-top:0">${esc(s.title)} — 송폼 순서대로, 구간마다 부를 버전을 골라 주세요. (예: 1절 한글, 2절 영어)</p>
+        <div class="vmix-all row" style="flex-wrap:wrap;gap:6px"><span class="muted small">모두</span>${vl.map((x) => `<button type="button" class="chip" data-all="${x.id}">${esc(x.text)}</button>`).join('')}</div>
+        <div class="vmix-rows">${occ.map((o, k) => `<div class="vmix-row"><span class="vmix-name">${esc(Sections.display(o.id, 'full'))}${occ.filter((x) => x.id === o.id).length > 1 ? ` <small>(${o.nth}번째)</small>` : ''}</span><select data-k="${k}">${vl.map((x) => `<option value="${x.id}" ${x.id === valOf(o) ? 'selected' : ''}>${esc(x.text)}</option>`).join('')}</select></div>`).join('')}</div>
+        <div class="row" style="margin-top:10px"><button type="button" class="btn primary" id="vmok">적용</button><button type="button" class="btn" id="vmcancel">취소</button></div>`);
+      const sels = () => [...sh.wrap.querySelectorAll('select[data-k]')];
+      sh.wrap.querySelectorAll('button[data-all]').forEach((b) => (b.onclick = () => sels().forEach((sel) => { sel.value = b.dataset.all; })));
+      sh.q('#vmcancel').onclick = () => sh.close();
+      sh.q('#vmok').onclick = () => {
+        const next = {};
+        sels().forEach((sel) => {
+          const o = occ[+sel.dataset.k];
+          const v = parseInt(sel.value, 10) || 0;
+          if (v !== def) next[keyOf(o)] = v; // 기본 버전과 다른 칸만 기록한다
+        });
+        it.variant_map = next;
+        sh.close();
+        drawItems();
+      };
+    }
     // 우리 팀이 지난번에 쓴 송폼 (불러오지 못해도 입력에는 지장 없음)
     api('/team/last-forms' + (id ? '?exclude=' + id : ''))
       .then((r) => {
@@ -4491,7 +4737,9 @@
       if (!s) return;
       if (data.items.length >= 60) return toast('콘티에는 곡을 60개까지 넣을 수 있습니다.');
       // 기본 키: 우리 팀 기본 키 ▶ 원래 키
-      data.items.push({ song_id: s.id, key: s.team_key || s.original_key || '', form: s.base_form || '', memo: '', view: 'auto' }); // 22차: 곡의 기본 송폼(전조 포함)을 미리 채운다
+      const startKey = s.team_key || s.original_key || '';
+      const bsemis = SongForm.semisBetween(s.original_key, startKey) || 0; // 기본 송폼의 도착 키는 원래 키 기준이라, 우리 팀 키로 시작하면 같은 간격만큼 옮긴다
+      data.items.push({ song_id: s.id, key: startKey, form: SongForm.shiftTargets(s.base_form || '', bsemis), memo: '', view: 'auto', variant_id: 0, variant_map: {} }); // 22차: 곡의 기본 송폼(전조 포함)을 미리 채운다
       drawItems();
       drawResults();
       toast(`"${s.title}" 추가`);
@@ -4530,7 +4778,7 @@
         leaders: data.leaders,
         is_temp: data.is_temp,
         items: data.items.map((it) => {
-          return { song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view, ...(it.uid ? { uid: it.uid } : {}) };
+          return { song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view, variant_id: it.variant_id || 0, variant_map: it.variant_map || {}, ...(it.uid ? { uid: it.uid } : {}) };
         }),
       };
       el('save').disabled = true;

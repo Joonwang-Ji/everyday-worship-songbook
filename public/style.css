@@ -740,3 +740,24 @@ input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; app
 .cv-status { margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; background: var(--accent-bg); color: var(--brand); font-weight: 700; }
 .cv-status.error { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
 .cv-fb textarea { width: 100%; font-size: 13px; }
+
+/* ===== 28차: 악보 버전(한글·영어 가사, 기억해 둘 코드 진행 …) ===== */
+.vchips { margin: 8px 0; }
+.vchips .chip { min-height: 38px; display: inline-flex; align-items: center; gap: 4px; }
+.vchips .chip.add { border-style: dashed; color: var(--muted); }
+.vlang { font-size: 10px; font-weight: 800; letter-spacing: .3px; padding: 1px 5px; border-radius: 4px; background: var(--accent-bg); color: var(--brand); }
+.chip.on .vlang { background: rgba(255,255,255,.22); color: inherit; }
+.vcard { border-left: 4px solid var(--brand); }
+.vcard .check { display: flex; align-items: center; gap: 6px; margin: 8px 0; font-size: 14px; }
+.vcard .check input { width: auto; min-height: 0; }
+.vbadge { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: var(--accent-bg); color: var(--brand); }
+.vbadge.mix { background: color-mix(in srgb, var(--brand) 18%, transparent); }
+.vsel { margin: 8px 0 0; }
+.vsel select { min-height: 40px; }
+.vmix-rows { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; max-height: 50vh; overflow: auto; }
+.vmix-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.vmix-name { font-weight: 700; flex: 1 1 auto; }
+.vmix-name small { font-weight: 400; color: var(--muted); }
+.vmix-row select { flex: 0 0 150px; min-height: 40px; }
+.file-item .mv { margin: 4px 0; }
+.play-info .vbadge { font-size: 12px; }

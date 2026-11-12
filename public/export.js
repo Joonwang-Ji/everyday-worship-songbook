@@ -387,7 +387,7 @@
       const it = items[i], n = i + 1;
       if (o.onProgress) o.onProgress(done, total, `${n}. ${it.title}`);
       let song = null;
-      try { song = await o.getSong(it.song_id); } catch { /* 아래에서 안내 쪽을 넣는다 */ }
+      try { song = await o.getSong(it.song_id); if (song && typeof Variants !== 'undefined') song = Variants.apply(song, it); } catch { /* 아래에서 안내 쪽을 넣는다 */ } // 28차: 콘티 칸이 고른 버전
       const info = { artist: song ? song.artist : '', origKey: song ? song.original_key : '', tempo: song ? song.tempo : '', timeSig: song ? song.time_sig : '' };
       const files = song ? song.files || [] : [];
       const hasChord = !!song && /\S/.test(song.chordpro || '');

@@ -75,8 +75,8 @@ async function fileUrl(env, fid) {
   return `/api/files/${fid}?s=${await signPayload(env, { r: 'file', f: fid, exp })}`;
 }
 async function songFiles(env, songId) {
-  const { results } = await env.DB.prepare('SELECT id,kind FROM song_files WHERE song_id=? ORDER BY id').bind(songId).all();
-  return Promise.all(results.map(async (f) => ({ id: f.id, kind: f.kind, url: await fileUrl(env, f.id) })));
+  const { results } = await env.DB.prepare('SELECT id,kind,variant_id FROM song_files WHERE song_id=? ORDER BY COALESCE(position, id), id').bind(songId).all();
+  return Promise.all(results.map(async (f) => ({ id: f.id, kind: f.kind, variant_id: f.variant_id || 0, url: await fileUrl(env, f.id) })));
 }
 async function safeEqual(a, b) {
   const [ha, hb] = await Promise.all([
@@ -203,6 +203,18 @@ const SCHEMA = [
     r2_key TEXT NOT NULL,
     kind TEXT NOT NULL
   )`,
+  // 28차: 곡의 다른 "버전"(한글/영어 가사, 기억해 둘 코드 진행 …). 기본 버전은 songs.chordpro 그대로 두고, 여기에는 추가 버전만 둔다.
+  `CREATE TABLE IF NOT EXISTS song_variants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    song_id INTEGER NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    lang TEXT NOT NULL DEFAULT '',
+    chordpro TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_song_variants_song ON song_variants(song_id)`,
   `CREATE TABLE IF NOT EXISTS teams (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -324,6 +336,13 @@ async function ensureSchema(db) {
   await ensureColumn(db, 'songs', 'time_sig', `time_sig TEXT NOT NULL DEFAULT ''`);
   // 22차: 곡의 기본 송폼(예: 언제나 전조되는 곡의 "…-C-Key+2(D7 E)-C-End"). 콘티에 곡을 넣을 때 송폼 칸에 미리 채워 준다
   await ensureColumn(db, 'songs', 'base_form', `base_form TEXT NOT NULL DEFAULT ''`);
+  // 28차: 기본 버전의 이름·언어, 이미지 파일이 속한 버전(비어 있으면 기본)과 보이는 순서, 콘티 곡 칸이 쓸 버전(전체 · 구간별)
+  await ensureColumn(db, 'songs', 'chart_name', `chart_name TEXT NOT NULL DEFAULT ''`);
+  await ensureColumn(db, 'songs', 'chart_lang', `chart_lang TEXT NOT NULL DEFAULT ''`);
+  await ensureColumn(db, 'song_files', 'variant_id', `variant_id INTEGER`);
+  await ensureColumn(db, 'song_files', 'position', `position INTEGER`);
+  await ensureColumn(db, 'setlist_items', 'variant_id', `variant_id INTEGER`);
+  await ensureColumn(db, 'setlist_items', 'variant_map', `variant_map TEXT NOT NULL DEFAULT ''`);
   // 11차: 콘티의 예배 종류 / 인도자(이름 글자, 쉼표로 구분) / 임시(급하게 만든) 표시
   await ensureColumn(db, 'setlists', 'service_id', `service_id INTEGER`);
   await ensureColumn(db, 'setlists', 'leaders', `leaders TEXT NOT NULL DEFAULT ''`);
@@ -521,7 +540,34 @@ function cleanSong(body, { requireTitle = true } = {}) {
     tags,
     chordpro,
     memo: str(body.memo, 2000),
+    // 28차: 기본 버전의 이름·언어. 보내지 않으면(undefined) 고치지 않는다.
+    chart_name: typeof body.chart_name === 'string' ? body.chart_name.trim().slice(0, 20) : undefined,
+    chart_lang: typeof body.chart_lang === 'string' ? (LANGS.includes(body.chart_lang) ? body.chart_lang : '') : undefined,
   };
+}
+const LANGS = ['ko', 'en', 'ja', 'zh', 'es'];
+const LANG_LABEL = { ko: '한글', en: '영어', ja: '일본어', zh: '중국어', es: '스페인어' };
+const MAX_VARIANTS = 8;
+// 버전 이름·언어·본문 점검
+function cleanVariant(body) {
+  const name = typeof body.name === 'string' ? body.name.trim().slice(0, 20) : '';
+  const lang = LANGS.includes(body.lang) ? body.lang : '';
+  const chordpro = typeof body.chordpro === 'string' ? body.chordpro.replace(/\r\n?/g, '\n') : '';
+  if (chordpro.length > 60000) throw new HttpError(400, '악보 본문이 너무 깁니다.');
+  return { name, lang, chordpro };
+}
+// 콘티 곡 칸의 구간별 버전 지정: {"V2":3,"C#2":0} 처럼 구간 이름(또는 n번째 같은 구간 "C#2") → 버전 번호(0=기본). 글자 600자까지.
+function cleanVariantMap(v) {
+  let o = v;
+  if (typeof v === 'string') { try { o = v ? JSON.parse(v) : {}; } catch { o = {}; } }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return {};
+  const out = {};
+  for (const [k, val] of Object.entries(o)) {
+    const n = parseInt(val, 10);
+    if (/^[A-Za-z]{1,6}\d{0,2}(#\d{1,2})?$/.test(k) && Number.isInteger(n) && n >= 0) out[k] = n;
+    if (Object.keys(out).length >= 40) break;
+  }
+  return out;
 }
 // ---------- 검색 ----------
 // 띄어쓰기·기호·대소문자를 모두 무시하고 비교한다. ("주님의 마음을" 은 "의마음" 으로도 찾아진다)
@@ -684,12 +730,23 @@ async function cleanSetlist(db, body) {
     if (!Number.isInteger(song_id)) throw new HttpError(400, '곡 정보가 올바르지 않습니다.');
     const key = str(it.key, 4);
     if (key && !KEY_RE.test(key)) throw new HttpError(400, '키는 G, Am, Bb 같은 형식이어야 합니다.');
-    return { song_id, key, form: str(it.form, 200), memo: str(it.memo, 500), view: VIEWS.includes(it.view) ? it.view : 'auto', uid: typeof it.uid === 'string' && UID_RE.test(it.uid) ? it.uid : '' };
+    const vid = parseInt(it.variant_id, 10);
+    return { song_id, key, form: str(it.form, 200), memo: str(it.memo, 500), view: VIEWS.includes(it.view) ? it.view : 'auto', uid: typeof it.uid === 'string' && UID_RE.test(it.uid) ? it.uid : '', variant_id: Number.isInteger(vid) && vid > 0 ? vid : null, variant_map: cleanVariantMap(it.variant_map) };
   });
   if (items.length) {
     const ids = [...new Set(items.map((i) => i.song_id))];
     const { results } = await db.prepare(`SELECT id FROM songs WHERE id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
     if (results.length !== ids.length) throw new HttpError(400, '삭제된 곡이 콘티에 들어 있습니다. 화면을 새로 고친 뒤 다시 시도해 주세요.');
+    // 28차: 그 곡의 버전이 아닌 번호는 버린다(삭제됐거나 다른 곡의 번호)
+    const { results: vs } = await db.prepare(`SELECT id,song_id FROM song_variants WHERE song_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all();
+    const owner = new Map(vs.map((v) => [v.id, v.song_id]));
+    for (const it of items) {
+      if (it.variant_id && owner.get(it.variant_id) !== it.song_id) it.variant_id = null;
+      for (const k of Object.keys(it.variant_map)) if (it.variant_map[k] && owner.get(it.variant_map[k]) !== it.song_id) delete it.variant_map[k];
+      it.variant_map = Object.keys(it.variant_map).length ? JSON.stringify(it.variant_map) : '';
+    }
+  } else {
+    for (const it of items) it.variant_map = '';
   }
   return { date, title, memo: str(body.memo, 2000), items, leaders: leaderNames.join(','), service_id: Number.isInteger(sid) ? sid : null, is_temp: body.is_temp ? 1 : 0 };
 }
@@ -706,7 +763,7 @@ function itemInserts(db, setlistId, items, keep = new Set()) {
     let uid = it.uid && keep.has(it.uid) && !used.has(it.uid) ? it.uid : newUid();
     used.add(uid);
     it.uid = uid;
-    return db.prepare('INSERT INTO setlist_items (setlist_id,position,song_id,key,form,memo,"view",uid) VALUES (?,?,?,?,?,?,?,?)').bind(setlistId, i + 1, it.song_id, it.key, it.form, it.memo, it.view, uid);
+    return db.prepare('INSERT INTO setlist_items (setlist_id,position,song_id,key,form,memo,"view",uid,variant_id,variant_map) VALUES (?,?,?,?,?,?,?,?,?,?)').bind(setlistId, i + 1, it.song_id, it.key, it.form, it.memo, it.view, uid, it.variant_id || null, it.variant_map || '');
   });
 }
 
@@ -948,7 +1005,8 @@ export async function onRequest({ request, env }) {
         const songs = (await db.prepare('SELECT * FROM songs ORDER BY id').all()).results;
         const setlists = (await db.prepare('SELECT * FROM setlists ORDER BY id').all()).results;
         const setlist_items = (await db.prepare('SELECT * FROM setlist_items ORDER BY setlist_id, position').all()).results;
-        return json({ exported_at: new Date().toISOString(), songs, setlists, setlist_items });
+        const song_variants = (await db.prepare('SELECT * FROM song_variants ORDER BY song_id, position, id').all()).results;
+        return json({ exported_at: new Date().toISOString(), songs, setlists, setlist_items, song_variants });
       }
       // 구간 용어 영어 통일 이관 (17차). GET = 미리 보기(바뀔 곡·콘티 수, 알아보지 못한 이름), POST = 실행.
       // 곡은 바꾸기 전 본문을 수정 이력 한 건으로 남기고, 콘티 송폼은 form_prev에 한 번 보관한다. 몇 번 눌러도 결과가 같다.
@@ -1308,7 +1366,7 @@ export async function onRequest({ request, env }) {
       if (lid && method === 'GET') {
         const { results } = await db
           .prepare(
-            `SELECT i.id,i.uid,i.position,i.song_id,i.key,i.form,i.memo,i."view" AS view,
+            `SELECT i.id,i.uid,i.position,i.song_id,i.key,i.form,i.memo,i."view" AS view,i.variant_id,i.variant_map,
               s.title,s.original_key,s.time_sig,
               (TRIM(s.chordpro, ' ' || char(9) || char(10) || char(13)) <> '') AS has_chords,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = i.song_id) AS file_count
@@ -1327,7 +1385,14 @@ export async function onRequest({ request, env }) {
         const tkMap = Object.fromEntries(tk.map((r) => [r.song_id, r.key]));
         const svc = list.service_id ? await db.prepare(`SELECT name FROM team_options WHERE id=? AND kind='service'`).bind(list.service_id).first() : null;
         const svcName = svc ? svc.name : '';
-        const items = results.map((it) => ({ ...it, title: it.title || '(삭제된 곡)', has_chords: !!it.has_chords, team_key: tkMap[it.song_id] || '' }));
+        // 28차: 콘티에 보일 버전 이름(이름이 비었으면 언어 이름)
+        const vNames = new Map();
+        const sids = [...new Set(results.map((r) => r.song_id))];
+        if (sids.length) {
+          const { results: vrows } = await db.prepare(`SELECT id,name,lang FROM song_variants WHERE song_id IN (${sids.map(() => '?').join(',')})`).bind(...sids).all();
+          for (const v of vrows) vNames.set(v.id, v.name || LANG_LABEL[v.lang] || '버전');
+        }
+        const items = results.map((it) => ({ ...it, variant_id: it.variant_id || 0, variant_name: it.variant_id ? vNames.get(it.variant_id) || '' : '', variant_map: cleanVariantMap(it.variant_map), title: it.title || '(삭제된 곡)', has_chords: !!it.has_chords, team_key: tkMap[it.song_id] || '' }));
         return json({ setlist: { id: list.id, date: list.date, title: list.title, memo: list.memo, service_id: list.service_id, service_name: svcName, leaders: list.leaders || '', is_temp: list.is_temp ? 1 : 0, items }, canEdit: ctx.leader });
       }
 
@@ -1375,14 +1440,16 @@ export async function onRequest({ request, env }) {
         const { results } = await db
           .prepare(
             pq.all
-              ? `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,chordpro,lyrics_extra,updated_at,
+              ? `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,chordpro,lyrics_extra,chart_name,chart_lang,updated_at,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
-              (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds
+              (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds,
+              (SELECT COUNT(*) FROM song_variants v WHERE v.song_id = songs.id) AS variant_count
              FROM songs ORDER BY title`
-              : `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,updated_at,
+              : `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,chart_name,chart_lang,updated_at,
               (TRIM(chordpro, ' ' || char(9) || char(10) || char(13)) <> '') AS has_chords,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
-              (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds
+              (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds,
+              (SELECT COUNT(*) FROM song_variants v WHERE v.song_id = songs.id) AS variant_count
              FROM songs ORDER BY title`
           )
           .all();
@@ -1405,6 +1472,9 @@ export async function onRequest({ request, env }) {
         }
         const orderTags = makeTagOrder(await getPresets(db));
         for (const s of results) s.tags = orderTags(s.tags);
+        // 28차: 곡마다 추가 버전의 이름·언어(콘티에서 버전을 고를 때 쓴다)
+        const vbMap = {};
+        for (const v of (await db.prepare('SELECT id,song_id,name,lang FROM song_variants ORDER BY song_id,position,id').all()).results) (vbMap[v.song_id] = vbMap[v.song_id] || []).push({ id: v.id, name: v.name, lang: v.lang });
         const hits = [];
         for (const s of results) {
           if (!pq.all) {
@@ -1422,6 +1492,7 @@ export async function onRequest({ request, env }) {
           return {
             ...rest,
             file_kinds: rest.file_kinds || '',
+            variants_brief: vbMap[s.id] || [],
             has_chords: chordpro === undefined ? !!rest.has_chords : /\S/.test(chordpro),
             team_key: tkMap[s.id] || '',
             last_used: lu ? lu.last : '',
@@ -1437,6 +1508,9 @@ export async function onRequest({ request, env }) {
         requireEdit(env, ctx);
         requireBucket(env);
         if (!(await db.prepare('SELECT id FROM songs WHERE id=?').bind(id).first())) throw new HttpError(404, '곡을 찾을 수 없습니다.');
+        // 28차: ?variant=번호 — 그 버전의 이미지로 올린다(없으면 기본 버전)
+        const upVid = parseInt(url.searchParams.get('variant') || '0', 10) || 0;
+        if (upVid && !(await db.prepare('SELECT id FROM song_variants WHERE id=? AND song_id=?').bind(upVid, id).first())) throw new HttpError(404, '버전을 찾을 수 없습니다.');
         const type = (request.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
         const kind = FILE_TYPES[type];
         if (!kind) throw new HttpError(400, '이미지(JPG·PNG·WEBP·GIF) 또는 PDF만 올릴 수 있습니다.');
@@ -1451,14 +1525,73 @@ export async function onRequest({ request, env }) {
         await env.BUCKET.put(key, buf, { httpMetadata: { contentType: type } });
         let fid;
         try {
-          const r = await db.prepare('INSERT INTO song_files (song_id,r2_key,kind) VALUES (?,?,?)').bind(id, key, kind).run();
+          const r = await db
+            .prepare('INSERT INTO song_files (song_id,r2_key,kind,variant_id,position) VALUES (?,?,?,?,(SELECT COALESCE(MAX(COALESCE(position,id)),0)+1 FROM song_files WHERE song_id=?))')
+            .bind(id, key, kind, upVid || null, id)
+            .run();
           fid = r.meta.last_row_id;
         } catch (e) {
           await env.BUCKET.delete(key).catch(() => {});
           throw e;
         }
         await db.prepare('UPDATE songs SET updated_at=? WHERE id=?').bind(nowIso(), id).run();
-        return json({ file: { id: fid, kind, url: await fileUrl(env, fid) } }, 201);
+        return json({ file: { id: fid, kind, variant_id: upVid, url: await fileUrl(env, fid) } }, 201);
+      }
+
+      // 28차: 이미지 순서 바꾸기. body {ids:[파일 번호…]} 순서대로 1,2,3… 을 매긴다(이 곡의 파일만).
+      if (id && parts[2] === 'files' && parts[3] === 'order' && method === 'PUT') {
+        requireEdit(env, ctx);
+        const body = await readBody();
+        const ids = (Array.isArray(body.ids) ? body.ids : []).map((x) => parseInt(x, 10)).filter(Number.isInteger).slice(0, 60);
+        if (!ids.length) throw new HttpError(400, '순서를 정할 파일이 없습니다.');
+        const { results: mine } = await db.prepare('SELECT id FROM song_files WHERE song_id=?').bind(id).all();
+        const own = new Set(mine.map((r) => r.id));
+        const okIds = ids.filter((x) => own.has(x));
+        await db.batch(okIds.map((fid, i) => db.prepare('UPDATE song_files SET position=? WHERE id=? AND song_id=?').bind(i + 1, fid, id)));
+        return json({ ok: true });
+      }
+
+      // 28차: 곡의 추가 버전(한글·영어 가사, 기억해 둘 코드 진행 …). 기본 버전은 곡 본문(songs.chordpro) 그대로.
+      if (id && parts[2] === 'variants') {
+        requireEdit(env, ctx);
+        const vid = parts[3] ? parseInt(parts[3], 10) : null;
+        if (parts[3] && !Number.isInteger(vid)) throw new HttpError(404, '버전을 찾을 수 없습니다.');
+        if (!(await db.prepare('SELECT id FROM songs WHERE id=?').bind(id).first())) throw new HttpError(404, '곡을 찾을 수 없습니다.');
+        if (!vid && method === 'POST') {
+          const v = cleanVariant(await readBody());
+          const cnt = await db.prepare('SELECT COUNT(*) AS n FROM song_variants WHERE song_id=?').bind(id).first();
+          if (cnt.n >= MAX_VARIANTS) throw new HttpError(400, `버전은 곡 하나에 ${MAX_VARIANTS}개까지 만들 수 있습니다.`);
+          const now = nowIso();
+          const r = await db
+            .prepare('INSERT INTO song_variants (song_id,name,lang,chordpro,position,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
+            .bind(id, v.name || '새 버전', v.lang, v.chordpro, cnt.n + 1, now, now)
+            .run();
+          await db.prepare('UPDATE songs SET updated_at=? WHERE id=?').bind(now, id).run();
+          return json({ id: r.meta.last_row_id }, 201);
+        }
+        const cur = vid && (await db.prepare('SELECT id FROM song_variants WHERE id=? AND song_id=?').bind(vid, id).first());
+        if (vid && !cur) throw new HttpError(404, '버전을 찾을 수 없습니다.');
+        if (vid && method === 'PUT') {
+          const v = cleanVariant(await readBody());
+          const now = nowIso();
+          await db.batch([
+            db.prepare('UPDATE song_variants SET name=?,lang=?,chordpro=?,updated_at=? WHERE id=?').bind(v.name || '버전', v.lang, v.chordpro, now, vid),
+            db.prepare('UPDATE songs SET updated_at=? WHERE id=?').bind(now, id),
+          ]);
+          return json({ id: vid });
+        }
+        if (vid && method === 'DELETE') {
+          const { results: files } = await db.prepare('SELECT id,r2_key FROM song_files WHERE song_id=? AND variant_id=?').bind(id, vid).all();
+          const stmts = [];
+          for (const f of files) stmts.push(db.prepare('DELETE FROM vault_items WHERE file_id=?').bind(f.id), db.prepare('DELETE FROM vault_sl_items WHERE file_id=?').bind(f.id));
+          stmts.push(db.prepare('DELETE FROM song_files WHERE song_id=? AND variant_id=?').bind(id, vid));
+          stmts.push(db.prepare('UPDATE setlist_items SET variant_id=NULL WHERE variant_id=?').bind(vid));
+          stmts.push(db.prepare('DELETE FROM song_variants WHERE id=?').bind(vid));
+          await db.batch(stmts);
+          if (env.BUCKET && files.length) await env.BUCKET.delete(files.map((f) => f.r2_key)).catch(() => {});
+          return json({ ok: true });
+        }
+        throw new HttpError(404, '요청한 주소를 찾을 수 없습니다.');
       }
 
       // 새 곡
@@ -1475,10 +1608,10 @@ export async function onRequest({ request, env }) {
         const now = nowIso();
         const r = await db
           .prepare(
-            `INSERT INTO songs (title,orig_title,lyrics_extra,artist,original_key,tempo,time_sig,base_form,youtube_url,tags,chordpro,memo,created_at,updated_at)
-             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            `INSERT INTO songs (title,orig_title,lyrics_extra,artist,original_key,tempo,time_sig,base_form,youtube_url,tags,chordpro,memo,chart_name,chart_lang,created_at,updated_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
           )
-          .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.base_form, song.youtube_url, song.tags, song.chordpro, song.memo, now, now)
+          .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.base_form, song.youtube_url, song.tags, song.chordpro, song.memo, song.chart_name || '', song.chart_lang || '', now, now)
           .run();
         return json({ id: r.meta.last_row_id }, 201);
       }
@@ -1529,6 +1662,7 @@ export async function onRequest({ request, env }) {
         const song = await db.prepare('SELECT * FROM songs WHERE id=?').bind(id).first();
         if (!song) throw new HttpError(404, '곡을 찾을 수 없습니다.');
         song.files = await songFiles(env, id);
+        song.variants = (await db.prepare('SELECT id,name,lang,chordpro,position FROM song_variants WHERE song_id=? ORDER BY position,id').bind(id).all()).results;
         song.tags = makeTagOrder(await getPresets(db))(song.tags);
         song.team_key = '';
         song.usage = null;
@@ -1575,8 +1709,8 @@ export async function onRequest({ request, env }) {
         }
         stmts.push(
           db
-            .prepare('UPDATE songs SET title=?,orig_title=?,lyrics_extra=?,artist=?,original_key=?,tempo=?,time_sig=?,base_form=?,youtube_url=?,tags=?,chordpro=?,memo=?,updated_at=? WHERE id=?')
-            .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.base_form, song.youtube_url, song.tags, song.chordpro, song.memo, now, id)
+            .prepare('UPDATE songs SET title=?,orig_title=?,lyrics_extra=?,artist=?,original_key=?,tempo=?,time_sig=?,base_form=?,youtube_url=?,tags=?,chordpro=?,memo=?,chart_name=COALESCE(?,chart_name),chart_lang=COALESCE(?,chart_lang),updated_at=? WHERE id=?')
+            .bind(song.title, song.orig_title, song.lyrics_extra, song.artist, song.original_key, song.tempo, song.time_sig, song.base_form, song.youtube_url, song.tags, song.chordpro, song.memo, song.chart_name === undefined ? null : song.chart_name, song.chart_lang === undefined ? null : song.chart_lang, now, id)
         );
         await db.batch(stmts);
         return json({ id });
@@ -1587,6 +1721,7 @@ export async function onRequest({ request, env }) {
         const { results: files } = await db.prepare('SELECT r2_key FROM song_files WHERE song_id=?').bind(id).all();
         await db.batch([
           db.prepare('DELETE FROM song_versions WHERE song_id=?').bind(id),
+          db.prepare('DELETE FROM song_variants WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM song_files WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM vault_items WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM vault_sl_items WHERE song_id=?').bind(id),

@@ -162,5 +162,19 @@
     return n;
   }
 
-  return { LYRICS_PROMPT, CHORD_PROMPT, MANUAL_PROMPT, clean, merge, notes };
+  // 28차: 악보가 두 장 이상일 때, 프롬프트 첫 줄 아래에 "여러 장" 안내를 넣는다. n = 첨부할 악보 장수(1 이하면 그대로).
+  // 쪽마다 따로 처리하거나 쪽이 바뀌는 곳에서 구간을 나누지 않게 하고, 쪽 번호·머리글이 가사로 섞이는 것을 막는다.
+  function withPages(prompt, n) {
+    const p = String(prompt || '');
+    if (!(n > 1)) return p;
+    const block = [
+      '[여러 장]',
+      `- 첨부한 악보는 ${n}장이고, 첨부한 순서(1쪽 → ${n}쪽)가 곡의 순서야. 한 곡이 여러 쪽에 걸쳐 이어지는 것이니 쪽마다 따로 출력하지 말고 하나로 이어서 출력해줘.`,
+      '- 쪽이 바뀌는 곳에서 구간을 새로 나누거나 같은 줄을 다시 쓰지 마. 쪽 사이에 이어지는 구간은 계속 이어서 적어줘.',
+      '- 쪽 번호, 매 쪽 위아래에 반복되는 곡 제목·머리글·저작권 문구는 넣지 마.',
+    ].join('\n');
+    const i = p.indexOf('\n\n[');
+    return i < 0 ? p + '\n\n' + block : p.slice(0, i) + '\n\n' + block + p.slice(i);
+  }
+  return { LYRICS_PROMPT, CHORD_PROMPT, MANUAL_PROMPT, withPages, clean, merge, notes };
 });

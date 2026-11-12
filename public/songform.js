@@ -116,6 +116,36 @@
       .join('-');
   }
   const hasKeyChange = (form) => parse(form).some(isKeyChange);
+  // 28차: 도착 키(Key:A)로 적은 전조 칩을 같은 간격만큼 옮긴다. 곡 키를 바꿀 때(콘티 키·연주 모드 키) 전조 도착 키도 함께 바뀌게 한다.
+  // 반음 칩(Key+2)은 상대값이라 그대로 둔다.
+  function shiftTargets(form, semis) {
+    const src = String(form == null ? '' : form);
+    const d = mod12(Math.round(+semis || 0));
+    if (!d) return src;
+    return src.replace(/(Key|전조):([A-Ga-g][#b♯♭]?m?)/gi, (m, pre, k) => {
+      const kk = k.replace('♯', '#').replace('♭', 'b');
+      const pk = parseKeyName(kk[0].toUpperCase() + kk.slice(1));
+      return pk ? pre + ':' + keyNameOf(pk.idx + d, pk.minor) : m;
+    });
+  }
+  // 키 이름 두 개 사이의 반음 수(위로 0~11). 알 수 없으면 null.
+  function semisBetween(fromKey, toKey) {
+    const a = parseKeyName(fromKey), b = parseKeyName(toKey);
+    return a && b ? mod12(b.idx - a.idx) : null;
+  }
+  // 28차: 송폼의 구간 칩을 차례로 [{tok, id, nth}] — 구간별 버전 지정 화면과 연주 모드가 같은 번호를 쓰도록 한 곳에서 센다.
+  function occurrences(form) {
+    const seen = {};
+    const out = [];
+    for (const tok of parse(form)) {
+      if (/^\(/.test(tok) || isKeyChange(tok)) continue;
+      const id = canonSection(splitRepeat(tok).base);
+      if (!id) continue;
+      seen[id] = (seen[id] || 0) + 1;
+      out.push({ tok, id, nth: seen[id] });
+    }
+    return out;
+  }
 
   // ---------- 송폼 순서로 다시 배열한 악보 (23차) ----------
   // parsed(Chord.parseChordPro 결과) + 송폼 글자 + 시작 키(소리 나는 키) → 새 parsed. 저장된 악보는 건드리지 않는다.
@@ -124,15 +154,20 @@
   //  · 전조 칩 자리에는 전조 표시줄(keychg)을 넣고, 그 뒤 줄들은 ks(누적 반음)를 갖는다 → renderHTML이 코드를 ks만큼 올려 그린다.
   //  · 송폼에 있는데 악보에 없는 구간은 이름만 놓는다(missing 목록으로도 돌려준다). 악보에 있어도 송폼에 없는 구간은 빠진다(omitted).
   // 송폼에 구간이 하나도 없거나 Chord.buildSections가 없으면 null.
-  function arrangeByForm(parsed, form, startKey, Chord) {
+  // 28차: opt = {pick(id, nth) → 버전 번호, parsedFor(버전 번호) → 그 버전의 parsed}. 구간마다 다른 버전(한글·영어 가사 등)의 악보를 가져다 놓는다.
+  //   nth = 그 구간 이름이 송폼에서 몇 번째로 나왔는지(전조·괄호 칩은 세지 않고, ×반복은 한 번으로 센다).
+  //   같은 구간이라도 버전이 다르면 "위와 같음"으로 줄이지 않고 그 버전 악보를 펼친다.
+  function arrangeByForm(parsed, form, startKey, Chord, opt) {
     if (!parsed || !Chord || !Chord.buildSections) return null;
     const toks = parse(form);
     if (!toks.some((t) => !/^\(/.test(t) && !isKeyChange(t))) return null;
     const secs = parsed.sections || [];
-    const find = (id) =>
-      secs.findIndex((x) => !x.isRef && x.id === id) >= 0
-        ? secs.findIndex((x) => !x.isRef && x.id === id)
-        : secs.findIndex((x) => !x.isRef && x.id && Sections.kindKey(x.id) === Sections.kindKey(id));
+    const findIn = (sc, id) =>
+      sc.findIndex((x) => !x.isRef && x.id === id) >= 0
+        ? sc.findIndex((x) => !x.isRef && x.id === id)
+        : sc.findIndex((x) => !x.isRef && x.id && Sections.kindKey(x.id) === Sections.kindKey(id));
+    const nthOf = {};
+    const usedKinds = new Set();
     const steps = keySteps(form, startKey);
     let stepAt = 0;
     let ks = 0;
@@ -154,7 +189,10 @@
       const { base, n } = splitRepeat(tok);
       const id = canonSection(base);
       if (!id) { missing.push(tok); continue; }
-      const si = find(id);
+      nthOf[id] = (nthOf[id] || 0) + 1;
+      const vid = opt && opt.pick ? opt.pick(id, nthOf[id]) || 0 : 0;
+      const P = (opt && opt.parsedFor ? opt.parsedFor(vid) : null) || parsed;
+      const si = findIn(P.sections || [], id);
       const times = Math.max(1, n);
       for (let r = 0; r < times; r++) {
         if (lines.length && lines[lines.length - 1].type !== 'blank') lines.push({ type: 'blank' });
@@ -163,18 +201,19 @@
           else lines.push({ type: 'ref', id, rest: '', raw: id });
           continue;
         }
-        used.add(si);
-        if (id in last && last[id] === ks) {
+        if (P === parsed) used.add(si); else usedKinds.add(Sections.kindKey(id));
+        const here = ks + '|' + (P === parsed ? 'p' : vid);
+        if (id in last && last[id] === here) {
           lines.push({ type: 'ref', id, rest: '', raw: id });
         } else {
           lines.push({ type: 'comment', text: id });
-          for (const b of Chord.sectionBody(parsed, si)) lines.push(Object.assign({}, b, ks ? { ks } : {}));
+          for (const b of Chord.sectionBody(P, si)) lines.push(Object.assign({}, b, ks ? { ks } : {}));
         }
-        last[id] = ks;
+        last[id] = here;
       }
     }
     while (lines.length && lines[lines.length - 1].type === 'blank') lines.pop();
-    const omitted = secs.map((x, i) => i).filter((i) => !secs[i].isRef && secs[i].hasLyrics && !used.has(i)).map((i) => secs[i].id || secs[i].label || '');
+    const omitted = secs.map((x, i) => i).filter((i) => !secs[i].isRef && secs[i].hasLyrics && !used.has(i) && !(secs[i].id && usedKinds.has(Sections.kindKey(secs[i].id)))).map((i) => secs[i].id || secs[i].label || '');
     return { meta: parsed.meta, lines, sections: Chord.buildSections(lines), arranged: true, missing, omitted };
   }
 
@@ -183,7 +222,8 @@
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || '');
     if (!m) return '';
     const dt = new Date(+m[1], +m[2] - 1, +m[3]);
-    return `${+m[2]}/${+m[3]}(${'일월화수목금토'[dt.getDay()]})`;
+    const cy = new Date(Date.now() + 9 * 3600 * 1000).getUTCFullYear();
+    return `${+m[1] !== cy ? m[1] + '.' : ''}${+m[2]}/${+m[3]}(${'일월화수목금토'[dt.getDay()]})`;
   };
 
   // 인도자: 쉼표 글자 또는 배열 → 이름 배열
@@ -328,5 +368,5 @@
     return { text: blocks.join(mode === 'plain' ? '\n\n\n' : '\n\n'), noText, noForm, missing };
   }
 
-  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, isKeyChange, keyChange, makeKeyChange, keySteps, keyStepText, keyPathText, formDisplay, hasKeyChange, arrangeByForm, parseKeyName, keyNameOf, KEY_NAMES: KMAJOR, KEY_NAMES_MINOR: KMINOR, fmtDate, kakaoText, leaderList, canonSection, lyricSections, formOrder, songLyrics, lyricsText };
+  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, isKeyChange, keyChange, makeKeyChange, keySteps, keyStepText, keyPathText, formDisplay, hasKeyChange, shiftTargets, semisBetween, occurrences, arrangeByForm, parseKeyName, keyNameOf, KEY_NAMES: KMAJOR, KEY_NAMES_MINOR: KMINOR, fmtDate, kakaoText, leaderList, canonSection, lyricSections, formOrder, songLyrics, lyricsText };
 });
