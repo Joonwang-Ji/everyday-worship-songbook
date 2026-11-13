@@ -429,7 +429,7 @@
       <div class="row between"><h1>곡 목록</h1>${lockBtn('song', '+ 새 곡', '#/new', 'primary', true)}</div>
       <input type="search" id="q" placeholder="제목 · 원제 · 가사(후렴) · 작곡자 · 태그 검색" value="${esc(listState.q)}">
       <details class="filter" id="filter"><summary id="fsum">분류·키·박자로 찾기</summary><div id="chips"></div><p class="row" style="margin:8px 0 0"><button type="button" class="btn small" id="fclear">선택 모두 지우기</button></p></details>
-      <div class="row sortrow"><span class="ctl-label">정렬</span><select id="sort" aria-label="정렬"><option value="title">제목순</option><option value="key">키순 (C→B, 단조는 뒤)</option>${teamSorts}</select></div>
+      <div class="row sortrow"><span class="ctl-label">정렬</span><select id="sort" aria-label="정렬"><option value="title">제목순</option><option value="key">키순 (C→B, 단조는 뒤)</option>${teamSorts}</select><span class="viewseg" role="group" aria-label="목록 모양"><button type="button" id="vsimple" data-v="1">간단히</button><button type="button" id="vfull" data-v="0">자세히</button></span></div>
       <ul class="songs" id="list"></ul>
       <div class="card" id="ext" hidden></div>
       <p class="muted center" id="empty" hidden></p>`;
@@ -467,8 +467,13 @@
       // 제목순일 때는 서버가 준 순서를 그대로 쓴다(검색 중이면 제목류 일치가 먼저).
       const shown = listState.sort === 'title' ? filtered : SongFilter.sortSongs(filtered, listState.sort);
       const anyUsed = songs.some((s) => s.last_used); // 팀 콘티가 아직 없으면 "안 불러 봄" 표시는 생략
+      const compact = ls.get('ews_list_compact', '1') === '1'; // 32차: 간단히(제목·키·박자만) / 자세히
+      $list.classList.toggle('compact', compact);
+      document.getElementById('vsimple').classList.toggle('on', compact);
+      document.getElementById('vfull').classList.toggle('on', !compact);
       $list.innerHTML = shown
         .map((s) => {
+          if (compact) return `<li class="song-item"><a href="#/song/${s.id}"><span class="song-title">${esc(s.title)}</span><span class="song-meta">${SongFilter.keyTsigHTML(s, esc)}</span></a></li>`;
           const used = me.team && anyUsed ? (s.last_used ? `<span class="tag used" title="우리 팀이 가장 최근에 부른 날">최근 ${mmdd(s.last_used)}</span>` : '<span class="tag unused">안 불러 봄</span>') : '';
           return `<li class="song-item"><a href="#/song/${s.id}">
             <div class="song-title">${esc(s.title)}${s.orig_title ? `<span class="orig"> · ${esc(s.orig_title)}</span>` : ''}</div>
@@ -516,6 +521,12 @@
     };
     document.getElementById('fclear').onclick = () => { listState.f = SongFilter.newState(); draw(); };
     $sort.onchange = () => { listState.sort = $sort.value; draw(); };
+    document.querySelector('.viewseg').onclick = (ev) => {
+      const b = ev.target.closest && ev.target.closest('button[data-v]');
+      if (!b) return;
+      ls.set('ews_list_compact', b.dataset.v);
+      draw();
+    };
     // 처음엔 접어 둔다(작은 화면에서 곡 목록이 아래로 밀리지 않게). 고른 조건은 접힌 제목 줄에 그대로 보인다.
     await load();
   }
@@ -1429,7 +1440,11 @@
       if (kbBuf) status = `<b>${esc(Chord.pretty(kbBuf.text))}</b> 입력 중 · Tab 다음 글자 · Enter 다음 줄 · Esc 취소`;
       else if (kbOK() && l && l.kind === 'lyric') status += ' · ⌨ A~G 코드 · Tab 이동 · Enter 다음 줄';
       const canSplit = !!(l && l.kind === 'lyric' && tsel.pos > 0 && tsel.pos < l.text.length);
-      let h = `<div class="te-pal-row te-top"><button type="button" class="chip ctb sm" data-act="undo" aria-label="되돌리기" ${undoS.length ? '' : 'disabled'}>↶</button><button type="button" class="chip ctb sm" data-act="redo" aria-label="다시 하기" ${redoS.length ? '' : 'disabled'}>↷</button><span class="te-status">${status}</span>${canSplit ? '<button type="button" class="chip ctb sm" data-act="split" title="선택한 글자 앞에서 줄을 나눠요">✂ 줄 나누기</button>' : ''}</div>`;
+      // 32차: 키보드 없이 빈칸 넣기 — 줄 끝·가운데에 띄어쓰기를 넣어 그 자리에 코드만 놓을 수 있다(간주·중간 코드)
+      const onLyric = !!(l && l.kind === 'lyric');
+      const spAt = onLyric ? (tsel.pos >= l.text.length ? l.text.length - 1 : tsel.pos) : -1;
+      const canUnspace = onLyric && spAt >= 0 && l.text[spAt] === ' ';
+      let h = `<div class="te-pal-row te-top"><button type="button" class="chip ctb sm" data-act="undo" aria-label="되돌리기" ${undoS.length ? '' : 'disabled'}>↶</button><button type="button" class="chip ctb sm" data-act="redo" aria-label="다시 하기" ${redoS.length ? '' : 'disabled'}>↷</button><span class="te-status">${status}</span>${onLyric ? `<button type="button" class="chip ctb sm" data-act="space" title="여기에 빈칸을 넣어요 (줄 끝이면 뒤로 한 칸)">␣ 빈칸</button>${canUnspace ? '<button type="button" class="chip ctb sm" data-act="unspace" title="빈칸 한 칸 지우기">␣✕</button>' : ''}` : ''}${canSplit ? '<button type="button" class="chip ctb sm" data-act="split" title="선택한 글자 앞에서 줄을 나눠요">✂ 줄 나누기</button>' : ''}</div>`;
       h += `<div class="te-pal-row">${roots.map((d) => `<button type="button" class="chip ctb" data-pc="${esc(d.chord)}"><b>${esc(Chord.pretty(d.chord))}</b>${d.label ? `<small>${esc(d.label)}</small>` : ''}</button>`).join('')}<button type="button" class="chip ctb" data-pc="?" title="불확실한 코드">?</button><button type="button" class="chip ctb sm" data-act="direct">다른 코드…</button></div>`;
       if (chordSel) {
         const chordOnly = !l.text.trim();
@@ -1499,6 +1514,13 @@
         return;
       }
       if (a === 'direct') { directSheet(); return; }
+      if (a === 'space' || a === 'unspace') {
+        if (!tsel) return;
+        const r = a === 'space' ? TabEdit.insertSpace(tm, tsel.li, tsel.pos) : TabEdit.removeSpace(tm, tsel.li, tsel.pos);
+        if (!r) { toast(a === 'space' ? '가사 줄에서 글자를 탭해 주세요.' : '지울 빈칸이 없어요.'); return; }
+        apply(r, { li: tsel.li, pos: r.pos, ci: -1 });
+        return;
+      }
       if (a === 'split') {
         const r = tsel && TabEdit.splitLine(tm, tsel.li, tsel.pos);
         if (!r) { toast('이 자리에서는 줄을 나눌 수 없어요.'); return; }
@@ -4864,6 +4886,18 @@
         <div id="res" class="pick-list"></div>
       </div>`;
     const itemsCard = `<h2>곡 순서</h2><div id="items"></div>`;
+    // 32차: 악보 바로 올리기 — 곡 정보를 다 못 채워도 악보(사진·붙여넣기·파일)부터 올려 콘티에 넣는다.
+    //  올리면 "임시악보" 태그가 붙은 곡이 만들어지고(제목은 임시 이름), 아래 곡 순서 칸에서 제목·키·박자를 바로 고친다.
+    //  내가 직접 고르거나 복사한 이미지만 받는다(주소로 가져오는 기능 없음 — 설계 10장).
+    const quickCard = `
+      <div class="card quickup" id="quickup">
+        <h2>📷 악보 바로 올리기 <span class="muted small" style="font-weight:400">곡 정보는 나중에</span></h2>
+        ${me.canEdit
+          ? `<div class="row" style="flex-wrap:wrap"><button type="button" class="btn primary" id="qpick">🖼 사진·파일 고르기</button><button type="button" class="btn" id="qpaste">📋 이미지 붙여넣기</button><input type="file" id="qfi" accept="image/*,application/pdf" multiple hidden></div>
+        <label class="check" style="margin-top:8px"><input type="checkbox" id="qone"> <span>여러 장을 <b>한 곡</b>으로 묶기 <span class="muted small">(끄면 한 장이 한 곡)</span></span></label>
+        <p class="small muted" id="qstat" style="margin:6px 0 0">올린 악보는 아래 "곡 순서"에 바로 들어가요. 제목·키·박자는 거기서 적으면 됩니다. 맥북은 ⌘V로도 붙여넣어요.</p>`
+          : `<p class="small muted" style="margin:0 0 8px">악보를 올리려면 악보 편집 권한이 필요해요.</p>${lockBtn('song', 'PIN 입력', location.hash || '#/setlists', 'primary')}`}
+      </div>`;
     const infoCard = `
       <details class="card infocard" id="info" ${quick || id ? '' : 'open'}>
         <summary id="infosum">정보</summary>
@@ -4883,7 +4917,7 @@
 
     $app.innerHTML = `
       <div class="row between"><a href="${backHref}" class="small">← ${id ? '콘티 보기' : '콘티 목록'}</a><h2 style="margin:0">${heading}</h2></div>
-      ${quick ? pickCard + itemsCard + infoCard : infoCard + itemsCard + pickCard}
+      ${quick ? quickCard + itemsCard + pickCard + infoCard : infoCard + itemsCard + quickCard + pickCard}
       <p class="error" id="err"></p>
       <div class="row savebar">
         <button class="btn primary" id="save">저장</button>
@@ -4951,6 +4985,121 @@
       drawLeaders();
     });
 
+    // ----- 32차: 악보 바로 올리기 -----
+    const TEMP_TAG = '임시악보';
+    const isTemp = (s) => !!s && !s.has_chords && String(s.tags || '').split(',').map((t) => t.trim()).includes(TEMP_TAG);
+    const thumbs = {}; // 곡 번호 → 첫 장 미리보기 주소
+    const qEdits = {}; // 곡 번호 → { title, original_key, time_sig } (저장할 때 곡 정보에 반영)
+    const tempTitle = () => {
+      const d = new Date();
+      const base = `임시 악보 ${d.getMonth() + 1}/${d.getDate()}`;
+      let n = 1;
+      while (songs.some((x) => x.title === `${base} #${n}`)) n++;
+      return `${base} #${n}`;
+    };
+    const qStat = (t) => { const e = el('qstat'); if (e) e.textContent = t; };
+    let qBusy = false;
+    // 파일 묶음 하나 = 곡 하나. 곡을 만들고 → 파일을 올리고 → 콘티 끝에 넣는다.
+    async function quickAddSong(fileList) {
+      const ttl = tempTitle();
+      const r = await api('/songs', { method: 'POST', body: { title: ttl, tags: TEMP_TAG, chordpro: '', force: true } });
+      const s = { id: r.id, title: ttl, orig_title: '', artist: '', original_key: '', time_sig: '', tags: TEMP_TAG, has_chords: 0, file_count: 0, file_kinds: '', base_form: '', variants_brief: [] };
+      songs.push(s);
+      byId[s.id] = s;
+      let errMsg = '';
+      for (const f of fileList) {
+        try {
+          const up = await uploadFile(s.id, f);
+          s.file_count++;
+          if (!thumbs[s.id] && up && up.kind === 'image') thumbs[s.id] = up.url;
+        } catch (e) { errMsg = e.message; break; }
+      }
+      data.items.push({ song_id: s.id, key: '', form: '', memo: '', view: 'auto', variant_id: 0, variant_map: {} });
+      drawItems();
+      if (errMsg) throw new Error(errMsg);
+    }
+    async function quickAdd(fileList) {
+      const list = fileList.filter((f) => /^image\//.test(f.type) || f.type === 'application/pdf');
+      if (!list.length) return toast('이미지나 PDF를 골라 주세요.');
+      if (qBusy) return toast('올리는 중이에요. 잠시만요.');
+      const groups = el('qone') && el('qone').checked ? [list] : list.map((f) => [f]);
+      if (data.items.length + groups.length > 60) return toast('콘티에는 곡을 60개까지 넣을 수 있습니다.');
+      qBusy = true;
+      let done = 0;
+      try {
+        for (const g of groups) {
+          qStat(`올리는 중… (${done + 1}/${groups.length})`);
+          await quickAddSong(g);
+          done++;
+        }
+        qStat(`악보 ${done}곡을 올렸어요. 아래 "곡 순서"에서 순서를 바꾸고 제목·키·박자를 적어 주세요.`);
+        toast(`악보 ${done}곡 추가`);
+        const last = el('items').lastElementChild;
+        if (last && last.scrollIntoView) last.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      } catch (e) {
+        if (e.status === 403) await loadMe();
+        qStat(`${done}곡까지 올렸고, 다음에서 멈췄어요: ${e.message}`);
+        toast(e.message);
+      } finally { qBusy = false; drawResults(); }
+    }
+    const asPastedQ = (blob) => {
+      const ext = /jpe?g/i.test(blob.type) ? 'jpg' : /webp/i.test(blob.type) ? 'webp' : /gif/i.test(blob.type) ? 'gif' : 'png';
+      return new File([blob], `붙여넣기-${Date.now()}.${ext}`, { type: blob.type || 'image/png' });
+    };
+    if (el('qpick')) {
+      el('qpick').onclick = () => el('qfi').click();
+      el('qfi').onchange = async () => { const picked = [...el('qfi').files]; el('qfi').value = ''; await quickAdd(picked); };
+      el('qpaste').onclick = async () => {
+        if (!navigator.clipboard || !navigator.clipboard.read) { toast('이 브라우저는 버튼 붙여넣기를 지원하지 않아요. 맥북은 ⌘V, 아이폰·아이패드는 "사진·파일 고르기"를 써 주세요.'); return; }
+        const got = [];
+        try {
+          for (const ci of await navigator.clipboard.read()) {
+            const t = ci.types.find((x) => /^image\//.test(x));
+            if (t) got.push(asPastedQ(await ci.getType(t)));
+          }
+        } catch { toast('클립보드를 읽지 못했어요. 허용 창이 뜨면 "붙여넣기"를 눌러 주세요.'); return; }
+        if (!got.length) { toast('클립보드에 이미지가 없어요. 이미지를 복사한 뒤 다시 눌러 주세요.'); return; }
+        await quickAdd(got);
+      };
+      // ⌘V: 이 화면에서 이미지가 붙여넣어지면 받는다. 글자 붙여넣기는 건드리지 않는다.
+      const onPasteQ = (ev) => {
+        if (!document.body.contains(el('quickup'))) { document.removeEventListener('paste', onPasteQ); return; }
+        const cd2 = ev.clipboardData;
+        const imgs = cd2 ? [...(cd2.files || [])].filter((f) => /^image\//.test(f.type)) : [];
+        if (!imgs.length) return;
+        const tgt = ev.target;
+        if (tgt && (tgt.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(tgt.tagName)) && cd2.getData('text/plain')) return;
+        ev.preventDefault();
+        quickAdd(imgs.map((f) => (f.name && f.name !== 'image.png' ? f : asPastedQ(f))));
+      };
+      document.addEventListener('paste', onPasteQ);
+    }
+    // 이미 있는 임시악보 곡(콘티를 다시 고칠 때)의 미리보기는 한 번만 받아 둔다
+    const loadThumbs = () => {
+      data.items.forEach((it) => {
+        const s = byId[it.song_id];
+        if (!isTemp(s) || s.id in thumbs) return;
+        thumbs[s.id] = '';
+        api('/songs/' + s.id).then((r) => {
+          const f = ((r.song && r.song.files) || []).find((x) => x.kind === 'image');
+          if (f) { thumbs[s.id] = f.url; drawItems(); }
+        }).catch(() => {});
+      });
+    };
+    // 저장할 때: 고친 제목·키·박자를 곡 정보에 반영한다 (다른 칸은 그대로 둔다)
+    async function flushQuickEdits() {
+      for (const sid of Object.keys(qEdits)) {
+        const e = qEdits[sid];
+        const cur = (await api('/songs/' + sid)).song;
+        const body = { title: cur.title, orig_title: cur.orig_title || '', lyrics_extra: cur.lyrics_extra || '', artist: cur.artist || '', original_key: cur.original_key || '', tempo: cur.tempo || '', time_sig: cur.time_sig || '', base_form: cur.base_form || '', youtube_url: cur.youtube_url || '', tags: cur.tags || '', chordpro: cur.chordpro || '', memo: cur.memo || '', force: true };
+        if (e.title !== undefined && e.title.trim()) body.title = e.title.trim();
+        if (e.original_key !== undefined) body.original_key = e.original_key;
+        if (e.time_sig !== undefined) body.time_sig = e.time_sig;
+        await api('/songs/' + sid, { method: 'PUT', body });
+        delete qEdits[sid];
+      }
+    }
+
     const keyOptionsFor = (s, current) => {
       const ok = Chord.parseKey(s.original_key);
       const list = ok ? (ok.minor ? KEYS_MINOR : KEYS_MAJOR) : [...KEYS_MAJOR, ...KEYS_MINOR];
@@ -4969,7 +5118,21 @@
           const s = byId[it.song_id];
           const hasBoth = s.has_chords && s.file_count > 0;
           // 이미지 악보는 화면에서 키가 바뀌지 않는다. 대신 "실제로 부르는 키"를 직접 기록해 둘 수 있다.
-          const keyUI = `<div><label>${s.has_chords ? '키' : '부르는 키 (기록용)'}</label><select data-f="key" data-i="${i}">${keyOptionsFor(s, it.key).map(([v, t]) => `<option value="${esc(v)}" ${v === it.key ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>${s.has_chords ? '' : `<div class="hint" style="margin:4px 0 0">이미지 악보는 키가 바뀌지 않아요${s.original_key ? ` (악보는 원래 키 ${esc(s.original_key)} 기준)` : ''}. 키를 올리거나 내려 부른다면 직접 계산해서 기록해 두세요.</div>`}</div>`;
+          const temp = isTemp(s);
+          const allKeys = [...KEYS_MAJOR, ...KEYS_MINOR];
+          const quickUI = temp
+            ? `<div class="qrow">${thumbs[s.id] ? `<button type="button" class="qthumb" data-a="qview" data-i="${i}" aria-label="악보 크게 보기"><img src="${esc(thumbs[s.id])}" alt=""></button>` : '<div class="qthumb empty">🎼</div>'}
+                <div class="qfields">
+                  <input type="text" data-qf="title" data-i="${i}" maxlength="200" placeholder="제목 (나중에 적어도 돼요)" value="${esc(/^임시 악보 /.test(s.title) ? '' : s.title)}" enterkeyhint="done" aria-label="제목">
+                  <div class="row" style="gap:6px;flex-wrap:wrap">
+                    <select data-qf="original_key" data-i="${i}" aria-label="키"><option value="">키 ?</option>${allKeys.map((k) => `<option value="${k}" ${k === (it.key || s.original_key) ? 'selected' : ''}>${k}</option>`).join('')}</select>
+                    <select data-qf="time_sig" data-i="${i}" aria-label="박자"><option value="">박자 ?</option>${['4/4', '3/4', '6/8', '2/4', '12/8', '2/2'].concat(s.time_sig && !['4/4', '3/4', '6/8', '2/4', '12/8', '2/2'].includes(s.time_sig) ? [s.time_sig] : []).map((t) => `<option value="${esc(t)}" ${t === s.time_sig ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
+                    ${me.canEdit ? `<button type="button" class="btn small" data-a="qmore" data-i="${i}">＋ 장 추가</button>` : ''}
+                    <span class="tag">⚡ 임시악보${s.file_count > 1 ? ' · ' + s.file_count + '장' : ''}</span>
+                  </div>
+                </div></div>`
+            : '';
+          const keyUI = temp ? '' : `<div><label>${s.has_chords ? '키' : '부르는 키 (기록용)'}</label><select data-f="key" data-i="${i}">${keyOptionsFor(s, it.key).map(([v, t]) => `<option value="${esc(v)}" ${v === it.key ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>${s.has_chords ? '' : `<div class="hint" style="margin:4px 0 0">이미지 악보는 키가 바뀌지 않아요${s.original_key ? ` (악보는 원래 키 ${esc(s.original_key)} 기준)` : ''}. 키를 올리거나 내려 부른다면 직접 계산해서 기록해 두세요.</div>`}</div>`;
           const viewUI = hasBoth
             ? `<div><label>보여 줄 악보</label><select data-f="view" data-i="${i}">
                 <option value="auto" ${it.view === 'auto' ? 'selected' : ''}>자동 (코드 악보 우선)</option>
@@ -4984,9 +5147,10 @@
             : '';
           return `<div class="card si">
             <div class="row between">
-              <div class="song-title"><span class="num">${i + 1}</span>${esc(s.title)}</div>
+              <div class="song-title"><span class="num">${i + 1}</span>${temp && /^임시 악보 /.test(s.title) ? '<span class="muted">제목 없음</span>' : esc(s.title)}</div>
               <span class="row" style="gap:4px"><button class="btn small" data-a="up" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="위로">↑</button><button class="btn small" data-a="down" data-i="${i}" ${i === data.items.length - 1 ? 'disabled' : ''} aria-label="아래로">↓</button><button class="btn small danger" data-a="rm" data-i="${i}" aria-label="빼기">빼기</button></span>
             </div>
+            ${quickUI}
             <div class="grid2">${keyUI}${viewUI}</div>
             ${verUI}
             <div class="formed" data-i="${i}">${formInner(i)}</div>
@@ -5024,6 +5188,18 @@
     // 입력칸은 다시 그리지 않고 값만 저장해서, 타이핑 중에 커서가 튀지 않게 한다.
     const onField = (ev) => {
       const t = ev.target;
+      if (t.dataset && t.dataset.qf !== undefined && data.items[+t.dataset.i]) {
+        // 32차: 임시악보의 제목·키·박자 — 화면에는 바로, 서버에는 저장할 때 반영
+        const it = data.items[+t.dataset.i];
+        const s = byId[it.song_id];
+        const e = (qEdits[s.id] = qEdits[s.id] || {});
+        e[t.dataset.qf] = t.value;
+        if (t.dataset.qf === 'title') { if (t.value.trim()) s.title = t.value.trim(); }
+        else if (t.dataset.qf === 'original_key') { s.original_key = t.value; data.items.forEach((x) => { if (x.song_id === s.id) x.key = t.value; }); }
+        else s.time_sig = t.value;
+        if (ev.type === 'change' && t.dataset.qf === 'title') drawItems();
+        return;
+      }
       if (t.dataset && t.dataset.f !== undefined && data.items[+t.dataset.i]) {
         const it = data.items[+t.dataset.i];
         if (t.dataset.f === 'key') {
@@ -5044,6 +5220,36 @@
       const i = +b.dataset.i;
       const a = b.dataset.a;
       if (a === 'vmix') return openVariantMix(i);
+      if (a === 'qview') {
+        const sid = data.items[i].song_id;
+        api('/songs/' + sid).then((r) => {
+          const urls = ((r.song && r.song.files) || []).filter((f) => f.kind === 'image').map((f) => f.url);
+          if (urls.length && Files.lightbox) Files.lightbox(urls, 0);
+        }).catch((e) => toast(e.message));
+        return;
+      }
+      if (a === 'qmore') {
+        const s = byId[data.items[i].song_id];
+        const fi = document.createElement('input');
+        fi.type = 'file'; fi.accept = 'image/*,application/pdf'; fi.multiple = true;
+        fi.onchange = async () => {
+          const picked = [...fi.files];
+          if (!picked.length) return;
+          qStat('장 추가 중…');
+          try {
+            for (const f of picked) {
+              const up = await uploadFile(s.id, f);
+              s.file_count++;
+              if (!thumbs[s.id] && up && up.kind === 'image') thumbs[s.id] = up.url;
+            }
+            toast(`${picked.length}장을 더했어요.`);
+            qStat('');
+          } catch (e) { toast(e.message); qStat(e.message); }
+          drawItems();
+        };
+        fi.click();
+        return;
+      }
       if (a === 'rm') data.items.splice(i, 1);
       else {
         const j = a === 'up' ? i - 1 : i + 1;
@@ -5161,6 +5367,7 @@
       };
     drawItems();
     drawResults();
+    loadThumbs();
 
     const doSave = async (play) => {
       el('err').textContent = '';
@@ -5179,6 +5386,8 @@
       el('save').disabled = true;
       el('saveplay').disabled = true;
       try {
+        if (qBusy) throw new Error('악보를 올리는 중이에요. 끝난 뒤에 저장해 주세요.');
+        await flushQuickEdits();
         const r = id ? await api('/setlists/' + id, { method: 'PUT', body }) : await api('/setlists', { method: 'POST', body });
         toast('저장했습니다.');
         location.hash = (play ? '#/play/' : '#/setlist/') + r.id;

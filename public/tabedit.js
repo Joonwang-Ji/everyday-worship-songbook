@@ -186,6 +186,32 @@
     commitLine(m.lines[li]);
     return m;
   }
+  // 32차: 화면 버튼으로 빈칸 넣기(키보드 없이). pos 자리에 띄어쓰기 한 칸을 넣는다.
+  //  줄 끝이면 뒤에 한 칸을 늘리고(그 자리에 있던 코드는 그대로), 줄 가운데면 그 글자와 거기 붙은 코드를 한 칸 뒤로 민다.
+  function insertSpace(model, li, pos) {
+    if (!editable(model, li)) return null;
+    const m = clone(model);
+    const l = m.lines[li];
+    const n = l.text.length;
+    pos = Math.max(0, Math.min(n, pos));
+    l.text = l.text.slice(0, pos) + ' ' + l.text.slice(pos);
+    if (pos < n) l.chords.forEach((c) => { if (c.pos >= pos) c.pos += 1; });
+    commitLine(l);
+    return { model: m, pos: pos < n ? pos : pos + 1 };
+  }
+  // pos 자리(줄 끝이면 마지막 글자)가 띄어쓰기일 때 그 한 칸을 지운다. 그 칸의 코드는 앞 글자 자리로 남는다.
+  function removeSpace(model, li, pos) {
+    if (!editable(model, li)) return null;
+    const t0 = model.lines[li].text;
+    const at = pos >= t0.length ? t0.length - 1 : pos;
+    if (at < 0 || t0[at] !== ' ') return null;
+    const m = clone(model);
+    const l = m.lines[li];
+    l.text = l.text.slice(0, at) + l.text.slice(at + 1);
+    l.chords.forEach((c) => { if (c.pos > at) c.pos -= 1; });
+    commitLine(l);
+    return { model: m, pos: Math.min(at, l.text.length) };
+  }
   // 늘렸던 끝 띄어쓰기 중 코드가 없는 칸을 걷어 낸다. keep = 원래 글자 길이(그 앞은 건드리지 않음). 바뀔 것이 없으면 null.
   function trimTail(model, li, keep) {
     if (!editable(model, li)) return null;
@@ -983,7 +1009,7 @@
     insertSection, belowAt, chorusAround, blockRange, toggleChorus, isInChorus,
     listSections, sectionAt, sectionRaws, refSource, sectionToRef, refToSection, repeatCandidates, collapseRepeats, insertRef, usedSectionIds, refProblems,
     colBreakAt, setColBreak, clearColBreaks,
-    stops, isLatinLine, extendTail, trimTail,
+    stops, isLatinLine, extendTail, trimTail, insertSpace, removeSpace,
     lyricKey, findSameLyric, copyLineChords, bodyBlocks, copyBlock,
     splitLyrics, buildFromBlocks, canonLabel, labelOfLine, guessBreaks, autoLabel, markRefs, renameBlock, splitBlockAt, mergeBlockUp, estimateForm,
   };

@@ -829,7 +829,27 @@
       if (e.pointerType === 'pen') { penActive = true; touches.clear(); pinch = null; pan = null; discardDraw(); }
       if (modeOf(e) === 'pan') startPan(e); else startDraw(e);
     });
+    // 32차: 펜슬 호버·마우스가 떠 있을 때 도구 모양 미리보기 (지우개 ○, 펜·형광펜은 색·굵기, 글자 ＋)
+    const hov = document.createElement('div');
+    hov.className = 'ink-hov';
+    hov.hidden = true;
+    scroller.appendChild(hov);
+    function showHover(e) {
+      if (tool === 'hand' || txtEdit || (e.pointerType !== 'pen' && e.pointerType !== 'mouse') || e.buttons) { hov.hidden = true; return; }
+      const [x, y] = rel(e);
+      let d = 14, bg = 'rgba(255,255,255,.35)', bd = '1.5px dashed #e11d48';
+      if (tool === 'pen' || tool === 'hl') {
+        d = Math.max(3, (WIDTHS[tool][opts[tool].w] / 10000) * bw * view.s);
+        bg = opts[tool].c; bd = '1px solid rgba(0,0,0,.35)';
+        hov.style.opacity = tool === 'hl' ? '.45' : '.9';
+      } else { hov.style.opacity = '1'; if (tool === 'er') d = Math.max(10, 0.036 * bw); else { d = 18; bg = 'transparent'; bd = '1.5px dashed ' + opts.tx.c; } }
+      hov.style.cssText += `;width:${d.toFixed(1)}px;height:${d.toFixed(1)}px;left:${(x - d / 2).toFixed(1)}px;top:${(y - d / 2).toFixed(1)}px;background:${bg};border:${bd}`;
+      hov.hidden = false;
+    }
+    scroller.addEventListener('pointerleave', () => { hov.hidden = true; });
+    scroller.addEventListener('pointerdown', () => { hov.hidden = true; }, true);
     scroller.addEventListener('pointermove', (e) => {
+      if (!active && !pan && !pinch) showHover(e);
       if (ignore.has(e.pointerId)) return;
       if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
         touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -1244,6 +1264,12 @@
     const origSize = o.zoom ? o.zoom.get() : 0;
     const hist = [];
     const redoS = [];
+    const ZS_MAX = 3;
+    const zs = { z: 1, tx: 0 };
+    const zHost = o.zoom ? o.root.parentElement : null;
+    const zKeep = zHost ? { ov: zHost.style.overflow, tf: o.root.style.transform, to: o.root.style.transformOrigin, mb: o.root.style.marginBottom } : null;
+    let startSnap = null; // 32차: 필기를 시작할 때의 모습 (취소하면 이걸로 되돌린다)
+    let changed = false;
     const mk = (cls) => { const d = document.createElement('div'); d.className = cls; return d; };
     const bar = mk('cink-bar');
     const pnl = mk('cink-txt');
@@ -1271,6 +1297,7 @@
       target.data = { v: 1, items: prev.items, del: [...del].slice(-2000) };
     }
     async function commit(snap) {
+      changed = true;
       if (snap) { hist.push(snap); if (hist.length > 40) hist.shift(); redoS.length = 0; }
       await save(target.key, o.songId, target.data, target.meta);
       cdraw(o);
@@ -1294,18 +1321,18 @@
         (hasOcc ? `<button type="button" data-s="1">${scopeLabel()}</button>` : '') +
         `</div><div class="cink-row">` +
         `<button type="button" data-u="1" ${hist.length ? '' : 'disabled'} aria-label="되돌리기">↶</button><button type="button" data-r2="1" ${redoS.length ? '' : 'disabled'} aria-label="다시 하기">↷</button>` +
-        (o.zoom ? `<button type="button" data-zm="-1" aria-label="글자 작게">가−</button><button type="button" data-zm="1" aria-label="글자 크게">가＋</button>` : '') +
-        (!o.zoom ? '' : `<span class="cink-hint">두 손가락으로 벌리면 확대</span>`) +
-        `<button type="button" class="done" data-d="1">완료</button></div>`;
+        (o.zoom ? `<button type="button" data-zm="-1" aria-label="글자 작게">가−</button><button type="button" data-zm="1" aria-label="글자 크게">가＋</button><button type="button" data-z0="1" ${zs.z === 1 ? 'disabled' : ''} title="확대를 원래대로" aria-label="확대 원래대로">🔍 ${Math.round(zs.z * 100)}%</button>` : '') +
+        `<button type="button" class="cancel" data-x0="1">취소</button><button type="button" class="done" data-d="1">완료</button></div>`;
       // 도구 줄이 차지하는 높이만큼 악보 아래에 여백을 둔다
       requestAnimationFrame(() => { if (bar.isConnected) document.documentElement.style.setProperty('--cink-h', bar.offsetHeight + 'px'); });
     }
+    startSnap = snapNow();
     paint();
     bar.onclick = (e) => {
       const b = e.target.closest('button');
       if (!b || b.disabled) return;
       const d = b.dataset;
-      if (d.t) { if (d.t !== 'er') opts.prev = d.t; opts.tool = d.t; if (d.t !== 'er') hideCursor(); }
+      if (d.t) { if (d.t !== 'er') opts.prev = d.t; opts.tool = d.t; hideCursor(); }
       else if (d.sw) swapTool();
       else if (d.c) (opts[opts.tool] || opts.pen).c = d.c;
       else if (d.w) { const x = opts[opts.tool]; x.w = (x.w + 1) % 3; }
@@ -1316,12 +1343,25 @@
       else if (d.r2) redo();
       else if (d.zm) zoomStep(+d.zm * 2);
       else if (d.d) { stop(); return; }
+      else if (d.x0) { cancelAll(); return; }
+      else if (d.z0) { zs.z = 1; zs.tx = 0; applyZoom(); }
       paint();
     };
+    // 32차: 취소 — 이번에 쓴 것을 모두 버리고 시작할 때 모습으로 되돌린 뒤 닫는다
+    async function cancelAll() {
+      cancelAct();
+      closeText();
+      if (changed && startSnap != null && snapNow() !== startSnap) {
+        if (!confirm('이번에 쓴 필기를 모두 버리고 닫을까요?')) return;
+        applySnap(startSnap);
+        try { await save(target.key, o.songId, target.data, target.meta); } catch {}
+      }
+      stop();
+    }
     function swapTool() {
       if (opts.tool === 'er') opts.tool = opts.prev || 'pen';
       else { opts.prev = opts.tool === 'tx' ? 'pen' : opts.tool; opts.tool = 'er'; }
-      if (opts.tool !== 'er') hideCursor();
+      hideCursor();
       paint();
     }
 
@@ -1399,40 +1439,55 @@
       inertia = requestAnimationFrame(step);
     }
 
-    // ----- 두 손가락 확대: 화면 글자 크기를 바꿔 준다(줄에 붙은 필기는 그대로 따라간다). 끝나면 원래 크기로 돌아간다 -----
+    // ----- 확대(32차에 다시 만듦): 글자 크기를 바꾸지 않고 악보를 그림처럼 키운다 -----
+    //  줄바꿈·단 배치가 그대로라 찌그러지지 않고, 필기도 같은 비율로 따라온다. 넘치는 부분은 악보 칸 밖으로 나가지 않게 잘라 보인다.
+    //  두 손가락 = 확대·축소와 이동, 한 손가락(스크롤 모드) = 위아래 스크롤 + 좌우 이동. 필기를 마치면 원래대로.
+    function applyZoom() {
+      if (!zHost) return;
+      zs.z = clamp(zs.z, 1, ZS_MAX);
+      if (zs.z < 1.01) { zs.z = 1; zs.tx = 0; }
+      const W = o.root.offsetWidth, H = o.root.offsetHeight;
+      zs.tx = clamp(zs.tx, -(zs.z - 1) * W, 0);
+      if (zs.z === 1) {
+        o.root.style.transform = zKeep.tf; o.root.style.transformOrigin = zKeep.to; o.root.style.marginBottom = zKeep.mb; zHost.style.overflow = zKeep.ov;
+      } else {
+        o.root.style.transformOrigin = '0 0';
+        o.root.style.transform = `translate(${zs.tx.toFixed(1)}px,0) scale(${zs.z.toFixed(3)})`;
+        o.root.style.marginBottom = ((zs.z - 1) * H).toFixed(0) + 'px'; // 커진 만큼 아래로 자리를 잡아 줘서 끝까지 스크롤된다
+        zHost.style.overflow = 'hidden'; // 다른 칸을 덮지 않게
+      }
+      const zb = bar.querySelector('[data-z0]');
+      if (zb) { zb.textContent = '🔍 ' + Math.round(zs.z * 100) + '%'; zb.disabled = zs.z === 1; }
+    }
     function zoomStep(d) {
       if (!o.zoom) return;
       const cur = o.zoom.get();
       const ns = clamp(cur + d, ZMIN, ZMAX);
-      if (ns !== cur) o.zoom.set(ns);
+      if (ns !== cur) { o.zoom.set(ns); requestAnimationFrame(applyZoom); }
     }
     function startPinch() {
-      if (!o.zoom) return;
+      if (!zHost) return;
       const [a, b] = [...touches.values()];
       stopInertia();
-      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, size: o.zoom.get(), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, s: 1, rb: o.root.getBoundingClientRect(), tf: o.root.style.transform, to: o.root.style.transformOrigin };
+      const rb = o.root.getBoundingClientRect();
+      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+      // u, v = 두 손가락 가운데가 가리키는 악보 안의 점(확대 전 크기 기준). 이 점이 계속 손가락 밑에 있게 한다.
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: zs.z, u: (cx - rb.left) / zs.z, v: (cy - rb.top) / zs.z, base: rb.left - zs.tx };
     }
     function movePinch() {
       const [a, b] = [...touches.values()];
-      const ns = clamp(Math.round((pinch.size * Math.hypot(a.x - b.x, a.y - b.y)) / pinch.d), ZMIN, ZMAX);
-      pinch.s = ns / pinch.size;
-      o.root.style.transformOrigin = `${pinch.cx - pinch.rb.left}px ${pinch.cy - pinch.rb.top}px`;
-      o.root.style.transform = `scale(${pinch.s})`;
+      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+      zs.z = clamp((pinch.z * Math.hypot(a.x - b.x, a.y - b.y)) / pinch.d, 1, ZS_MAX);
+      zs.tx = cx - pinch.u * zs.z - pinch.base;
+      applyZoom();
+      const top = o.root.getBoundingClientRect().top;
+      scrollBy(top - (cy - pinch.v * zs.z));
     }
     function endPinch() {
       if (!pinch) return;
-      const p = pinch;
       pinch = null;
-      o.root.style.transform = p.tf;
-      o.root.style.transformOrigin = p.to;
-      const ns = clamp(Math.round(p.size * p.s), ZMIN, ZMAX);
-      if (ns === o.zoom.get()) return;
-      const fy = (p.cy - p.rb.top) / (p.rb.height || 1); // 손가락 가운데가 가리키던 악보 안 세로 위치(비율)
-      o.zoom.set(ns);
-      requestAnimationFrame(() => {
-        const r = o.root.getBoundingClientRect();
-        scrollBy(r.top + fy * r.height - p.cy);
-      });
+      applyZoom();
+      paint();
     }
 
     // ----- 지우개: 닿는 즉시 지운다. 닿는 곳에 ○ 표시 -----
@@ -1471,19 +1526,27 @@
       S.querySelectorAll('g[data-id]').forEach((g) => { if (f.has(g.getAttribute('data-id'))) g.remove(); });
       o.geo = o.geo.filter((g) => !f.has(g.id));
     }
-    function showCursor(x, y) {
+    // 32차: 펜슬 호버·마우스가 떠 있을 때 지금 도구의 모양을 미리 보여 준다(지우개 ○, 펜·형광펜은 색과 굵기 그대로, 글자는 ＋)
+    function showCursor(x, y, kind) {
+      kind = kind || 'er';
       if (!ec || !ec.isConnected) {
-        ec = document.createElementNS(NS, 'circle');
-        ec.setAttribute('r', ER);
-        ec.setAttribute('fill', 'rgba(255,255,255,.35)');
-        ec.setAttribute('stroke', '#e11d48');
-        ec.setAttribute('stroke-width', '1.5');
-        ec.setAttribute('stroke-dasharray', '3 2');
+        ec = document.createElementNS(NS, 'g');
         ec.setAttribute('pointer-events', 'none');
         S.appendChild(ec);
       }
-      ec.setAttribute('cx', x.toFixed(1));
-      ec.setAttribute('cy', y.toFixed(1));
+      if (ec.dataset.k !== kind + '|' + (kind === 'er' ? '' : (opts[kind] || {}).c + '|' + ((opts[kind] || {}).w ?? (opts[kind] || {}).z))) {
+        let h = '';
+        if (kind === 'er') h = `<circle r="${ER}" fill="rgba(255,255,255,.35)" stroke="#e11d48" stroke-width="1.5" stroke-dasharray="3 2"/>`;
+        else if (kind === 'tx') h = `<path d="M-9 0h18M0 -9v18" stroke="${opts.tx.c}" stroke-width="1.5"/><circle r="9" fill="none" stroke="${opts.tx.c}" stroke-width="1" stroke-dasharray="3 2"/>`;
+        else {
+          const lw = o.root.offsetWidth || 600;
+          const rpx = Math.max(1.5, ((WIDTHS[kind][opts[kind].w] / 10) * lw) / 1000 / 2);
+          h = `<circle r="${rpx.toFixed(1)}" fill="${opts[kind].c}" fill-opacity="${kind === 'hl' ? 0.4 : 0.9}" stroke="rgba(0,0,0,.35)" stroke-width="0.6"/>`;
+        }
+        ec.innerHTML = h;
+        ec.dataset.k = kind + '|' + (kind === 'er' ? '' : (opts[kind] || {}).c + '|' + ((opts[kind] || {}).w ?? (opts[kind] || {}).z));
+      }
+      ec.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})`);
       ec.removeAttribute('display');
     }
     function hideCursor() { if (ec) ec.setAttribute('display', 'none'); }
@@ -1656,7 +1719,7 @@
         if (penDown) { ignore.add(e.pointerId); return; } // 펜으로 쓰는 중에 닿은 손바닥은 무시
         touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
         if (touches.size >= 2) { cancelAct(); startPinch(); return; }
-        if (!opts.finger) { stopInertia(); act = { id: e.pointerId, scroll: true, y: e.clientY, t: performance.now(), v: 0, moved: false }; return; }
+        if (!opts.finger) { stopInertia(); act = { id: e.pointerId, scroll: true, x: e.clientX, y: e.clientY, t: performance.now(), v: 0, moved: false }; return; }
       }
       if (pen) { penDown = true; touches.clear(); pinch = null; cancelAct(); }
       e.preventDefault();
@@ -1689,10 +1752,11 @@
         return;
       }
       act = { id: e.pointerId, tool, pts: [[x, y]], r: n.r, el: n.el, w: WIDTHS[tool][opts[tool].w], snap: snapNow() };
+      hideCursor();
       paintLive();
     };
     function hover(e) {
-      if (opts.tool === 'er' && (e.pointerType === 'pen' || e.pointerType === 'mouse') && !txt) { const [x, y] = pt(e); showCursor(x, y); }
+      if ((e.pointerType === 'pen' || e.pointerType === 'mouse') && !txt && !e.buttons) { const [x, y] = pt(e); showCursor(x, y, opts.tool); }
       else hideCursor();
     }
     S.onpointermove = (e) => {
@@ -1709,6 +1773,8 @@
         act.y = e.clientY;
         if (Math.abs(dy) > 0) act.moved = true;
         scrollBy(dy);
+        if (zs.z > 1) { zs.tx += e.clientX - act.x; applyZoom(); } // 확대 중에는 좌우로도 끌어서 본다
+        act.x = e.clientX;
         return;
       }
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
@@ -1807,7 +1873,8 @@
       bar.remove();
       pnl.remove();
       if (dbgBox) { dbgBox.remove(); dbgBox = null; }
-      if (pinch) { o.root.style.transform = pinch.tf; o.root.style.transformOrigin = pinch.to; pinch = null; }
+      pinch = null;
+      if (zHost) { zs.z = 1; zs.tx = 0; o.root.style.transform = zKeep.tf; o.root.style.transformOrigin = zKeep.to; o.root.style.marginBottom = zKeep.mb; zHost.style.overflow = zKeep.ov; }
       o.root.classList.remove('cink-editing');
       document.body.classList.remove('cink-on', 'cink-txt-on');
       document.documentElement.style.removeProperty('--cink-h');
