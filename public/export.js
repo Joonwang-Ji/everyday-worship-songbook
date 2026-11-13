@@ -192,19 +192,27 @@
   // ---------- 코드 악보 ----------
   // 코드가 있는 줄을 "코드 위 · 가사 아래" 로 그린다. 폭을 넘으면 낱말 단위로 줄을 바꾼다.
   function renderChord(n, it, song, parsed, p, info, keyText, scale) {
-    const W = A4.w, H = A4.h, maxW = W - 2 * M;
+    // 30차: 코드 악보는 가로 A4 한 장에 2단(연주 모드 2단 보기와 같은 모양)으로 놓는다
+    const W = A4.h, H = A4.w, GAP = 70, maxW = Math.floor((W - 2 * M - GAP) / 2);
+    let X0 = M, col = 0, colTop = M;
     const LYR = 30 * scale, CHD = 26 * scale;
     const CH_H = Math.round(CHD * 1.3), LY_H = Math.round(LYR * 1.35), ROW_GAP = Math.round(8 * scale), PLAIN_H = Math.round(LYR * 1.55);
     const conv = (c) => (c ? Chord.transposeChord(c, p.semis, p.flats) : '');
     const pages = [];
     let cv, g, y, barY = null, inChorus = false;
-    const endBar = () => { if (barY !== null) { g.fillStyle = BRAND; g.fillRect(M - 26, barY, 6, Math.max(0, y - barY - 4)); barY = null; } };
+    const endBar = () => { if (barY !== null) { g.fillStyle = BRAND; g.fillRect(X0 - 26, barY, 6, Math.max(0, y - barY - 4)); barY = null; } };
     let newPage = (first) => {
       cv = mk(W, H); g = cv.getContext('2d'); pages.push(cv);
       y = drawHeader(g, W, n, it, info, keyText, first);
+      col = 0; X0 = M; colTop = y;
       barY = inChorus ? y : null;
     };
-    const need = (h) => { if (y + h > H - M) { endBar(); newPage(false); } };
+    const need = (h) => {
+      if (y + h <= H - M) return;
+      endBar();
+      if (col === 0) { col = 1; X0 = M + maxW + GAP; y = colTop; barY = inChorus ? y : null; } // 첫 단이 차면 오른쪽 단으로
+      else newPage(false);
+    };
     newPage(true);
 
     const tw = (px, weight, t) => { g.font = font(px, weight); return g.measureText(t).width; };
@@ -248,11 +256,11 @@
         if (!ln.chorus) { endBar(); inChorus = false; } else if (!inChorus) inChorus = true;
         const kc = /^\s*(전조|key\b)/i.test(ln.text);
         g.font = 'italic ' + font(24 * scale, kc ? 700 : 600);
-        const ls = wrap(g, ln.text, maxW - 20);
+        const ls = wrap(g, Chord.shiftMemoKey(ln.text, p.semis, 'auto'), maxW - 20); // 30차: 전조 메모의 키도 콘티 키만큼
         need(ls.length * Math.round(32 * scale) + 6);
         if (inChorus && barY === null) barY = y;
         g.fillStyle = kc ? CHORD : MUTED;
-        for (const l of ls) { g.fillText(l, M + 8, y + Math.round(25 * scale)); y += Math.round(32 * scale); }
+        for (const l of ls) { g.fillText(l, X0 + 8, y + Math.round(25 * scale)); y += Math.round(32 * scale); }
         if (si >= 0) pageSecs.add(si);
         return;
       }
@@ -262,7 +270,7 @@
         const ls = wrap(g, Sections.label(ln.text, 'full'), maxW);
         need(ls.length * Math.round(40 * scale) + 10);
         g.fillStyle = BRAND;
-        for (const l of ls) { g.fillText(l, M, y + Math.round(30 * scale)); y += Math.round(40 * scale); }
+        for (const l of ls) { g.fillText(l, X0, y + Math.round(30 * scale)); y += Math.round(40 * scale); }
         if (si >= 0) pageSecs.add(si);
         return;
       }
@@ -274,7 +282,7 @@
         for (const l of wrap(g, ln.segs.map((s) => s.text).join(''), maxW)) {
           need(PLAIN_H);
           if (inChorus && barY === null) barY = y;
-          g.font = font(LYR, 400); g.fillStyle = INK; g.fillText(l, M, y + Math.round(LYR * 1.05)); y += PLAIN_H;
+          g.font = font(LYR, 400); g.fillStyle = INK; g.fillText(l, X0, y + Math.round(LYR * 1.05)); y += PLAIN_H;
         }
         return;
       }
@@ -282,8 +290,8 @@
         need(CH_H + LY_H + ROW_GAP);
         if (inChorus && barY === null) barY = y;
         for (const u of row.items) {
-          if (u.chord) { g.font = font(CHD, 700); g.fillStyle = CHORD; g.fillText(u.chord, M + u.x, y + Math.round(CHD * 1.05)); }
-          if (u.text.trim()) { g.font = font(LYR, 400); g.fillStyle = INK; g.fillText(u.text, M + u.x, y + CH_H + Math.round(LYR * 1.05)); }
+          if (u.chord) { g.font = font(CHD, 700); g.fillStyle = CHORD; g.fillText(u.chord, X0 + u.x, y + Math.round(CHD * 1.05)); }
+          if (u.text.trim()) { g.font = font(LYR, 400); g.fillStyle = INK; g.fillText(u.text, X0 + u.x, y + CH_H + Math.round(LYR * 1.05)); }
         }
         y += CH_H + LY_H + ROW_GAP;
       }
@@ -303,13 +311,13 @@
       g.font = font(26 * scale, 700);
       need(Math.round(40 * scale) + 10);
       g.fillStyle = BRAND;
-      g.fillText(name + ' ↻' + (ln.src >= 0 ? '' : '  (원본 구간이 없어요)'), M, y + Math.round(30 * scale));
+      g.fillText(name + ' ↻' + (ln.src >= 0 ? '' : '  (원본 구간이 없어요)'), X0, y + Math.round(30 * scale));
       y += Math.round(40 * scale);
     });
     endBar();
     return pages;
   }
-  // 2쪽 안에 들어오도록 글자를 조금씩 줄여 본다 (너무 작아지지 않게 하한을 둔다)
+  // 가로 한 장(2단)에 들어오도록 글자를 조금씩 줄여 본다 (너무 작아지지 않게 하한을 둔다)
   function chordPages(n, it, song, info) {
     const parsed = Chord.parseChordPro(song.chordpro);
     const gk = Chord.guessKey(parsed, song.original_key);
@@ -322,7 +330,7 @@
     for (const scale of [1, 0.9, 0.8, 0.72]) {
       if (best) best.forEach(release);
       best = renderChord(n, it, song, parsed, p, info, keyText, scale);
-      if (best.length <= 2) break;
+      if (best.length <= 1) break;
     }
     return best;
   }
@@ -368,7 +376,7 @@
     pdf.setCreator('Everyday Worship Songbook');
     const warnings = [];
     const items = s.items || [];
-    const total = items.length + 1;
+    const total = items.length + (o.noCover ? 0 : 1);
     let done = 0;
     const tick = (label) => { done++; if (o.onProgress) o.onProgress(done, total, label); };
 
@@ -380,8 +388,10 @@
       release(cv);
     };
 
-    for (const cv of coverCanvases(s, A4.w, A4.h)) await addCanvas(cv);
-    tick('표지');
+    if (!o.noCover) { // 30차: 곡 하나만 내보낼 때는 표지를 넣지 않는다
+      for (const cv of coverCanvases(s, A4.w, A4.h)) await addCanvas(cv);
+      tick('표지');
+    }
 
     for (let i = 0; i < items.length; i++) {
       const it = items[i], n = i + 1;

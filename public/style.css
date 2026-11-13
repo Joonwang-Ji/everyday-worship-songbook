@@ -773,3 +773,8 @@ input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; app
 .tsig-order .pbtn.mini[disabled] { opacity: .3; }
 .addtopic-row { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; flex-wrap: wrap; }
 .addtopic-row input { flex: 1 1 8em; min-width: 0; }
+
+/* 30차: 곡 편집 ＋ 새 칩 (분류마다) */
+.chip.addchip { border-style: dashed; background: transparent; color: var(--brand, #2a6670); }
+.chips .addtopic-row { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 2px 0; }
+.chips .addtopic-row .chipin { width: 9.5em; min-height: 34px; font-size: 16px; }

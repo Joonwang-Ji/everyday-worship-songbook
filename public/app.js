@@ -585,6 +585,7 @@
       me.canEdit ? `<a class="menu-row" href="#/edit/${id}${vSel ? '?v=' + vSel : ''}">${vSel ? '이 버전 편집' : '곡 편집'}</a>` : me.adminRequired ? `<button type="button" class="menu-row" data-lock="song" data-go="#/edit/${id}${vSel ? '?v=' + vSel : ''}">🔒 곡 편집 <span class="muted small">PIN 필요</span></button>` : '',
       me.canEdit ? `<a class="menu-row" href="#/history/${id}">수정 이력</a>` : '',
       hasText ? `<button type="button" class="menu-row" id="m-lyr">가사 복사</button>` : '',
+      hasText || files.length ? `<button type="button" class="menu-row" id="m-pdf">📄 PDF로 공유·저장 <span class="muted small">이 곡 한 곡만</span></button>` : '',
     ].filter(Boolean);
 
     // 키·박자 줄: 우리 팀 키가 있으면 팀 키를 먼저(바로 오른쪽에 박자), 원키는 다를 때만 작게. 팀 키가 없으면 원키가 그 자리. (14차)
@@ -678,6 +679,33 @@
     if ($sm) $sm.onclick = () => {
       const sh = showSheet(`<div class="menu-list">${menuRows.join('')}</div><button type="button" class="btn" id="mcancel" style="width:100%;margin-top:8px">닫기</button>`);
       sh.q('#mcancel').onclick = () => sh.close();
+      // 30차: 곡 하나만 PDF로 만들어 공유·저장 (콘티 PDF와 같은 도구. 코드 악보는 가로 2단 한 장)
+      const $mp = sh.q('#m-pdf');
+      if ($mp) $mp.onclick = async () => {
+        const orig = $mp.innerHTML;
+        $mp.disabled = true;
+        try {
+          await loadExporter();
+          const soundKey = hasKey ? Chord.plan(origKey, st.shift, 0, prefs.acc).soundKey : '';
+          let form = '', memo = '';
+          if (slId) {
+            try { const it = ((await api('/setlists/' + slId)).setlist.items || []).find((x) => String(x.song_id) === String(id)); if (it) { form = it.form || ''; memo = it.memo || ''; } } catch {}
+          }
+          const one = { title: song.title, date: '', items: [{ song_id: +id, title: song.title, key: soundKey, form, memo, view: 'auto', variant_id: vSel, variant_map: {} }] };
+          const r = await Exporter.buildPdf(one, {
+            noCover: true,
+            getSong: async () => fullSong,
+            getBytes: async (url) => { const res = await fetch(url); if (!res.ok) throw new Error('file'); return res.arrayBuffer(); },
+            onProgress: () => { $mp.textContent = 'PDF 만드는 중…'; },
+          });
+          sh.close();
+          showFileResult(r.blob, (song.title || '악보').replace(/[\\/:*?"<>|]/g, '').slice(0, 60) + (soundKey ? ' ' + soundKey : '') + '.pdf', 'pdf', r.warnings);
+        } catch (e) {
+          toast(e.message || 'PDF를 만들지 못했어요.');
+          $mp.disabled = false;
+          $mp.innerHTML = orig;
+        }
+      };
       const $ml = sh.q('#m-lyr');
       if ($ml) $ml.onclick = () => {
         sh.close();
@@ -1198,8 +1226,6 @@
             </details>
             <label for="tags">태그 (쉼표로 구분 · 아래 추천 칩을 눌러도 돼요)</label><input id="tags" type="text" placeholder="경배, 빠른곡" value="${esc(song.tags)}">
             <div id="tagchips"></div>
-            <div class="row" style="margin:4px 0 0"><button type="button" class="btn small" id="topicbtn">＋ 새 주제</button></div>
-            <div class="addtopic-row" id="topicrow" hidden><input id="topicin" type="text" maxlength="20" placeholder="새 주제 이름" aria-label="새 주제 이름"><button type="button" class="btn small primary" id="topicadd">추가</button></div>
             <label for="yt">원곡 영상 링크 <span class="muted small">(유튜브 · 연습할 때 곡 화면에서 바로 열려요)</span></label><input id="yt" type="url" placeholder="https://" value="${esc(song.youtube_url)}">
             <details class="moreinfo" id="moreinfo" ${song.tempo || song.memo || song.lyrics_extra ? 'open' : ''}>
               <summary>더 적을 정보 <span class="muted small">템포 · 메모 · 검색용 가사</span></summary>
@@ -2305,14 +2331,25 @@
       setTsigs([...presetsOn, ...norm]);
     };
     drawTsig();
+    let addingGroup = null; // 30차: 어느 분류에서 "＋ 새 칩" 입력칸이 열려 있는지
     function drawTagChips() {
       const on = new Set(tagList());
       $('tagchips').innerHTML = tagInfo.presets
-        .filter((g) => g.items.length)
-        .map((g) => `<div class="chipgroup"><span class="ctl-label">${esc(g.group)}</span><div class="chips">${g.items.map((t) => `<button type="button" class="chip ${on.has(t) ? 'on' : ''}" data-t="${esc(t)}">${esc(t)}</button>`).join('')}</div></div>`)
+        .map((g) => `<div class="chipgroup"><span class="ctl-label">${esc(g.group)}</span><div class="chips">${g.items.map((t) => `<button type="button" class="chip ${on.has(t) ? 'on' : ''}" data-t="${esc(t)}">${esc(t)}</button>`).join('')}${addingGroup === g.group
+          ? `<span class="addtopic-row"><input class="chipin" type="text" maxlength="20" placeholder="새 칩 이름" aria-label="${esc(g.group)} 새 칩 이름"><button type="button" class="btn small primary" data-addok="${esc(g.group)}">추가</button><button type="button" class="btn small" data-addx="1">취소</button></span>`
+          : `<button type="button" class="chip addchip" data-addg="${esc(g.group)}" aria-label="${esc(g.group)}에 새 칩 만들기">＋ 새 칩</button>`}</div></div>`)
         .join('');
+      const inp = $('tagchips').querySelector('.chipin');
+      if (inp && !inp.dataset.f) { inp.dataset.f = '1'; inp.focus(); }
     }
     $('tagchips').onclick = (ev) => {
+      const t0 = ev.target.closest && ev.target.closest('button[data-addg], button[data-addok], button[data-addx]');
+      if (t0) {
+        if (t0.dataset.addg !== undefined) { addingGroup = t0.dataset.addg; drawTagChips(); }
+        else if (t0.dataset.addx !== undefined) { addingGroup = null; drawTagChips(); }
+        else addChip(t0.dataset.addok);
+        return;
+      }
       const b = ev.target.closest && ev.target.closest('button[data-t]');
       if (!b) return;
       const t = b.dataset.t;
@@ -2326,22 +2363,24 @@
       $('tags').dispatchEvent(new Event('input', { bubbles: true }));
     };
     $('tags').oninput = drawTagChips;
-    drawTagChips();
-    // 29차: 곡 편집 화면에서 새 주제 만들기. 곡에는 바로 붙고, 관리자 PIN이 있으면 추천 목록(주제 분류)에도 올라간다.
-    $('topicbtn').onclick = () => {
-      const row = $('topicrow');
-      row.hidden = !row.hidden;
-      if (!row.hidden) $('topicin').focus();
+    $('tagchips').onkeydown = (ev) => {
+      if (!ev.target.classList || !ev.target.classList.contains('chipin')) return;
+      if (ev.key === 'Enter') { ev.preventDefault(); addChip(addingGroup); }
+      else if (ev.key === 'Escape') { addingGroup = null; drawTagChips(); }
     };
-    async function addTopic() {
-      const name = $('topicin').value.replace(/[,，]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 20);
-      if (!name) { toast('주제 이름을 입력해 주세요.'); return; }
+    drawTagChips();
+    // 30차: 곡 편집 화면에서 어느 분류(주제·분위기 …)에든 새 칩 만들기(29차 "새 주제"를 넓힘).
+    // 곡에는 바로 붙고, 관리자 PIN을 넣으면 추천 목록(그 분류)에도 올라간다. PIN을 안 넣으면 이 곡에만 붙는 자유 태그.
+    async function addChip(group) {
+      const inp = $('tagchips').querySelector('.chipin');
+      const name = (inp ? inp.value : '').replace(/[,，]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 20);
+      if (!name) { toast('칩 이름을 입력해 주세요.'); return; }
       let listed = tagInfo.presets.some((g) => g.items.includes(name));
       if (!listed) {
         if (!me.isAdmin) await askPin('admin');
         if (me.isAdmin) {
           try {
-            const r = await api('/admin/tags/add', { method: 'POST', body: { group: '주제', name } });
+            const r = await api('/admin/tags/add', { method: 'POST', body: { group, name } });
             tagInfo.presets = r.presets;
             listed = true;
           } catch (e) { toast(e.message); }
@@ -2351,14 +2390,11 @@
       const next = [...new Set([...tagList(), name])];
       next.sort((a, b) => (rank.has(a) ? rank.get(a) : 1e9) - (rank.has(b) ? rank.get(b) : 1e9) || a.localeCompare(b, 'ko'));
       $('tags').value = next.join(', ');
+      addingGroup = null;
       drawTagChips();
       $('tags').dispatchEvent(new Event('input', { bubbles: true }));
-      $('topicin').value = '';
-      $('topicrow').hidden = true;
-      toast(listed ? `"${name}" 주제를 추가하고 이 곡에 붙였어요.` : `"${name}"을(를) 이 곡에만 붙였어요. 추천 목록에는 관리자 PIN이 필요해요.`);
+      toast(listed ? `"${name}" 칩을 ${group}에 추가하고 이 곡에 붙였어요.` : `"${name}"을(를) 이 곡에만 붙였어요. 추천 목록에는 관리자 PIN이 필요해요.`);
     }
-    $('topicadd').onclick = addTopic;
-    $('topicin').onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); addTopic(); } };
     // ----- 외부에서 악보 찾기 (검색 페이지로만 연결) -----
     const drawExt = () => {
       const t = $('title').value.trim();

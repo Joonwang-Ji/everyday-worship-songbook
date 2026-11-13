@@ -204,6 +204,16 @@
 
   const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+  // 30차: "전조 Ab" · "Key of G" 같은 메모 줄의 키 이름을 semis만큼 옮긴다. 전조·Key로 시작하는 메모에만 쓴다.
+  function shiftMemoKey(text, semis, acc) {
+    text = String(text || '');
+    if (!/^\s*(전조|key\b)/i.test(text) || !semis || semis % 12 === 0) return text;
+    return text.replace(/\b([A-G][#b♯♭]?)(m(?:in)?)?(?![A-Za-z0-9])/g, (m0, r, mi) => {
+      const key = r.replace('♯', '#').replace('♭', 'b') + (mi ? 'm' : '');
+      return parseKey(key) ? transposeKey(key, semis, acc) : m0;
+    });
+  }
+
   // 이조 계산: 표시할 코드와 키 이름을 한꺼번에 돌려준다.
   // shift: 원래 키에서 올린 반음 수, capo: 카포 프렛, acc: 'auto' | 'sharp' | 'flat'
   function plan(originalKey, shift, capo, acc) {
@@ -308,7 +318,10 @@
           inChorus = true;
         }
         if (!ln.chorus) closeChorus();
-        out.push('<div class="mline' + (/^\s*(전조|key\b)/i.test(ln.text) ? ' kc' : '') + '">' + esc(ln.text) + '</div>');
+        const isKc = /^\s*(전조|key\b)/i.test(ln.text);
+        // 30차: "전조 Ab" 같은 메모의 키 이름도 곡 키를 바꾼 만큼 함께 옮긴다(코드만 바뀌고 메모는 그대로이던 문제)
+        const mtext = shiftMemoKey(ln.text, o.shift, o.acc);
+        out.push('<div class="mline' + (isKc ? ' kc' : '') + '">' + esc(mtext) + '</div>');
       } else if (ln.type === 'comment') {
         if (o.parts) {
           closePart();
@@ -353,6 +366,6 @@
   return {
     MAJOR_NAMES, MINOR_NAMES,
     parseKey, keyUsesFlats, transposeChord, transposeKey, noteName,
-    parseChordPro, guessKey, plan, renderHTML, sectionBody, buildSections,
+    parseChordPro, guessKey, plan, renderHTML, sectionBody, buildSections, shiftMemoKey,
   };
 });
