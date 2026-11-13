@@ -207,7 +207,8 @@
           lines.push({ type: 'ref', id, rest: '', raw: id });
         } else {
           lines.push({ type: 'comment', text: id });
-          for (const b of Chord.sectionBody(P, si)) lines.push(Object.assign({}, b, ks ? { ks } : {}));
+          const occ = id + '#' + nthOf[id] + (times > 1 ? '.' + (r + 1) : '');
+          for (const b of Chord.sectionBody(P, si)) lines.push(Object.assign({}, b, ks ? { ks } : {}, { occ }, P === parsed ? {} : { bv: vid }));
         }
         last[id] = here;
       }

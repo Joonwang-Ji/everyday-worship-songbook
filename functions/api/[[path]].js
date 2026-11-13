@@ -145,13 +145,20 @@ function cleanInk(raw) {
   for (const it of Array.isArray(raw && raw.items) ? raw.items.slice(0, MAX_INK_ITEMS) : []) {
     if (!it || typeof it.id !== 'string' || !/^[A-Za-z0-9_-]{1,24}$/.test(it.id) || seen.has(it.id)) continue;
     const c = /^#[0-9a-fA-F]{6}$/.test(it.c) ? it.c : '#222222';
+    // 30차: 코드 악보 필기는 줄(a = {b 줄 번호, h 글자 해시, v 버전, o 회차})에 붙고, 좌표는 그 줄 상자 안의 값이라 줄 밖(위·아래)으로 나갈 수 있다.
+    let a = null;
+    if (it.a && typeof it.a === 'object') {
+      a = { b: inum(it.a.b, 0, 9999), h: /^[0-9a-z]{0,8}$/.test(it.a.h) ? it.a.h : '', v: inum(it.a.v, 0, 999999999) };
+      if (typeof it.a.o === 'string' && /^[A-Za-z0-9#.]{1,12}$/.test(it.a.o)) a.o = it.a.o;
+    }
+    const lo = a ? -40000 : 0, hi = a ? 60000 : 10000;
     if (it.t === 's' || it.t === 'h') {
       if (!Array.isArray(it.p) || it.p.length < 2 || it.p.length > 6000 || it.p.length % 2) continue;
-      items.push({ id: it.id, t: it.t, c, w: inum(it.w, 1, 400), p: it.p.map((n) => inum(n, 0, 10000)) });
+      items.push({ id: it.id, t: it.t, c, w: inum(it.w, 1, 400), p: it.p.map((n) => inum(n, lo, hi)), ...(a ? { a } : {}) });
     } else if (it.t === 'x') {
       const s = String(it.s == null ? '' : it.s).slice(0, 300);
       if (!s.trim()) continue;
-      items.push({ id: it.id, t: 'x', c, x: inum(it.x, 0, 10000), y: inum(it.y, 0, 10000), z: inum(it.z, 60, 600), s });
+      items.push({ id: it.id, t: 'x', c, x: inum(it.x, lo, hi), y: inum(it.y, lo, hi), z: inum(it.z, 60, 600), s, ...(a ? { a } : {}) });
     } else continue;
     seen.add(it.id);
   }
@@ -936,6 +943,48 @@ export async function onRequest({ request, env }) {
                     ON CONFLICT(vault_id,uid,file_id) DO UPDATE SET rev=excluded.rev, data=excluded.data, updated_at=excluded.updated_at`)
           .bind(vault.id, uid, slot.setlist_id, file.song_id, fid, rev, text, nowIso())
           .run();
+        await db.prepare('UPDATE vaults SET last_seen=? WHERE id=?').bind(nowIso(), vault.id).run();
+        return json({ rev, data });
+      }
+      // 코드 악보 필기(30차): 곡 기본 필기(PUT /cink/곡번호)와 콘티용 필기(PUT /cink/곡번호/콘티칸uid).
+      //  같은 표에 file_id = -곡번호 로 넣는다(이미지 파일 번호와 겹치지 않는다). 곡·콘티·보관함을 지울 때 함께 지워지고 장 수 제한도 같이 센다.
+      if (parts[1] === 'cink' && parts[2] && method === 'PUT') {
+        const sid = parseInt(parts[2], 10);
+        const uid = parts[3] ? String(parts[3]) : '';
+        const body = await readBody();
+        const song = Number.isInteger(sid) && sid > 0 && (await db.prepare('SELECT id FROM songs WHERE id=?').bind(sid).first());
+        if (!song) throw new HttpError(404, '곡을 찾을 수 없습니다. (지워졌을 수 있어요)');
+        const slot = uid ? UID_RE.test(uid) && (await db.prepare('SELECT i.setlist_id, i.song_id FROM setlist_items i JOIN setlists l ON l.id=i.setlist_id WHERE i.uid=? AND l.team_id=?').bind(uid, ctx.team ? ctx.team.id : -1).first()) : null;
+        if (uid && (!slot || slot.song_id !== sid)) throw new HttpError(404, '콘티의 곡을 찾을 수 없습니다. (콘티에서 빠졌거나 지워졌습니다)');
+        const fid = -sid;
+        const mine = cleanInk(body.data);
+        const cur = uid
+          ? await db.prepare('SELECT rev, data FROM vault_sl_items WHERE vault_id=? AND uid=? AND file_id=?').bind(vault.id, uid, fid).first()
+          : await db.prepare(`SELECT rev, data FROM vault_items WHERE vault_id=? AND kind='ink' AND file_id=?`).bind(vault.id, fid).first();
+        let data = mine;
+        let rev = 1;
+        if (cur) {
+          rev = cur.rev + 1;
+          if (Number(body.base_rev) !== cur.rev) data = mergeInk(JSON.parse(cur.data), mine);
+        } else {
+          const n = await db.prepare('SELECT (SELECT COUNT(*) FROM vault_items WHERE vault_id=?1) + (SELECT COUNT(*) FROM vault_sl_items WHERE vault_id=?1) AS n').bind(vault.id).first();
+          if (n.n >= MAX_VAULT_PAGES) throw new HttpError(400, '보관함에 둘 수 있는 필기 장 수를 넘었습니다.');
+        }
+        const text = JSON.stringify(data);
+        if (text.length > MAX_INK_BYTES) throw new HttpError(413, '이 곡의 코드 악보 필기가 너무 많습니다. 일부를 지우고 다시 저장해 주세요.');
+        if (uid) {
+          await db
+            .prepare(`INSERT INTO vault_sl_items (vault_id,uid,setlist_id,song_id,file_id,rev,data,updated_at) VALUES (?,?,?,?,?,?,?,?)
+                      ON CONFLICT(vault_id,uid,file_id) DO UPDATE SET rev=excluded.rev, data=excluded.data, updated_at=excluded.updated_at`)
+            .bind(vault.id, uid, slot.setlist_id, sid, fid, rev, text, nowIso())
+            .run();
+        } else {
+          await db
+            .prepare(`INSERT INTO vault_items (vault_id,kind,song_id,file_id,rev,data,updated_at) VALUES (?,'ink',?,?,?,?,?)
+                      ON CONFLICT(vault_id,kind,file_id) DO UPDATE SET rev=excluded.rev, data=excluded.data, updated_at=excluded.updated_at, song_id=excluded.song_id`)
+            .bind(vault.id, sid, fid, rev, text, nowIso())
+            .run();
+        }
         await db.prepare('UPDATE vaults SET last_seen=? WHERE id=?').bind(nowIso(), vault.id).run();
         return json({ rev, data });
       }

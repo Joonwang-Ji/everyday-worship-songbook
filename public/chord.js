@@ -55,6 +55,16 @@
     return out;
   }
 
+  // 30차: 화면·PDF에 보이는 코드 글자를 제대로 된 기호로 바꾼다(저장·이조 계산은 계속 # b 영문 글자).
+  //   C#→C♯ · Bb→B♭ · Am7b5→Am7♭5 · C#11→C♯11 · Bdim→B° · Caug→C+ · 슬래시 베이스(D/F#→D/F♯)
+  function pretty(chord) {
+    const m = /^([A-G][#b]?)([^/]*)(?:\/(.*))?$/.exec(String(chord == null ? '' : chord));
+    if (!m) return String(chord == null ? '' : chord);
+    const acc = (x) => x.replace(/^([A-G])#/, '$1♯').replace(/^([A-G])b/, '$1♭');
+    const q = m[2].replace(/dim/g, '°').replace(/aug/g, '+').replace(/([#b])(?=\d)/g, (x) => (x === '#' ? '♯' : '♭'));
+    return acc(m[1]) + q + (m[3] ? '/' + acc(m[3]) : '');
+  }
+
   // acc(27차): 'sharp'/'flat'이면 검은 건반 키 이름을 모두 그 표기로, 'auto'(기본)이면 흔히 쓰는 이름(Db·Eb·F#·Ab·Bb …)을 쓰되
   // 두 가지가 비슷하게 쓰이는 F#/Gb(장조)·D#m/Ebm(단조)만 시작 키의 표기(샵 계열/플랫 계열)를 따른다.
   function transposeKey(keyStr, semis, acc) {
@@ -74,6 +84,14 @@
   }
 
   // ---------- ChordPro 파싱 ----------
+  // 30차: 필기를 줄에 붙이기 위한 글자 해시(공백 제외). 코드만 있는 줄은 ''.
+  function lineHash(t) {
+    const x = String(t || '').replace(/\s+/g, '');
+    if (!x) return '';
+    let h = 5381;
+    for (let i = 0; i < x.length; i++) h = ((h * 33) ^ x.charCodeAt(i)) >>> 0;
+    return h.toString(36);
+  }
   function parseChordPro(text) {
     const meta = {};
     const lines = [];
@@ -121,7 +139,7 @@
       cur.text = raw.slice(last);
       segs.push(cur);
       const clean = segs.filter((s, i) => !(i === 0 && !s.chord && !s.text));
-      lines.push({ type: 'lyric', segs: clean, chorus: section === 'chorus', hasChords: clean.some((s) => s.chord) });
+      lines.push({ type: 'lyric', segs: clean, chorus: section === 'chorus', hasChords: clean.some((s) => s.chord), bi: lines.length, h: lineHash(clean.map((s) => s.text).join('')) });
     }
     return { meta, lines, sections: buildSections(lines) };
   }
@@ -330,6 +348,7 @@
         closeChorus();
         out.push('<div class="cm' + (ri !== undefined ? ' refopen' : '') + '"' + (ri !== undefined ? ' data-ri="' + ri + '" role="button" tabindex="0" title="탭하면 접어요"' : '') + '>' + esc(nameOf(ln.text)) + '</div>');
       } else {
+        const anc = ln.bi !== undefined && ri === undefined ? ' data-bl="' + ln.bi + '" data-h="' + (ln.h || '') + '" data-v="' + (ln.bv !== undefined ? ln.bv : o.v || 0) + '"' + (ln.occ ? ' data-o="' + ln.occ + '"' : '') : '';
         if (o.parts) {
           if (ln.chorus && !inChorus && inPart && partHasBody) closePart();
           openPart(sAttr(ri !== undefined ? secAt(i) : secAt(i)));
@@ -343,14 +362,14 @@
         if (!o.showChords || !ln.hasChords) {
           const text = ln.segs.map((s) => s.text).join('');
           if (!o.showChords && !text.trim()) continue; // 간주 등 코드만 있는 줄은 가사 모드에서 숨김
-          out.push('<div class="ln plain">' + (esc(text) || '&nbsp;') + '</div>');
+          out.push('<div class="ln plain"' + anc + '>' + (esc(text) || '&nbsp;') + '</div>');
         } else {
           out.push(
-            '<div class="ln">' +
+            '<div class="ln"' + anc + '>' +
               ln.segs
                 .map(
                   (s) =>
-                    '<span class="sg"><span class="ch">' + esc(conv(s.chord, ln.ks)) + '</span><span class="ly">' + esc(s.text) + '</span></span>'
+                    '<span class="sg"><span class="ch">' + esc(pretty(conv(s.chord, ln.ks))) + '</span><span class="ly">' + esc(s.text) + '</span></span>'
                 )
                 .join('') +
               '</div>'
@@ -365,7 +384,7 @@
 
   return {
     MAJOR_NAMES, MINOR_NAMES,
-    parseKey, keyUsesFlats, transposeChord, transposeKey, noteName,
-    parseChordPro, guessKey, plan, renderHTML, sectionBody, buildSections, shiftMemoKey,
+    parseKey, keyUsesFlats, transposeChord, pretty, transposeKey, noteName,
+    parseChordPro, lineHash, guessKey, plan, renderHTML, sectionBody, buildSections, shiftMemoKey,
   };
 });

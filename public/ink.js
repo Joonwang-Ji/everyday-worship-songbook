@@ -18,6 +18,8 @@
   const emptyData = () => ({ v: 1, items: [], del: [] });
   // 콘티용 필기(16차): 콘티의 곡 한 칸(uid) + 악보 한 장(fid)마다 따로 저장한다. 같은 저장소에 문자열 키로 넣는다.
   const slKey = (u, fid) => `sl:${u}:${fid}`;
+  // 30차: 코드 악보 필기는 곡(songId)마다 하나, 콘티용은 콘티 칸(uid)마다 하나. 서버에서는 file_id = -곡번호로 저장된다.
+  const codeKeyOf = (songId, sl) => 'cs:' + songId + (sl ? ':' + sl.uid : '');
   const slMeta = (sl, fid) => (sl ? { sl: sl.uid, fid, setlistId: sl.setlistId } : {});
 
   // ---------- 이 기기 저장소 (IndexedDB, 안 되면 메모리) ----------
@@ -104,7 +106,9 @@
       const all = await rall();
       for (const rec of all.filter((r) => r.dirty)) {
         try {
-          const r = rec.sl
+          const r = rec.code
+            ? await vfetch('/cink/' + rec.songId + (rec.sl ? '/' + rec.sl : ''), { method: 'PUT', body: { base_rev: rec.rev || 0, data: rec.data } })
+            : rec.sl
             ? await vfetch('/ink-sl/' + rec.sl + '/' + rec.fid, { method: 'PUT', body: { base_rev: rec.rev || 0, data: rec.data } })
             : await vfetch('/ink/' + rec.fileId, { method: 'PUT', body: { song_id: rec.songId, base_rev: rec.rev || 0, data: rec.data } });
           const cur = await rget(rec.fileId);
@@ -134,10 +138,11 @@
     try {
       const r = await vfetch('/ink?song=' + encodeURIComponent(songId));
       for (const it of r.items || []) {
-        const cur = await rget(it.file_id);
+        const key = it.file_id < 0 ? codeKeyOf(it.song_id) : it.file_id; // 30차: file_id가 음수면 코드 악보 필기
+        const cur = await rget(key);
         if (cur && (cur.dirty || cur.rev === it.rev)) continue;
-        await rput({ fileId: it.file_id, songId: it.song_id, rev: it.rev, data: it.data, dirty: false, stamp: 0 });
-        emit(it.file_id);
+        await rput({ fileId: key, songId: it.song_id, rev: it.rev, data: it.data, dirty: false, stamp: 0, ...(it.file_id < 0 ? { code: 1 } : {}) });
+        emit(key);
       }
     } catch (e) {
       if (e.status === 401 && !warned) { warned = true; cfg.toast('필기 보관함 연결이 풀렸어요. 더보기에서 코드를 다시 입력해 주세요.'); }
@@ -150,10 +155,10 @@
     try {
       const r = await vfetch('/ink-sl?setlist=' + encodeURIComponent(setlistId));
       for (const it of r.items || []) {
-        const key = slKey(it.uid, it.file_id);
+        const key = it.file_id < 0 ? codeKeyOf(it.song_id, { uid: it.uid }) : slKey(it.uid, it.file_id);
         const cur = await rget(key);
         if (cur && (cur.dirty || cur.rev === it.rev)) continue;
-        await rput({ fileId: key, sl: it.uid, fid: it.file_id, setlistId: it.setlist_id, songId: it.song_id, rev: it.rev, data: it.data, dirty: false, stamp: 0 });
+        await rput({ fileId: key, sl: it.uid, fid: it.file_id, setlistId: it.setlist_id, songId: it.song_id, rev: it.rev, data: it.data, dirty: false, stamp: 0, ...(it.file_id < 0 ? { code: 1 } : {}) });
         emit(key);
       }
     } catch (e) {
@@ -174,24 +179,27 @@
   // 보관함을 처음 연결할 때: 서버에 있던 필기를 받아 합치고, 이 기기에 쌓인 필기를 모두 올린다
   async function adoptServerNotes() {
     const r = await vfetch('/ink');
+    const sKey = (it) => (it.file_id < 0 ? codeKeyOf(it.song_id) : it.file_id);
+    const sMeta = (it) => (it.file_id < 0 ? { code: 1 } : {});
+    const lKey = (it) => (it.file_id < 0 ? codeKeyOf(it.song_id, { uid: it.uid }) : slKey(it.uid, it.file_id));
     for (const it of r.items || []) {
-      const cur = await rget(it.file_id);
-      if (!cur) await rput({ fileId: it.file_id, songId: it.song_id, rev: it.rev, data: it.data, dirty: false, stamp: 0 });
+      const cur = await rget(sKey(it));
+      if (!cur) await rput({ fileId: sKey(it), songId: it.song_id, rev: it.rev, data: it.data, dirty: false, stamp: 0, ...sMeta(it) });
       else await rput({ ...cur, rev: it.rev, data: mergeInk(it.data, cur.data), dirty: true, stamp: Date.now() + Math.random() });
-      emit(it.file_id);
+      emit(sKey(it));
     }
     const r2 = await vfetch('/ink-sl');
     for (const it of r2.items || []) {
-      const key = slKey(it.uid, it.file_id);
+      const key = lKey(it);
       const cur = await rget(key);
-      const meta = { sl: it.uid, fid: it.file_id, setlistId: it.setlist_id, songId: it.song_id };
+      const meta = { sl: it.uid, fid: it.file_id, setlistId: it.setlist_id, songId: it.song_id, ...sMeta(it) };
       if (!cur) await rput({ fileId: key, ...meta, rev: it.rev, data: it.data, dirty: false, stamp: 0 });
       else await rput({ ...cur, rev: it.rev, data: mergeInk(it.data, cur.data), dirty: true, stamp: Date.now() + Math.random() });
       emit(key);
     }
     const all = await rall();
     for (const rec of all) {
-      const onServer = rec.sl ? (r2.items || []).some((i) => slKey(i.uid, i.file_id) === rec.fileId) : (r.items || []).some((i) => i.file_id === rec.fileId);
+      const onServer = rec.sl ? (r2.items || []).some((i) => lKey(i) === rec.fileId) : (r.items || []).some((i) => sKey(i) === rec.fileId);
       if (!rec.dirty && !onServer) await rput({ ...rec, rev: 0, dirty: true, stamp: Date.now() + Math.random() });
     }
     await flush();
@@ -966,11 +974,327 @@
     render();
   }
 
+  // ---------- 코드 악보 필기 (30차) ----------
+  // 코드 악보는 글자라서 키·글자 크기·단 수에 따라 줄 위치가 바뀐다. 그래서 필기를 "그림 좌표"가 아니라 "줄"에 붙인다.
+  //  · 한 획(글자)은 처음 찍은 점이 있는 줄에 붙는다: a = { b: 줄 번호, h: 줄 글자 해시, v: 악보 버전, o: 회차(있을 때만) }
+  //  · 좌표는 그 줄 상자 안 값: x = 줄 너비의 1/10000, y = 줄 높이의 1/1000 (줄 위·아래로 나가도 된다)
+  //  · 줄 글자를 고쳐 번호가 밀려도 해시로 위아래 2줄 안에서 다시 찾는다. 못 찾으면 "안 보이는 필기"로 세어 정리할 수 있다.
+  //  · 회차(o): 송폼 순서 악보에서 같은 구간이 여러 번 나올 때 "V1#1", "C#2" 처럼 몇 번째인지. o가 없으면 모든 회차에 보인다.
+  const cviews = new Set();
+  const codeMeta = (songId, sl) => ({ code: 1, ...(sl ? { sl: sl.uid, fid: -songId, setlistId: sl.setlistId } : {}) });
+  function relPos(el, root) {
+    let x = 0, y = 0, e = el;
+    while (e && e !== root) { x += e.offsetLeft; y += e.offsetTop; e = e.offsetParent; }
+    return { x, y, w: el.offsetWidth, h: el.offsetHeight };
+  }
+  const lineEls = (root, v) => [...root.querySelectorAll('.ln[data-bl]')].filter((e) => (+e.dataset.v || 0) === v);
+  function matchItem(list, a) {
+    const cand = a.o ? list.filter((e) => e.dataset.o === a.o) : list;
+    if (!cand.length) return { els: [], none: true };
+    const by = new Map();
+    for (const e of cand) { const k = +e.dataset.bl; if (!by.has(k)) by.set(k, []); by.get(k).push(e); }
+    const want = a.h || '';
+    for (const d of [0, -1, 1, -2, 2]) {
+      const k = a.b + d;
+      if (by.has(k) && (by.get(k)[0].dataset.h || '') === want && (want || d === 0)) return { els: by.get(k) };
+    }
+    return { els: [], miss: true };
+  }
+  function cdraw(o) {
+    const root = o.root;
+    if (!root.isConnected) return;
+    if (!o.svg || !o.svg.isConnected) {
+      if (getComputedStyle(root).position === 'static') root.style.position = 'relative';
+      if (!o.svg) {
+        o.svg = document.createElementNS(NS, 'svg');
+        o.svg.setAttribute('class', 'ink-ov cink-ov');
+        o.svg.setAttribute('aria-hidden', 'true');
+      }
+      root.appendChild(o.svg);
+    }
+    const svg = o.svg;
+    svg.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;overflow:visible;z-index:3;' + (o.editing ? 'pointer-events:auto;touch-action:none;' : 'pointer-events:none;');
+    const cache = {};
+    const miss = [];
+    o.geo = [];
+    let html = '';
+    for (const src of o.sources) {
+      for (const it of (src.data && src.data.items) || []) {
+        const a = it.a;
+        if (!a) continue;
+        const lv = cache[a.v || 0] || (cache[a.v || 0] = lineEls(root, a.v || 0));
+        const m = matchItem(lv, a);
+        if (m.miss) miss.push({ id: it.id, key: src.key });
+        for (const el of m.els || []) {
+          const r = relPos(el, root);
+          if (!r.w || !r.h) continue;
+          const sc = r.w / 1000;
+          html += `<g transform="translate(${r.x.toFixed(1)},${r.y.toFixed(1)}) scale(${sc.toFixed(4)})">${itemSVG(it, 1000, (10 * r.h) / sc)}</g>`;
+          o.geo.push({ id: it.id, key: src.key, it, r });
+        }
+      }
+    }
+    svg.innerHTML = html;
+    o.miss = miss;
+    cnote(o);
+  }
+  function cnote(o) {
+    if (!o.note) {
+      o.note = document.createElement('div');
+      o.note.className = 'cink-miss muted small';
+      o.root.insertAdjacentElement('afterend', o.note);
+    }
+    const n = o.miss.length;
+    o.note.hidden = !n || o.readOnly;
+    o.note.innerHTML = n ? `화면에 안 보이는 필기 ${n}개 (가사를 고쳐서 줄을 못 찾았어요) <button type="button" class="btn small" data-cl="1">정리</button>` : '';
+    const b = o.note.querySelector('button');
+    if (b) b.onclick = async () => {
+      if (!confirm(`안 보이는 필기 ${n}개를 지울까요? 되돌릴 수 없어요.`)) return;
+      for (const s of o.sources) {
+        const ids = o.miss.filter((m) => m.key === s.key).map((m) => m.id);
+        if (!ids.length) continue;
+        const d = { v: 1, items: s.data.items.filter((i) => !ids.includes(i.id)), del: [...(s.data.del || []), ...ids] };
+        await save(s.key, o.songId, d, s.meta);
+      }
+    };
+  }
+  async function cload(o) {
+    const recs = await Promise.all(o.sources.map((s) => rget(s.key)));
+    o.sources.forEach((s, i) => { s.data = recs[i] ? recs[i].data : null; });
+    cdraw(o);
+  }
+  // root(.score) 안의 .ln[data-bl] 줄들에 필기를 겹쳐 보인다. opt = { songId, sl, readOnly }
+  function codeView(root, opt) {
+    for (const x of [...cviews]) if (!x.root.isConnected && !x.editing) { cviews.delete(x); try { x.ro && x.ro.disconnect(); } catch {} if (x.note) x.note.remove(); }
+    const base = { key: codeKeyOf(opt.songId), meta: codeMeta(opt.songId), data: null };
+    const sources = [base];
+    if (opt.sl) sources.push({ key: codeKeyOf(opt.songId, opt.sl), meta: codeMeta(opt.songId, opt.sl), data: null, sl: true });
+    const o = { root, songId: opt.songId, sl: opt.sl, sources, readOnly: !!opt.readOnly, geo: [], miss: [], v: opt.v || 0 };
+    cviews.add(o);
+    o.refresh = () => cdraw(o);
+    o.reload = () => cload(o);
+    o.setV = (v) => { o.v = v || 0; };
+    try { o.ro = new ResizeObserver(() => cdraw(o)); o.ro.observe(root); } catch {}
+    o.edit = () => cedit(o);
+    cload(o);
+    return o;
+  }
+  window.addEventListener('ews-ink', (e) => {
+    for (const o of [...cviews]) {
+      if (!o.root.isConnected) { cviews.delete(o); try { o.ro && o.ro.disconnect(); } catch {} if (o.note) o.note.remove(); continue; }
+      if (!o.editing && o.sources.some((s) => s.key === e.detail.fileId)) cload(o);
+    }
+  });
+  window.addEventListener('resize', () => cviews.forEach((o) => o.root.isConnected && cdraw(o)));
+
+  // 필기 모드: 화면 아래 도구 줄이 뜨고, 코드 악보 위에 바로 쓴다. 펜슬·마우스 = 쓰기, 손가락 = 스크롤(☝ 켜면 쓰기).
+  function cedit(o) {
+    if (o.editing) return;
+    o.editing = true;
+    const target = o.sources[o.sources.length - 1]; // 콘티용이 있으면 콘티용에, 없으면 곡 기본 필기에 쓴다
+    const hasOcc = !!o.root.querySelector('.ln[data-o]');
+    const opts = { tool: 'pen', pen: { c: PEN_COLORS[0], w: 1 }, hl: { c: HL_COLORS[0], w: 1 }, tx: { c: PEN_COLORS[1], z: 1 }, finger: false, scope: hasOcc ? 'this' : 'all' };
+    const hist = [];
+    const bar = document.createElement('div');
+    bar.className = 'cink-bar';
+    document.body.appendChild(bar);
+    const items = () => target.data.items;
+    if (!target.data) target.data = emptyData();
+    const commit = async (snap) => {
+      if (snap) { hist.push(snap); if (hist.length > 40) hist.shift(); }
+      await save(target.key, o.songId, target.data, target.meta);
+      cdraw(o);
+    };
+    const snapNow = () => JSON.stringify({ items: target.data.items, del: target.data.del || [] });
+    function undo() {
+      const s = hist.pop();
+      if (!s) return;
+      const prev = JSON.parse(s);
+      const cur = new Set(target.data.items.map((i) => i.id));
+      const had = new Set(prev.items.map((i) => i.id));
+      const del = new Set(target.data.del || []);
+      cur.forEach((id) => { if (!had.has(id)) del.add(id); });
+      had.forEach((id) => del.delete(id));
+      target.data = { v: 1, items: prev.items, del: [...del].slice(-2000) };
+      commit(null);
+    }
+    const scopeLabel = () => (opts.scope === 'this' ? '이 회차만' : '모든 회차');
+    function paint() {
+      const t = opts.tool;
+      const colors = t === 'hl' ? HL_COLORS : t === 'tx' ? PEN_COLORS : PEN_COLORS;
+      const cur = opts[t] || opts.pen;
+      bar.innerHTML =
+        `<button type="button" data-t="pen" class="${t === 'pen' ? 'on' : ''}">✎ 펜</button><button type="button" data-t="hl" class="${t === 'hl' ? 'on' : ''}">🖍 형광펜</button><button type="button" data-t="tx" class="${t === 'tx' ? 'on' : ''}">가 글자</button><button type="button" data-t="er" class="${t === 'er' ? 'on' : ''}">지우개</button>` +
+        (t !== 'er' ? colors.map((c) => `<button type="button" class="sw${cur.c === c ? ' on' : ''}" data-c="${c}" style="background:${c}" aria-label="색"></button>`).join('') : '') +
+        (t === 'pen' || t === 'hl' ? `<button type="button" data-w="1">굵기 ${(cur.w || 0) + 1}</button>` : t === 'tx' ? `<button type="button" data-z="1">크기 ${(opts.tx.z || 0) + 1}</button>` : '') +
+        `<button type="button" data-f="1" class="${opts.finger ? 'on' : ''}" title="켜면 손가락으로도 써요">☝ ${opts.finger ? '손가락 쓰기' : '손가락 스크롤'}</button>` +
+        (hasOcc ? `<button type="button" data-s="1">${scopeLabel()}</button>` : '') +
+        `<button type="button" data-u="1">↶</button><button type="button" class="done" data-d="1">완료</button>`;
+    }
+    paint();
+    bar.onclick = (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      const d = b.dataset;
+      if (d.t) opts.tool = d.t;
+      else if (d.c) (opts[opts.tool] || opts.pen).c = d.c;
+      else if (d.w) { const x = opts[opts.tool]; x.w = (x.w + 1) % 3; }
+      else if (d.z) opts.tx.z = (opts.tx.z + 1) % 3;
+      else if (d.f) opts.finger = !opts.finger;
+      else if (d.s) opts.scope = opts.scope === 'this' ? 'all' : 'this';
+      else if (d.u) undo();
+      else if (d.d) { stop(); return; }
+      paint();
+    };
+    const svg = o.svg;
+    cdraw(o);
+    const S = o.svg;
+    o.onStop = null;
+    // 점 하나가 속할 줄: 줄 상자와 가장 가까운(안이면 0) 줄. 마지막 줄 아래·첫 줄 위도 가까운 줄에 붙는다.
+    function nearest(px, py) {
+      const els = [...o.root.querySelectorAll('.ln[data-bl]')].filter((e) => (+e.dataset.v || 0) === o.v);
+      let best = null, bd = 1e9;
+      for (const el of els) {
+        const r = relPos(el, o.root);
+        if (!r.w || !r.h) continue;
+        const dx = px < r.x ? r.x - px : px > r.x + r.w ? px - r.x - r.w : 0;
+        const dy = py < r.y ? r.y - py : py > r.y + r.h ? py - r.y - r.h : 0;
+        const dd = dx * 1.5 + dy;
+        if (dd < bd) { bd = dd; best = { el, r }; }
+      }
+      return best;
+    }
+    const anchorOf = (el) => ({ b: +el.dataset.bl, h: el.dataset.h || '', v: +el.dataset.v || 0, ...(opts.scope === 'this' && el.dataset.o ? { o: el.dataset.o } : {}) });
+    // 화면 좌표 → 악보 안 좌표. 연주 모드처럼 악보가 가로로 밀려 있어도(transform) 맞도록 겉보기 크기 비율로 나눈다.
+    const pt = (e) => { const b = o.root.getBoundingClientRect(); const k = b.width / (o.root.offsetWidth || b.width) || 1; return [(e.clientX - b.left) / k, (e.clientY - b.top) / k]; };
+    // 연주 모드의 넘기기 손짓과 섞이지 않게, 필기 중에는 터치 이벤트를 위로 올리지 않는다
+    ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((n) => S.addEventListener(n, (e) => e.stopPropagation(), { passive: true }));
+    let act = null, live = null;
+    const touches = new Set();
+    function hitErase(x, y) {
+      const dead = new Set();
+      for (const g of o.geo) {
+        if (g.key !== target.key) continue;
+        const it = g.it;
+        if (it.t === 'x') {
+          const fs = (it.z / 10000) * g.r.w;
+          const L = String(it.s).split('\n');
+          const tx = g.r.x + (it.x / 10000) * g.r.w, ty = g.r.y + (it.y / 1000) * g.r.h;
+          const w = Math.max(...L.map((l) => l.length)) * fs * 0.9, h = L.length * fs * 1.3;
+          if (x >= tx - 6 && x <= tx + w + 6 && y >= ty - 6 && y <= ty + h + 6) dead.add(it.id);
+        } else {
+          for (let i = 0; i < it.p.length; i += 2) {
+            const sx = g.r.x + (it.p[i] / 10000) * g.r.w, sy = g.r.y + (it.p[i + 1] / 1000) * g.r.h;
+            if (Math.hypot(sx - x, sy - y) < 12) { dead.add(it.id); break; }
+          }
+        }
+      }
+      return dead;
+    }
+    function liveSvg(a) {
+      if (!live) { live = document.createElementNS(NS, 'path'); S.appendChild(live); }
+      const sc = a.r.w / 1000;
+      const o2 = opts[a.tool];
+      const wpx = (a.w / 10) * sc;
+      live.setAttribute('d', a.pts.length > 1 ? 'M' + a.pts.map((p) => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L') : `M${a.pts[0][0]} ${a.pts[0][1]}l.01 0`);
+      live.setAttribute('fill', 'none');
+      live.setAttribute('stroke', o2.c);
+      live.setAttribute('stroke-width', wpx.toFixed(2));
+      live.setAttribute('stroke-linecap', 'round');
+      live.setAttribute('stroke-linejoin', 'round');
+      live.setAttribute('class', a.tool === 'hl' ? 'hl' : '');
+    }
+    S.onpointerdown = (e) => {
+      if (e.pointerType === 'touch') {
+        touches.add(e.pointerId);
+        if (!opts.finger || touches.size > 1) { act = { id: e.pointerId, scroll: true, y: e.clientY }; if (touches.size > 1 && live) { live.remove(); live = null; } return; }
+      }
+      e.preventDefault();
+      try { S.setPointerCapture(e.pointerId); } catch {}
+      const [x, y] = pt(e);
+      const n = nearest(x, y);
+      if (!n) return;
+      if (opts.tool === 'er') { act = { id: e.pointerId, erase: new Set(), snap: snapNow() }; hitErase(x, y).forEach((i) => act.erase.add(i)); return; }
+      if (opts.tool === 'tx') {
+        act = { id: e.pointerId, text: true, x, y, n };
+        return;
+      }
+      const w = WIDTHS[opts.tool][opts[opts.tool].w];
+      act = { id: e.pointerId, tool: opts.tool, pts: [[x, y]], r: n.r, el: n.el, w, snap: snapNow() };
+      liveSvg(act);
+    };
+    S.onpointermove = (e) => {
+      if (!act || act.id !== e.pointerId) return;
+      if (act.scroll) { window.scrollBy(0, act.y - e.clientY); act.y = e.clientY; return; }
+      const [x, y] = pt(e);
+      if (act.erase) { hitErase(x, y).forEach((i) => act.erase.add(i)); return; }
+      if (act.pts) {
+        const l = act.pts[act.pts.length - 1];
+        if (Math.hypot(x - l[0], y - l[1]) < 1.2) return;
+        act.pts.push([x, y]);
+        liveSvg(act);
+      }
+    };
+    const end = async (e) => {
+      touches.delete(e.pointerId);
+      if (!act || act.id !== e.pointerId) return;
+      const a = act;
+      act = null;
+      if (a.scroll) return;
+      if (live) { live.remove(); live = null; }
+      if (a.erase) {
+        if (a.erase.size) {
+          const ids = [...a.erase];
+          target.data = { v: 1, items: target.data.items.filter((i) => !a.erase.has(i.id)), del: [...(target.data.del || []), ...ids].slice(-2000) };
+          await commit(a.snap);
+        }
+        return;
+      }
+      if (a.text) {
+        if (e.type === 'pointercancel') return;
+        const s = (window.prompt('글자를 적어 주세요') || '').trim();
+        if (!s) return;
+        const r = a.n.r;
+        const sn = snapNow();
+        target.data.items.push({ id: uid(), t: 'x', c: opts.tx.c, x: Math.round(((a.x - r.x) / r.w) * 10000), y: Math.round(((a.y - r.y) / r.h) * 1000), z: TEXT_SIZES[opts.tx.z], s: s.slice(0, 300), a: anchorOf(a.n.el) });
+        await commit(sn);
+        return;
+      }
+      if (e.type === 'pointercancel' || !a.pts) return;
+      const r = a.r;
+      let pts = a.pts.map(([x, y]) => [((x - r.x) / r.w) * 10000, ((y - r.y) / r.h) * 1000]);
+      const ratio = r.h / 1000 / (r.w / 10000);
+      let eps = 6;
+      let sp = simplify(pts, ratio, eps);
+      while (sp.length > 2800 && eps < 200) { eps *= 1.6; sp = simplify(pts, ratio, eps); }
+      const p = [];
+      for (const q of sp) p.push(Math.round(q[0]), Math.round(q[1]));
+      if (p.length < 2) return;
+      if (p.length === 2) p.push(p[0], p[1]);
+      const pen = opts[a.tool];
+      target.data.items.push({ id: uid(), t: a.tool === 'pen' ? 's' : 'h', c: pen.c, w: a.w, p, a: anchorOf(a.el) });
+      await commit(a.snap);
+    };
+    S.onpointerup = end;
+    S.onpointercancel = end;
+    function stop() {
+      o.editing = false;
+      S.onpointerdown = S.onpointermove = S.onpointerup = S.onpointercancel = null;
+      bar.remove();
+      document.body.classList.remove('cink-on');
+      cdraw(o);
+      cload(o);
+      if (o.onStop) o.onStop();
+    }
+    o.stop = stop;
+    document.body.classList.add('cink-on');
+  }
+
   function init(c) {
     cfg = { ...cfg, ...c };
     window.addEventListener('online', flush);
     setTimeout(flush, 1500);
   }
 
-  window.Ink = { init, edit, attachImg, decorate, pull, pullSetlist, flush, get, save, mountVaultCard, hasVault, wipeLocal, mergeInk, simplify };
+  window.Ink = { init, edit, codeView, attachImg, decorate, pull, pullSetlist, flush, get, save, mountVaultCard, hasVault, wipeLocal, mergeInk, simplify };
 })();

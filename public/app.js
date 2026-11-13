@@ -621,7 +621,7 @@
       ${hasText && files.length ? '<div class="tabs" id="tabs"><button class="tab" data-tab="chord">코드 악보</button><button class="tab" data-tab="img">이미지 악보</button></div>' : ''}
       ${isLeader && files.length && !hasText ? `<div class="row" id="imgkeyrow" style="margin:6px 0"><span class="ctl-label">우리 팀 키</span><select id="imgkey" aria-label="우리 팀 기본 키">${['', ...(Chord.parseKey(origKey) && Chord.parseKey(origKey).minor ? KEYS_MINOR : KEYS_MAJOR)].map((k) => `<option value="${k}">${k || '선택'}</option>`).join('')}</select><button class="btn small" id="imgkeysave" type="button">팀 기본 키로 저장</button></div><p class="hint" style="margin-top:0">이미지 악보는 화면에서 키가 바뀌지 않아요. 우리 팀이 부르는 키를 기록해 두면 콘티에 곡을 넣을 때 기본값이 됩니다.</p>` : ''}
       ${!hasText && !files.length ? `<p class="muted">등록된 악보가 아직 없습니다.${me.canEdit ? ' 편집에서 코드 악보를 입력하거나 이미지·PDF를 올려 주세요.' : ''}</p>` : ''}
-      <div id="pane-chord"><div class="score" id="score"></div></div>
+      <div id="pane-chord">${hasText && window.Ink ? `<div class="row ink-entry"><button class="btn small" id="cinkbtn" type="button">${slInk ? '✎ 콘티용 필기하기' : '✎ 필기하기'}</button><span class="muted small">${slInk ? '이 콘티에서만 보여요 · ' : ''}내 필기는 나만 보여요 · 줄에 붙어서 키·글자 크기를 바꿔도 따라가요</span></div>` : ''}<div class="score" id="score"></div></div>
       <div id="pane-img" hidden></div>
       ${song.memo ? `<h2>메모</h2><div class="memo">${esc(song.memo)}</div>` : ''}
       <div class="sheet-wrap" id="ksheet" hidden>
@@ -738,6 +738,7 @@
     const onWinResize = () => { if (document.body.contains($score)) applyCols(); else window.removeEventListener('resize', onWinResize); };
     window.addEventListener('resize', onWinResize);
     const viewOpen = new Set(); // 탭해서 펼친 자리표시({ref}) 줄 번호
+    let ci = null; // 30차: 코드 악보 필기 층
     function draw() {
       document.documentElement.style.setProperty('--song-size', prefs.size + 'px');
       $chtoggle.textContent = prefs.chords ? '코드 숨기기' : '코드 보기';
@@ -746,7 +747,8 @@
       document.getElementById('reftoggle').textContent = prefs.refs === 'all' ? '반복 구간: 모두 펼침' : '반복 구간: 표시만';
       applyCols();
       const p = Chord.plan(origKey, st.shift, st.capo, prefs.acc);
-      $score.innerHTML = Chord.renderHTML(parsed, { originalKey: origKey, shift: st.shift, capo: st.capo, acc: prefs.acc, showChords: prefs.chords, names: prefs.names, refs: prefs.refs === 'all' ? 'all' : viewOpen });
+      $score.innerHTML = Chord.renderHTML(parsed, { originalKey: origKey, shift: st.shift, capo: st.capo, acc: prefs.acc, showChords: prefs.chords, names: prefs.names, refs: prefs.refs === 'all' ? 'all' : viewOpen, v: vSel });
+      if (ci) ci.refresh();
       if (hasKey) {
         $key.value = p.soundKey;
         $note.textContent = st.capo ? `카포 ${st.capo}프렛 · 실제 키 ${p.soundKey} · ${p.shapeKey} 코드로 연주` : '';
@@ -818,6 +820,13 @@
       draw();
     });
     draw();
+    if (hasText && window.Ink) {
+      ci = Ink.codeView($score, { songId: song.id, sl: slInk || undefined, v: vSel });
+      Ink.pull(song.id);
+      if (slInk) Ink.pullSetlist(slInk.setlistId);
+      const cb = document.getElementById('cinkbtn');
+      if (cb) cb.onclick = () => { if (!$score.offsetWidth) return toast('코드 악보를 보여 준 다음에 필기할 수 있어요.'); if (!prefs.chords) { prefs.chords = true; ls.set('ews_chords', '1'); draw(); } ci.edit(); };
+    }
 
     // 코드 악보 / 이미지 악보 전환 (둘 다 있을 때만 탭 표시, 선택은 이 기기에 기억)
     const $pc = document.getElementById('pane-chord');
@@ -1235,26 +1244,25 @@
               <div class="hint">코드 악보 본문의 가사는 자동으로 검색됩니다. <b>이미지·PDF 악보만 있는 곡</b>은 가사가 글자로 없어서 검색되지 않으니, 후렴 몇 줄을 여기에 적어 주세요. (악보 화면에는 보이지 않고 검색에만 쓰입니다)</div>
             </details>
           </div>
+          <div class="card" id="imgcard">
+            <h2>이미지·PDF 악보</h2>
+            <div class="row"><button class="btn" id="addfile" type="button">+ 이미지·PDF 추가</button><button class="btn" id="pasteimg" type="button">📋 이미지 붙여넣기</button><span class="muted small" id="fstat"></span></div>
+            <p class="hint" style="margin:6px 0 8px">악보 사진·PDF를 올리거나, 구글 등에서 복사한 이미지를 붙여넣기(맥북은 ⌘V)로 바로 넣어요. 내가 복사한 이미지만 들어가며 앱이 주소로 가져오지는 않아요. 여러 장은 올린 순서대로 보이고, 사진은 올리기 전에 자동으로 줄여요.</p>
+            <div class="file-list" id="files"></div>
+            <p class="hint" id="fnote" hidden>새 곡은 <b>저장</b>할 때 함께 올라갑니다.</p>
+            <input type="file" id="fi" accept="image/*,application/pdf" multiple hidden>
+          </div>
           <div class="card">
             <div id="draftbar" class="draftbar" hidden></div>
             <div class="row between" style="margin-bottom:8px"><span class="lbl-like">악보 본문</span></div>
             <div class="row" style="margin:0 0 8px;flex-wrap:wrap"><button type="button" class="btn small" id="refbtn">📖 원본 악보 옆에 놓기</button><button type="button" class="btn small" id="convbtn">🪄 Claude로 변환</button><button type="button" class="btn small" id="pastebtn">📋 가사·코드 붙여넣기</button><button type="button" class="btn small" id="toolsbtn">⋯ 본문 도구</button></div>
             <div id="cv-note" class="cv-note hint" hidden></div>
             <div id="tabpane" class="te">
-              <div id="te-lines" class="te-lines"></div>
+              <div id="te-lines" class="te-lines" tabindex="0" aria-label="악보 편집 (키보드: Tab 이동, Enter 다음 줄, A~G 코드)"></div>
               <div class="te-pal" id="te-pal"></div>
             </div>
             <textarea id="cp" hidden aria-hidden="true">${esc(song.chordpro)}</textarea>
             <div id="cpcheck" class="cpcheck" hidden></div>
-          </div>
-          <div class="card">
-            <h2>이미지·PDF 악보</h2>
-            <p class="hint">악보 사진이나 PDF를 그대로 올릴 수 있습니다. 코드 악보와 함께 두거나, 이것만 올려도 됩니다. 사진은 올리기 전에 자동으로 줄여서 저장합니다. 여러 장은 올린 순서대로 보입니다.</p>
-            <div class="file-list" id="files"></div>
-            <p class="hint" id="fnote" hidden>새 곡은 <b>저장</b>할 때 함께 올라갑니다.</p>
-            <input type="file" id="fi" accept="image/*,application/pdf" multiple hidden>
-            <div class="row"><button class="btn" id="addfile" type="button">+ 이미지·PDF 추가</button><button class="btn" id="pasteimg" type="button">📋 이미지 붙여넣기</button><span class="muted small" id="fstat"></span></div>
-            <p class="hint" style="margin:6px 0 0">구글 등에서 이미지를 복사해 두었다면 붙여넣기 버튼(맥북은 ⌘V)으로 바로 넣어요. 내가 복사한 이미지만 들어가며, 앱이 주소로 가져오지는 않아요.</p>
           </div>
           <p class="error" id="err"></p>
           <div class="row">
@@ -1318,6 +1326,9 @@
     let tm = TabEdit.parse(ta.value);
     let tsel = null; // {li, pos, ci}  ci>=0 이면 코드가 선택된 것, -1이면 빈 자리
     let undoS = [], redoS = [];
+    // 30차: 키보드 코드 입력(맥북). kbBuf = 치는 중인 코드, kbExt = 줄 끝 뒤로 띄어쓰기를 늘린 줄
+    let kbBuf = null, kbExt = null;
+    const kbOK = () => !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
     ls.del('ews_edit_mode'); // 예전의 "글자로 보기" 선택값은 더 쓰지 않는다
     const keyNow = () => Chord.guessKey(Chord.parseChordPro(ta.value), $('key').value);
     const fireInput = () => ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1352,7 +1363,7 @@
               const cs = byPos.get(p) || [];
               const sel = tsel && tsel.li === li && tsel.pos === p;
               return `<span class="tc${extra || ''}${cs.length ? ' has' : ''}${sel && tsel.ci < 0 ? ' sel' : ''}" data-li="${li}" data-p="${p}"><span class="tch">${cs
-                .map((x) => `<b class="tk${sel && tsel.ci === x.ci ? ' sel' : ''}" data-ci="${x.ci}">${esc(x.c || '·')}</b>`)
+                .map((x) => `<b class="tk${sel && tsel.ci === x.ci ? ' sel' : ''}" data-ci="${x.ci}">${esc(Chord.pretty(x.c) || '·')}</b>`)
                 .join('')}</span><span class="tl">${glyph}</span></span>`;
             };
             let cells = '';
@@ -1404,19 +1415,21 @@
       const dia = ChordEdit.diatonic(gk.key);
       const roots = dia || ['C', 'D', 'E', 'F', 'G', 'A', 'B'].map((c) => ({ label: '', chord: c }));
       let status;
-      if (chordSel) status = `<b>${esc(chordSel.c || '·')}</b> 선택 · 코드를 누르면 바뀌어요`;
+      if (chordSel) status = `<b>${esc(Chord.pretty(chordSel.c) || '·')}</b> 선택 · 코드를 누르면 바뀌어요`;
       else if (l && l.kind === 'lyric') {
         const ch = l.text[tsel.pos];
         status = `${ch ? '“' + esc(ch.trim() ? ch : '띄어쓰기') + '” 앞' : '줄 끝'} · 코드를 고르세요`;
       } else status = '코드를 붙일 글자를 탭하세요';
+      if (kbBuf) status = `<b>${esc(Chord.pretty(kbBuf.text))}</b> 입력 중 · Tab 다음 글자 · Enter 다음 줄 · Esc 취소`;
+      else if (kbOK() && l && l.kind === 'lyric') status += ' · ⌨ A~G 코드 · Tab 이동 · Enter 다음 줄';
       const canSplit = !!(l && l.kind === 'lyric' && tsel.pos > 0 && tsel.pos < l.text.length);
       let h = `<div class="te-pal-row te-top"><button type="button" class="chip ctb sm" data-act="undo" aria-label="되돌리기" ${undoS.length ? '' : 'disabled'}>↶</button><button type="button" class="chip ctb sm" data-act="redo" aria-label="다시 하기" ${redoS.length ? '' : 'disabled'}>↷</button><span class="te-status">${status}</span>${canSplit ? '<button type="button" class="chip ctb sm" data-act="split" title="선택한 글자 앞에서 줄을 나눠요">✂ 줄 나누기</button>' : ''}</div>`;
-      h += `<div class="te-pal-row">${roots.map((d) => `<button type="button" class="chip ctb" data-pc="${esc(d.chord)}"><b>${esc(d.chord)}</b>${d.label ? `<small>${esc(d.label)}</small>` : ''}</button>`).join('')}<button type="button" class="chip ctb" data-pc="?" title="불확실한 코드">?</button><button type="button" class="chip ctb sm" data-act="direct">다른 코드…</button></div>`;
+      h += `<div class="te-pal-row">${roots.map((d) => `<button type="button" class="chip ctb" data-pc="${esc(d.chord)}"><b>${esc(Chord.pretty(d.chord))}</b>${d.label ? `<small>${esc(d.label)}</small>` : ''}</button>`).join('')}<button type="button" class="chip ctb" data-pc="?" title="불확실한 코드">?</button><button type="button" class="chip ctb sm" data-act="direct">다른 코드…</button></div>`;
       if (chordSel) {
         const chordOnly = !l.text.trim();
         h += `<div class="te-pal-row"><button type="button" class="chip ctb sm" data-act="left">◀</button><button type="button" class="chip ctb sm" data-act="right">▶</button><button type="button" class="chip ctb sm" data-act="more">${chordOnly ? '＋ 코드 이어 붙이기' : '＋ 같은 자리에 하나 더'}</button><button type="button" class="chip ctb sm danger" data-act="del">코드 삭제</button></div>`;
         const bn = ChordEdit.bassNotes(gk.key);
-        h += `<div class="te-pal-row"><span class="ctl-label">모양</span>${ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-pq="${esc(q)}">${esc(lab)}</button>`).join('')}${bn ? `<span class="ctl-label">베이스</span>${bn.map((n) => `<button type="button" class="chip ctb sm" data-pb="${esc(n)}">/${esc(n)}</button>`).join('')}<button type="button" class="chip ctb sm" data-pb="">없음</button>` : ''}</div>`;
+        h += `<div class="te-pal-row"><span class="ctl-label">모양</span>${ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-pq="${esc(q)}">${esc(Chord.pretty('C' + lab).slice(1))}</button>`).join('')}${bn ? `<span class="ctl-label">베이스</span>${bn.map((n) => `<button type="button" class="chip ctb sm" data-pb="${esc(n)}">/${esc(Chord.pretty(n))}</button>`).join('')}<button type="button" class="chip ctb sm" data-pb="">없음</button>` : ''}</div>`;
       }
       pal.innerHTML = h;
     }
@@ -1437,6 +1450,9 @@
 
     $('tabpane').addEventListener('click', (ev) => {
       const t = ev.target;
+      kbBuf = null;
+      // 팔레트 버튼을 눌러도 키보드가 계속 편집기로 가도록 포커스를 되돌린다(시트를 여는 버튼은 제외)
+      if (kbOK() && !t.closest('[data-gut],[data-op],[data-act="direct"]')) setTimeout(() => { const te = $('te-lines'); if (te && te.isConnected && !document.querySelector('.sheet-wrap')) te.focus({ preventScroll: true }); });
       const gut = t.closest('[data-gut]');
       if (gut) { lineSheet(+gut.dataset.gut); return; }
       const op = t.closest('[data-op]');
@@ -1501,6 +1517,120 @@
     });
 
     // 직접 고르는 코드 창(키 밖의 코드, 복잡한 코드)
+    // ----- 30차: 키보드 코드 입력 (맥북) -----
+    // 글자를 클릭하면 편집기에 키보드가 연결된다. Tab/Shift+Tab = 다음/이전 글자(줄 끝에서는 띄어쓰기 칸을 한 칸씩 늘려 가사 뒤쪽에도 코드를 얹음),
+    // Enter = 다음 줄, A~G·#·b·m·7·sus4·/ … 로 코드 입력(이미 코드가 있는 자리는 교체), Backspace = 지우기, Esc = 취소, ⌘Z = 되돌리기.
+    const kbLyricIdxs = () => tm.lines.map((l, i) => (l.kind === 'lyric' ? i : -1)).filter((i) => i >= 0);
+    function kbSel(li, pos) {
+      tsel = { li, pos, ci: tm.lines[li].chords.findIndex((c) => c.pos === pos) };
+      teRender();
+      requestAnimationFrame(() => { const el = document.querySelector('#te-lines .tc.sel, #te-lines .tk.sel'); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); });
+    }
+    function kbTrim() { // 늘렸던 끝 띄어쓰기 중 코드가 없는 칸 정리
+      if (!kbExt) return;
+      const e = kbExt; kbExt = null;
+      const r = tm.lines[e.li] && TabEdit.trimTail(tm, e.li, e.orig);
+      if (r) setBody(TabEdit.serialize(r), tsel, true);
+    }
+    function kbCommit() { // 치던 코드 확정: 코드 모양이 아니면 되돌리고 알림
+      if (!kbBuf) return;
+      const b = kbBuf; kbBuf = null;
+      if (!ChordEdit.isChord(b.text)) {
+        undoS.pop();
+        setBody(b.before, { li: b.li, pos: b.pos, ci: b.ci0 }, true);
+        toast(`"${b.text}"는 코드 모양이 아니라서 넣지 않았어요.`);
+      }
+    }
+    function kbCancel() {
+      if (!kbBuf) return;
+      const b = kbBuf; kbBuf = null;
+      undoS.pop();
+      setBody(b.before, { li: b.li, pos: b.pos, ci: b.ci0 }, true);
+    }
+    function kbType(tok) {
+      const first = !kbBuf;
+      if (first) kbBuf = { li: tsel.li, pos: tsel.pos, text: '', before: ta.value, ci: tsel.ci, ci0: tsel.ci };
+      kbBuf.text += tok;
+      const r = kbBuf.ci >= 0 ? TabEdit.replaceChord(tm, kbBuf.li, kbBuf.ci, kbBuf.text) : TabEdit.addChord(tm, kbBuf.li, kbBuf.pos, kbBuf.text);
+      if (!r) { kbBuf = null; return; }
+      kbBuf.ci = r.ci;
+      setBody(TabEdit.serialize(r.model), { li: kbBuf.li, pos: kbBuf.pos, ci: r.ci }, !first);
+    }
+    function kbMove(dir, unit) {
+      kbCommit();
+      if (!tsel) return;
+      const li = tsel.li, l = tm.lines[li];
+      const mode = unit === 'tab' && TabEdit.isLatinLine(l.text) ? 'word' : 'char';
+      const st = TabEdit.stops(l.text, mode);
+      if (dir > 0) {
+        const n = st.find((p) => p > tsel.pos);
+        if (n !== undefined) { kbSel(li, n); return; }
+        // 줄 끝: 가사 뒤쪽에 띄어쓰기 한 칸을 늘려 거기에 코드를 얹을 수 있게 한다
+        const r = TabEdit.extendTail(tm, li);
+        if (!r) return;
+        if (!kbExt || kbExt.li !== li) kbExt = { li, orig: l.text.length };
+        setBody(TabEdit.serialize(r), { li, pos: l.text.length + 1, ci: -1 }, true);
+      } else {
+        const p = st.slice().reverse().find((x) => x < tsel.pos);
+        if (p !== undefined) kbSel(li, p);
+      }
+    }
+    function kbLine(dir, toStart) {
+      kbCommit();
+      if (!tsel) return;
+      const idx = kbLyricIdxs();
+      const nxt = dir > 0 ? idx.find((i) => i > tsel.li) : idx.slice().reverse().find((i) => i < tsel.li);
+      if (nxt === undefined) return;
+      const pos0 = tsel.pos;
+      kbTrim();
+      const st = TabEdit.stops(tm.lines[nxt].text, 'char');
+      const target = toStart ? st[0] : st.reduce((a, p) => (Math.abs(p - pos0) < Math.abs(a - pos0) ? p : a), st[0]);
+      kbSel(nxt, target);
+    }
+    function kbUndo(redo) {
+      kbBuf = null;
+      const from = redo ? redoS : undoS, to = redo ? undoS : redoS;
+      if (!from.length) return;
+      to.push(ta.value);
+      setBody(from.pop(), null, true);
+    }
+    $('te-lines').addEventListener('keydown', (ev) => {
+      if (!tsel || ev.isComposing) return;
+      if (ev.target !== ev.currentTarget && ev.target.closest && ev.target.closest('button, a, input, textarea, select')) return;
+      const code = ev.code;
+      const mod = ev.metaKey || ev.ctrlKey;
+      if (mod && !ev.altKey && code === 'KeyZ') { ev.preventDefault(); kbUndo(ev.shiftKey); return; }
+      if (mod || ev.altKey) return;
+      if (code === 'Tab') { ev.preventDefault(); kbMove(ev.shiftKey ? -1 : 1, 'tab'); return; }
+      if (code === 'ArrowRight') { ev.preventDefault(); kbMove(1, 'char'); return; }
+      if (code === 'ArrowLeft') { ev.preventDefault(); kbMove(-1, 'char'); return; }
+      if (code === 'ArrowDown') { ev.preventDefault(); kbLine(1, false); return; }
+      if (code === 'ArrowUp') { ev.preventDefault(); kbLine(-1, false); return; }
+      if (code === 'Enter' || code === 'NumpadEnter') { ev.preventDefault(); kbLine(ev.shiftKey ? -1 : 1, true); return; }
+      if (code === 'Escape') {
+        ev.preventDefault();
+        if (kbBuf) { kbCancel(); return; }
+        kbTrim(); tsel = null; teRender(); return;
+      }
+      if (code === 'Backspace' || code === 'Delete') {
+        ev.preventDefault();
+        if (kbBuf) {
+          if (kbBuf.text.length > 1) {
+            kbBuf.text = kbBuf.text.slice(0, -1);
+            const r = TabEdit.replaceChord(tm, kbBuf.li, kbBuf.ci, kbBuf.text);
+            if (r) setBody(TabEdit.serialize(r.model), { li: kbBuf.li, pos: kbBuf.pos, ci: r.ci }, true);
+          } else kbCancel();
+          return;
+        }
+        const cur = selectedChord();
+        if (cur) apply(TabEdit.deleteChord(tm, tsel.li, tsel.ci), { li: tsel.li, pos: cur.pos, ci: -1 });
+        return;
+      }
+      const tok = ChordEdit.keyToken(code, ev.shiftKey, kbBuf ? kbBuf.text : '');
+      if (tok) { ev.preventDefault(); kbType(tok); }
+    });
+    $('te-lines').addEventListener('blur', () => { if (kbBuf) kbCommit(); });
+
     function directSheet() {
       if (!tsel) { toast('먼저 코드를 붙일 글자를 탭하세요.'); return; }
       const flats = Chord.keyUsesFlats(keyNow().key);
@@ -1508,9 +1638,9 @@
       const st = { root: '', q: '', bass: '' };
       const sh = showSheet(`
         <h2 style="margin-top:0">다른 코드</h2>
-        <div class="te-pal-row wrap"><span class="ctl-label">음</span>${roots.map((r) => `<button type="button" class="chip ctb sm" data-r="${r}">${r}</button>`).join('')}</div>
-        <div class="te-pal-row wrap"><span class="ctl-label">모양</span>${ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-q="${esc(q)}">${esc(lab)}</button>`).join('')}</div>
-        <div class="te-pal-row wrap"><span class="ctl-label">베이스</span>${roots.map((r) => `<button type="button" class="chip ctb sm" data-b="${r}">/${r}</button>`).join('')}<button type="button" class="chip ctb sm" data-b="">없음</button></div>
+        <div class="te-pal-row wrap"><span class="ctl-label">음</span>${roots.map((r) => `<button type="button" class="chip ctb sm" data-r="${r}">${esc(Chord.pretty(r))}</button>`).join('')}</div>
+        <div class="te-pal-row wrap"><span class="ctl-label">모양</span>${ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-q="${esc(q)}">${esc(Chord.pretty('C' + lab).slice(1))}</button>`).join('')}</div>
+        <div class="te-pal-row wrap"><span class="ctl-label">베이스</span>${roots.map((r) => `<button type="button" class="chip ctb sm" data-b="${r}">/${esc(Chord.pretty(r))}</button>`).join('')}<button type="button" class="chip ctb sm" data-b="">없음</button></div>
         <label for="dc-in">만들어진 코드 (직접 고쳐도 돼요)</label><input id="dc-in" type="text" autocapitalize="off" autocomplete="off" spellcheck="false">
         <p class="error" id="dc-err"></p>
         <div class="row"><button type="button" class="btn primary" id="dc-ok">넣기</button><button type="button" class="btn" id="dc-no">닫기</button></div>`);
@@ -3760,6 +3890,7 @@
     const slOf = (it) => (src.sl && it && it.uid ? { uid: it.uid, setlistId: +src.sl } : undefined);
     if (src.sl && window.Ink) Ink.pullSetlist(+src.sl);
     g('pink').onclick = () => {
+      if (cur && cur.tab === 'chord') { const sc = $pb.querySelector('.score'); if (sc && sc._cv) sc._cv.edit(); return; } // 30차: 코드 악보에 필기(회차별)
       if (!cur || !cur.pages.length) return;
       Ink.edit({ files: cur.pages, start: cur.page, songId: cur.song.id, title: cur.song.title, sl: slOf(cur.it), onClose: (pg) => { if (cur) { cur.page = Math.min(pg, cur.pages.length - 1); draw(); } } });
     };
@@ -3903,7 +4034,7 @@
         fitCols();
         cur.pageCount = cur.tab === 'img' ? Math.max(1, pages.length) : 1;
       }
-      g('pink').hidden = !(cur.tab === 'img' && pages.length);
+      g('pink').hidden = !((cur.tab === 'img' && pages.length) || (cur.tab === 'chord' && $pb.querySelector('.score .ln[data-bl]')));
       updateEdges();
       updateDots();
     }
@@ -3950,7 +4081,7 @@
     function drawChord(body, varEl, st0, wantPage) {
       const arr = formViewOn(st0) ? arrangedFor(st0) : null;
       const st = arr ? Object.assign({}, st0, { parsed: arr }) : st0;
-      const base = { originalKey: st.origKey, shift: st.shift, capo: st.capo, acc: P.acc, showChords: P.chords, parts: true, names: P.names, hint: false };
+      const base = { originalKey: st.origKey, shift: st.shift, capo: st.capo, acc: P.acc, showChords: P.chords, parts: true, names: P.names, hint: false, v: (st0.it && st0.it.variant_id) || 0 };
       const refLines = st.parsed.lines.map((l, i) => (l.type === 'ref' && l.src >= 0 ? i : -1)).filter((i) => i >= 0);
       const open = new Set();
       let info = null;
@@ -3977,6 +4108,9 @@
         if (!fresh.length) break;
         fresh.forEach((i) => open.add(i));
       }
+      // 30차: 코드 악보 필기(읽기 전용)를 줄에 맞춰 겹쳐 보인다
+      const scEl = body.querySelector('.score');
+      if (window.Ink && scEl && st0.song) { try { scEl._cv = Ink.codeView(scEl, { songId: st0.song.id, sl: slOf(st0.it), readOnly: true }); } catch {} }
       return info;
     }
     function fitCols(body, varEl, wantPage) {

@@ -198,5 +198,32 @@
     return out;
   }
 
-  return { isChord, diatonic, bassNotes, chordAt, changeChord, sectionEdit, check, SECTION_NAMES, QUALITIES: [['', '장'], ['m', 'm'], ['7', '7'], ['maj7', 'maj7'], ['m7', 'm7'], ['sus4', 'sus4'], ['add9', 'add9'], ['dim', 'dim'], ['6', '6']] };
+
+  // 30차: 키보드 코드 입력. 한/영 상태와 무관하게 키 위치(e.code)로 읽는다.
+  //   처음 A~G = 루트 · 루트/베이스 뒤·숫자 뒤의 b = ♭ · Shift+3 = # · m a j s u d i g(maj7·sus4·add9·dim·aug) · 숫자 · / 뒤 A~G = 베이스 · Shift+/ (?) = 불확실
+  // 돌려주는 것: 이어 붙일 글자(token) 또는 null(무시). buf는 지금까지 친 코드 글자.
+  function keyToken(code, shift, buf) {
+    buf = buf || '';
+    let m = /^Key([A-Z])$/.exec(code);
+    if (m) {
+      const L = m[1];
+      if (buf === '?') return null;
+      if (!buf || buf.endsWith('/')) return /[A-G]/.test(L) ? L : null;
+      if (L === 'B') return /^[A-G]$/.test(buf) || /\/[A-G]$/.test(buf) || /\d$/.test(buf) ? 'b' : null;
+      return 'majsudig'.includes(L.toLowerCase()) ? L.toLowerCase() : null;
+    }
+    m = /^(?:Digit|Numpad)(\d)$/.exec(code);
+    if (m) {
+      if (shift && code === 'Digit3') return buf && /[A-G]$|\d$/.test(buf) ? '#' : null;
+      if (shift || !buf || buf === '?' || buf.endsWith('/')) return null;
+      return m[1];
+    }
+    if (code === 'Slash') {
+      if (shift) return !buf ? '?' : null;
+      return buf && buf !== '?' && !buf.includes('/') && !buf.endsWith('/') ? '/' : null;
+    }
+    return null;
+  }
+
+  return { keyToken, isChord, diatonic, bassNotes, chordAt, changeChord, sectionEdit, check, SECTION_NAMES, QUALITIES: [['', '장'], ['m', 'm'], ['7', '7'], ['maj7', 'maj7'], ['m7', 'm7'], ['sus4', 'sus4'], ['add9', 'add9'], ['dim', 'dim'], ['6', '6']] };
 });

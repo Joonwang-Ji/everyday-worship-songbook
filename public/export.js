@@ -194,10 +194,10 @@
   function renderChord(n, it, song, parsed, p, info, keyText, scale) {
     // 30차: 코드 악보는 세로 A4 한 장에 2단(연주 모드 2단 보기와 같은 모양)으로 놓는다
     const W = A4.w, H = A4.h, GAP = 50, maxW = Math.floor((W - 2 * M - GAP) / 2);
-    let X0 = M, col = 0, colTop = M;
+    let X0 = M, col = 0, colTop = M, usedBreak = false;
     const LYR = 30 * scale, CHD = 26 * scale;
     const CH_H = Math.round(CHD * 1.3), LY_H = Math.round(LYR * 1.35), ROW_GAP = Math.round(8 * scale), PLAIN_H = Math.round(LYR * 1.55);
-    const conv = (c) => (c ? Chord.transposeChord(c, p.semis, p.flats) : '');
+    const conv = (c) => (c ? Chord.pretty(Chord.transposeChord(c, p.semis, p.flats)) : '');
     const pages = [];
     let cv, g, y, barY = null, inChorus = false;
     const endBar = () => { if (barY !== null) { g.fillStyle = BRAND; g.fillRect(X0 - 26, barY, 6, Math.max(0, y - barY - 4)); barY = null; } };
@@ -249,7 +249,13 @@
     const baseNewPage = newPage;
     newPage = (first) => { pageSecs = new Set(); baseNewPage(first); };
     const drawLn = (ln, si) => {
-      if (ln.type === 'colbreak') return; // 단 나누기는 화면(2단 보기)에서만 쓴다
+      if (ln.type === 'colbreak') {
+        // 30차: "여기부터 다음 단"을 PDF에도 적용한다. 화면과 같게 한 곡에 첫 표시만 쓰고, 이미 오른쪽 단이면 무시.
+        if (usedBreak) return;
+        usedBreak = true;
+        if (col === 0 && y > colTop) { endBar(); inChorus = false; col = 1; X0 = M + maxW + GAP; y = colTop; barY = null; }
+        return;
+      }
       if (ln.type === 'blank') { endBar(); inChorus = false; need(24 * scale); y += Math.round(24 * scale); return; }
       if (ln.type === 'memo') {
         // 메모 줄(27차): 작은 기울임 글씨. 구간을 끊지 않고, 후렴 안에 있으면 후렴 막대도 이어 간다.

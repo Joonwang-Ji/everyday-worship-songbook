@@ -156,6 +156,50 @@
     return m[1] + q + (bass ? '/' + bass : '');
   }
 
+  // ---------- 키보드 이동 (30차) ----------
+  // Tab·방향키가 설 수 있는 글자 앞 자리. 띄어쓰기 칸은 건너뛰고, 줄 끝(과 줄 끝 뒤 띄어쓰기 칸)은 선다.
+  // mode 'word'면 낱말의 첫 글자에만 선다(영어 줄의 Tab).
+  function stops(text, mode) {
+    const t = String(text || '');
+    const end = t.replace(/\s+$/, '').length;
+    const out = [];
+    for (let i = 0; i < end; i++) {
+      if (t[i] === ' ') continue;
+      if (mode === 'word' && i > 0 && t[i - 1] !== ' ') continue;
+      out.push(i);
+    }
+    for (let i = end; i <= t.length; i++) out.push(i);
+    return out;
+  }
+  // 영어(라틴 글자) 가사 줄인가: 한글보다 영어 글자가 많으면 true
+  function isLatinLine(text) {
+    const t = String(text || '');
+    const ko = (t.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g) || []).length;
+    const en = (t.match(/[A-Za-z]/g) || []).length;
+    return en > ko;
+  }
+  // 줄 끝 뒤로 띄어쓰기 한 칸을 늘린다(가사 뒤쪽에 코드를 더 얹기 위해)
+  function extendTail(model, li) {
+    if (!editable(model, li)) return null;
+    const m = clone(model);
+    m.lines[li].text += ' ';
+    commitLine(m.lines[li]);
+    return m;
+  }
+  // 늘렸던 끝 띄어쓰기 중 코드가 없는 칸을 걷어 낸다. keep = 원래 글자 길이(그 앞은 건드리지 않음). 바뀔 것이 없으면 null.
+  function trimTail(model, li, keep) {
+    if (!editable(model, li)) return null;
+    const l0 = model.lines[li];
+    const maxChord = l0.chords.reduce((a, c) => Math.max(a, c.pos), 0);
+    const nonSpace = l0.text.replace(/\s+$/, '').length;
+    const to = Math.max(keep || 0, maxChord, nonSpace);
+    if (to >= l0.text.length) return null;
+    const m = clone(model);
+    m.lines[li].text = m.lines[li].text.slice(0, to);
+    commitLine(m.lines[li]);
+    return m;
+  }
+
   // ---------- 줄 편집 ----------
   function insertLines(model, at, raws) {
     const m = clone(model);
@@ -939,6 +983,7 @@
     insertSection, belowAt, chorusAround, blockRange, toggleChorus, isInChorus,
     listSections, sectionAt, sectionRaws, refSource, sectionToRef, refToSection, repeatCandidates, collapseRepeats, insertRef, usedSectionIds, refProblems,
     colBreakAt, setColBreak, clearColBreaks,
+    stops, isLatinLine, extendTail, trimTail,
     lyricKey, findSameLyric, copyLineChords, bodyBlocks, copyBlock,
     splitLyrics, buildFromBlocks, canonLabel, labelOfLine, guessBreaks, autoLabel, markRefs, renameBlock, splitBlockAt, mergeBlockUp, estimateForm,
   };

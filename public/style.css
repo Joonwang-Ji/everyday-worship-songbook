@@ -778,3 +778,18 @@ input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; app
 .chip.addchip { border-style: dashed; background: transparent; color: var(--brand, #2a6670); }
 .chips .addtopic-row { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 2px 0; }
 .chips .addtopic-row .chipin { width: 9.5em; min-height: 34px; font-size: 16px; }
+
+/* 30차: 키보드 코드 입력 (맥북) */
+.te-lines:focus { outline: none; }
+@media (hover: hover) and (pointer: fine) { .te-lines:focus-within .tc.sel .tl, .te-lines:focus .tc.sel .tl { box-shadow: 0 2px 0 var(--chord); } }
+
+/* 30차: 코드 악보 필기 */
+.cink-ov { overflow: visible; }
+.cink-bar { position: fixed; left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); z-index: 1000; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center; padding: 8px; background: var(--card, #fff); border: 1px solid var(--line, #ccc); border-radius: 14px; box-shadow: 0 4px 18px rgba(0,0,0,.25); }
+.cink-bar button { min-height: 38px; padding: 0 10px; border-radius: 10px; border: 1px solid var(--line, #ccc); background: var(--card, #fff); color: inherit; font: inherit; }
+.cink-bar button.on { background: var(--brand); color: var(--brand-text); border-color: transparent; }
+.cink-bar button.sw { width: 34px; min-width: 34px; padding: 0; border-radius: 50%; }
+.cink-bar button.sw.on { outline: 3px solid var(--brand); outline-offset: 2px; }
+.cink-bar button.done { font-weight: 700; }
+body.cink-on { padding-bottom: 120px; }
+.cink-miss { margin: 6px 0; }
