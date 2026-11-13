@@ -192,8 +192,8 @@
   // ---------- 코드 악보 ----------
   // 코드가 있는 줄을 "코드 위 · 가사 아래" 로 그린다. 폭을 넘으면 낱말 단위로 줄을 바꾼다.
   function renderChord(n, it, song, parsed, p, info, keyText, scale) {
-    // 30차: 코드 악보는 가로 A4 한 장에 2단(연주 모드 2단 보기와 같은 모양)으로 놓는다
-    const W = A4.h, H = A4.w, GAP = 70, maxW = Math.floor((W - 2 * M - GAP) / 2);
+    // 30차: 코드 악보는 세로 A4 한 장에 2단(연주 모드 2단 보기와 같은 모양)으로 놓는다
+    const W = A4.w, H = A4.h, GAP = 50, maxW = Math.floor((W - 2 * M - GAP) / 2);
     let X0 = M, col = 0, colTop = M;
     const LYR = 30 * scale, CHD = 26 * scale;
     const CH_H = Math.round(CHD * 1.3), LY_H = Math.round(LYR * 1.35), ROW_GAP = Math.round(8 * scale), PLAIN_H = Math.round(LYR * 1.55);
@@ -317,7 +317,7 @@
     endBar();
     return pages;
   }
-  // 가로 한 장(2단)에 들어오도록 글자를 조금씩 줄여 본다 (너무 작아지지 않게 하한을 둔다)
+  // 세로 한 장(2단)에 들어오도록 글자를 조금씩 줄여 본다 (너무 작아지지 않게 하한을 둔다)
   function chordPages(n, it, song, info) {
     const parsed = Chord.parseChordPro(song.chordpro);
     const gk = Chord.guessKey(parsed, song.original_key);
