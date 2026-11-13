@@ -130,6 +130,8 @@ const VAULT_CODE_LEN = 12; // 31^12 가지 (화면에는 4자씩 끊어 보여 �
 const MAX_INK_BYTES = 400000; // 악보 한 장의 필기 최대 크기
 const MAX_INK_ITEMS = 3000;
 const MAX_VAULT_PAGES = 1500; // 보관함 하나에 필기를 둘 수 있는 악보 장 수
+const MAX_SHARED_ROWS = 600; // 팀 하나가 공유해 둘 수 있는 필기 덩어리 수(31차)
+const AUTHOR_RE = /^[0-9a-f]{12}$/;
 async function vaultHash(code) {
   const h = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode('ews-vault|' + normCode(code))));
   return [...h].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -315,6 +317,24 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_vault_sl_setlist ON vault_sl_items(vault_id, setlist_id)`,
   `CREATE INDEX IF NOT EXISTS idx_vault_sl_uid ON vault_sl_items(uid)`,
   `CREATE INDEX IF NOT EXISTS idx_vault_sl_file ON vault_sl_items(file_id)`,
+  // 팀 공유 필기(31차): 팀장이 올린 필기를 팀원이 읽기 전용으로 본다. (팀, 콘티 칸 uid(곡 기본이면 ''), 악보 장 file_id(코드 악보는 -곡번호), 올린 사람 author)마다 한 덩어리.
+  `CREATE TABLE IF NOT EXISTS annotations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    team_id INTEGER NOT NULL,
+    song_id INTEGER NOT NULL,
+    file_id INTEGER NOT NULL,
+    uid TEXT NOT NULL DEFAULT '',
+    setlist_id INTEGER NOT NULL DEFAULT 0,
+    author TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    rev INTEGER NOT NULL DEFAULT 1,
+    data TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (team_id, uid, file_id, author)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_ann_song ON annotations(team_id, song_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_ann_setlist ON annotations(team_id, setlist_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_ann_file ON annotations(file_id)`,
 ];
 // 이미 운영 중인 표에는 CREATE TABLE IF NOT EXISTS 로 칸이 늘지 않으므로, 없는 칸만 ALTER 로 추가한다.
 async function ensureColumn(db, table, column, ddl) {
@@ -991,12 +1011,88 @@ export async function onRequest({ request, env }) {
       throw new HttpError(404, '요청한 주소를 찾을 수 없습니다.');
     }
 
+    // ----- 팀 공유 필기(31차): 팀장이 올린 필기를 팀원이 읽기 전용으로 본다 -----
+    //  읽기: 그 팀의 팀원·팀장 / 올리기·내리기: 그 팀 팀장(올린 본인) / 관리자는 모든 공유 필기를 내릴 수 있다.
+    //  한 덩어리 = (팀, 콘티 칸 uid(곡 기본이면 ''), 악보 장 file_id(코드 악보는 -곡번호), 올린 사람). 다시 올리면 통째로 바뀐다(합치지 않는다).
+    if (parts[0] === 'shared') {
+      if (!parts[1] && method === 'GET') {
+        requireTeam(ctx);
+        const u2 = new URL(request.url);
+        const sid = parseInt(u2.searchParams.get('song') || '', 10);
+        const lid = parseInt(u2.searchParams.get('setlist') || '', 10);
+        if (!Number.isInteger(sid) && !Number.isInteger(lid)) throw new HttpError(400, 'song 또는 setlist가 필요합니다.');
+        const { results } = await db
+          .prepare('SELECT id, team_id, song_id, file_id, uid, setlist_id, author, name, rev, data, updated_at FROM annotations WHERE team_id=?1 AND (song_id=?2 OR setlist_id=?3) ORDER BY id LIMIT 400')
+          .bind(ctx.team.id, Number.isInteger(sid) ? sid : -1, Number.isInteger(lid) ? lid : -1)
+          .all();
+        return json({ items: results.map((r) => ({ ...r, data: JSON.parse(r.data) })) });
+      }
+      if ((parts[1] === 'song' || parts[1] === 'slot') && parts[2] && parts[3] && method === 'PUT') {
+        requireLeader(ctx);
+        const slotMode = parts[1] === 'slot';
+        const body = await readBody();
+        const author = String(body.author || '');
+        if (!AUTHOR_RE.test(author)) throw new HttpError(400, '올린 사람 표시가 올바르지 않습니다.');
+        const name = String(body.name || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 12) || '팀장';
+        const fid = parseInt(parts[3], 10);
+        if (!Number.isInteger(fid) || fid === 0) throw new HttpError(400, '악보 번호가 올바르지 않습니다.');
+        let sid, uid = '', lid = 0;
+        if (slotMode) {
+          uid = String(parts[2]);
+          const slot = UID_RE.test(uid) && (await db.prepare('SELECT i.setlist_id, i.song_id FROM setlist_items i JOIN setlists l ON l.id=i.setlist_id WHERE i.uid=? AND l.team_id=?').bind(uid, ctx.team.id).first());
+          if (!slot) throw new HttpError(404, '콘티의 곡을 찾을 수 없습니다. (콘티에서 빠졌거나 지워졌습니다)');
+          sid = slot.song_id;
+          lid = slot.setlist_id;
+        } else {
+          sid = parseInt(parts[2], 10);
+        }
+        if (!Number.isInteger(sid) || sid <= 0 || !(await db.prepare('SELECT id FROM songs WHERE id=?').bind(sid).first())) throw new HttpError(404, '곡을 찾을 수 없습니다. (지워졌을 수 있어요)');
+        if (fid < 0) {
+          if (fid !== -sid) throw new HttpError(400, '코드 악보 번호가 곡과 맞지 않습니다.');
+        } else if (!(await db.prepare(`SELECT id FROM song_files WHERE id=? AND song_id=? AND kind='image'`).bind(fid, sid).first())) {
+          throw new HttpError(404, '악보 이미지를 찾을 수 없습니다. (지워졌거나 PDF입니다)');
+        }
+        const mine = cleanInk(body.data);
+        mine.del = []; // 공유 필기는 "지운 목록"을 두지 않고 통째로 바꾼다
+        const cur = await db.prepare('SELECT id, rev FROM annotations WHERE team_id=? AND uid=? AND file_id=? AND author=?').bind(ctx.team.id, uid, fid, author).first();
+        if (!mine.items.length) {
+          if (cur) await db.prepare('DELETE FROM annotations WHERE id=?').bind(cur.id).run();
+          return json({ removed: true });
+        }
+        const text = JSON.stringify(mine);
+        if (text.length > MAX_INK_BYTES) throw new HttpError(413, '이 악보 한 장에 필기가 너무 많습니다. 일부를 지우고 다시 올려 주세요.');
+        if (!cur) {
+          const n = await db.prepare('SELECT COUNT(*) AS n FROM annotations WHERE team_id=?').bind(ctx.team.id).first();
+          if (n.n >= MAX_SHARED_ROWS) throw new HttpError(400, '팀이 공유해 둘 수 있는 필기 수를 넘었습니다. 오래된 공유를 내려 주세요.');
+        }
+        await db
+          .prepare(
+            `INSERT INTO annotations (team_id,song_id,file_id,uid,setlist_id,author,name,rev,data,updated_at) VALUES (?,?,?,?,?,?,?,1,?,?)
+             ON CONFLICT(team_id,uid,file_id,author) DO UPDATE SET rev=annotations.rev+1, data=excluded.data, name=excluded.name, song_id=excluded.song_id, setlist_id=excluded.setlist_id, updated_at=excluded.updated_at`
+          )
+          .bind(ctx.team.id, sid, fid, uid, lid, author, name, text, nowIso())
+          .run();
+        const row = await db.prepare('SELECT id, rev FROM annotations WHERE team_id=? AND uid=? AND file_id=? AND author=?').bind(ctx.team.id, uid, fid, author).first();
+        return json({ id: row.id, rev: row.rev, count: mine.items.length });
+      }
+      if (parts[1] && /^\d+$/.test(parts[1]) && method === 'DELETE') {
+        const row = await db.prepare('SELECT id, team_id, author FROM annotations WHERE id=?').bind(parseInt(parts[1], 10)).first();
+        if (!row) throw new HttpError(404, '공유된 필기를 찾을 수 없습니다.');
+        const author = new URL(request.url).searchParams.get('author') || '';
+        const mineLeader = ctx.leader && ctx.team && ctx.team.id === row.team_id && AUTHOR_RE.test(author) && row.author === author;
+        if (!ctx.admin && !mineLeader) throw new HttpError(403, '올린 팀장이나 관리자만 내릴 수 있습니다.');
+        await db.prepare('DELETE FROM annotations WHERE id=?').bind(row.id).run();
+        return json({ ok: true });
+      }
+      throw new HttpError(404, '요청한 주소를 찾을 수 없습니다.');
+    }
+
     if (parts[0] === 'files' && parts[1] && method === 'DELETE') {
       requireEdit(env, ctx);
       const fid = parseInt(parts[1], 10);
       const row = Number.isInteger(fid) && (await db.prepare('SELECT r2_key FROM song_files WHERE id=?').bind(fid).first());
       if (!row) throw new HttpError(404, '파일을 찾을 수 없습니다.');
-      await db.batch([db.prepare('DELETE FROM song_files WHERE id=?').bind(fid), db.prepare('DELETE FROM vault_items WHERE file_id=?').bind(fid), db.prepare('DELETE FROM vault_sl_items WHERE file_id=?').bind(fid)]);
+      await db.batch([db.prepare('DELETE FROM song_files WHERE id=?').bind(fid), db.prepare('DELETE FROM vault_items WHERE file_id=?').bind(fid), db.prepare('DELETE FROM vault_sl_items WHERE file_id=?').bind(fid), db.prepare('DELETE FROM annotations WHERE file_id=?').bind(fid)]);
       if (env.BUCKET) await env.BUCKET.delete(row.r2_key).catch(() => {});
       return json({ ok: true });
     }
@@ -1189,6 +1285,7 @@ export async function onRequest({ request, env }) {
         if (tid && !parts[3] && method === 'DELETE') {
           await db.batch([
             db.prepare('DELETE FROM vault_sl_items WHERE setlist_id IN (SELECT id FROM setlists WHERE team_id=?)').bind(tid),
+            db.prepare('DELETE FROM annotations WHERE team_id=?').bind(tid),
             db.prepare('DELETE FROM setlist_items WHERE setlist_id IN (SELECT id FROM setlists WHERE team_id=?)').bind(tid),
             db.prepare('DELETE FROM setlists WHERE team_id=?').bind(tid),
             db.prepare('DELETE FROM team_song_keys WHERE team_id=?').bind(tid),
@@ -1392,7 +1489,7 @@ export async function onRequest({ request, env }) {
         const mine = (await db.prepare(`SELECT id FROM setlists WHERE team_id=? AND id IN (${ids.map(() => '?').join(',')})`).bind(team.id, ...ids).all()).results.map((r) => r.id);
         if (mine.length) {
           const ph = mine.map(() => '?').join(',');
-          await db.batch([db.prepare(`DELETE FROM vault_sl_items WHERE setlist_id IN (${ph})`).bind(...mine), db.prepare(`DELETE FROM setlist_items WHERE setlist_id IN (${ph})`).bind(...mine), db.prepare(`DELETE FROM setlists WHERE id IN (${ph})`).bind(...mine)]);
+          await db.batch([db.prepare(`DELETE FROM vault_sl_items WHERE setlist_id IN (${ph})`).bind(...mine), db.prepare(`DELETE FROM annotations WHERE setlist_id IN (${ph})`).bind(...mine), db.prepare(`DELETE FROM setlist_items WHERE setlist_id IN (${ph})`).bind(...mine), db.prepare(`DELETE FROM setlists WHERE id IN (${ph})`).bind(...mine)]);
         }
         return json({ ok: true, deleted: mine.length });
       }
@@ -1478,6 +1575,7 @@ export async function onRequest({ request, env }) {
           db.prepare('UPDATE setlists SET date=?,title=?,memo=?,service_id=?,leaders=?,is_temp=?,updated_at=? WHERE id=?').bind(s.date, s.title, s.memo, svc, s.leaders, s.is_temp, nowIso(), lid),
           // 콘티에서 빠진 곡 칸의 콘티용 필기는 함께 지운다
           db.prepare(`DELETE FROM vault_sl_items WHERE setlist_id=?${alive.length ? ` AND uid NOT IN (${alive.map(() => '?').join(',')})` : ''}`).bind(lid, ...alive),
+          db.prepare(`DELETE FROM annotations WHERE setlist_id=?${alive.length ? ` AND uid NOT IN (${alive.map(() => '?').join(',')})` : ''}`).bind(lid, ...alive),
           db.prepare('DELETE FROM setlist_items WHERE setlist_id=?').bind(lid),
           ...ins,
         ]);
@@ -1486,7 +1584,7 @@ export async function onRequest({ request, env }) {
 
       if (lid && method === 'DELETE') {
         requireLeader(ctx);
-        await db.batch([db.prepare('DELETE FROM vault_sl_items WHERE setlist_id=?').bind(lid), db.prepare('DELETE FROM setlist_items WHERE setlist_id=?').bind(lid), db.prepare('DELETE FROM setlists WHERE id=?').bind(lid)]);
+        await db.batch([db.prepare('DELETE FROM vault_sl_items WHERE setlist_id=?').bind(lid), db.prepare('DELETE FROM annotations WHERE setlist_id=?').bind(lid), db.prepare('DELETE FROM setlist_items WHERE setlist_id=?').bind(lid), db.prepare('DELETE FROM setlists WHERE id=?').bind(lid)]);
         return json({ ok: true });
       }
     }
@@ -1647,7 +1745,7 @@ export async function onRequest({ request, env }) {
         if (vid && method === 'DELETE') {
           const { results: files } = await db.prepare('SELECT id,r2_key FROM song_files WHERE song_id=? AND variant_id=?').bind(id, vid).all();
           const stmts = [];
-          for (const f of files) stmts.push(db.prepare('DELETE FROM vault_items WHERE file_id=?').bind(f.id), db.prepare('DELETE FROM vault_sl_items WHERE file_id=?').bind(f.id));
+          for (const f of files) stmts.push(db.prepare('DELETE FROM vault_items WHERE file_id=?').bind(f.id), db.prepare('DELETE FROM vault_sl_items WHERE file_id=?').bind(f.id), db.prepare('DELETE FROM annotations WHERE file_id=?').bind(f.id));
           stmts.push(db.prepare('DELETE FROM song_files WHERE song_id=? AND variant_id=?').bind(id, vid));
           stmts.push(db.prepare('UPDATE setlist_items SET variant_id=NULL WHERE variant_id=?').bind(vid));
           stmts.push(db.prepare('DELETE FROM song_variants WHERE id=?').bind(vid));
@@ -1789,6 +1887,7 @@ export async function onRequest({ request, env }) {
           db.prepare('DELETE FROM song_files WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM vault_items WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM vault_sl_items WHERE song_id=?').bind(id),
+          db.prepare('DELETE FROM annotations WHERE song_id=?').bind(id),
           // 콘티·팀 기본 키에 남은 흔적도 함께 정리한다
           db.prepare('DELETE FROM setlist_items WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM team_song_keys WHERE song_id=?').bind(id),

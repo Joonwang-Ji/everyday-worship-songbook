@@ -13,7 +13,7 @@
     del(k) { try { localStorage.removeItem(k); } catch {} },
   };
   const uid = () => Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
-  let cfg = { headers: () => ({}), toast: () => {} };
+  let cfg = { headers: () => ({}), toast: () => {}, teamId: () => 0 };
   const emit = (fileId) => window.dispatchEvent(new CustomEvent('ews-ink', { detail: { fileId } }));
   const emptyData = () => ({ v: 1, items: [], del: [] });
   // 콘티용 필기(16차): 콘티의 곡 한 칸(uid) + 악보 한 장(fid)마다 따로 저장한다. 같은 저장소에 문자열 키로 넣는다.
@@ -226,6 +226,122 @@
   async function wipeLocal() {
     ls.del('ews_vault');
     await rclear();
+    sh.rows = [];
+    shSave();
+  }
+
+
+  // ---------- 팀 공유 필기 (31차) ----------
+  // 팀장이 올린 필기를 팀원이 읽기 전용으로 겹쳐 본다. 내 필기(개인 보관함)와는 따로 저장되고, 서버 표는 annotations.
+  //  · 한 덩어리 = (콘티 칸 uid 또는 '', 악보 장 fid(코드 악보는 -곡번호), 올린 사람 author). 팀장이 다시 올리면 통째로 바뀐다.
+  //  · 이 기기에는 마지막으로 받은 것을 저장해 두어(오프라인에서도 보임), 곡·콘티를 열 때마다 새로 받아 바꾼다.
+  //  · 보기 켜기/끄기(이 기기 전체)와 올린 사람별 숨기기는 이 기기에만 기억한다. 내가 올린 것은 내 필기 층이 이미 보이므로 겹쳐 그리지 않는다.
+  const SH_COLORS = ['#0ea5e9', '#a855f7', '#f97316', '#10b981'];
+  const sh = { rows: [], on: ls.get('ews_shared_on', '1') !== '0', off: new Set() };
+  try { sh.off = new Set(JSON.parse(ls.get('ews_shared_off', '[]'))); } catch {}
+  const shMe = () => {
+    let a = ls.get('ews_author', '');
+    if (!/^[0-9a-f]{12}$/.test(a)) {
+      a = [...crypto.getRandomValues(new Uint8Array(6))].map((b) => b.toString(16).padStart(2, '0')).join('');
+      ls.set('ews_author', a);
+    }
+    return a;
+  };
+  const emitShared = () => window.dispatchEvent(new CustomEvent('ews-shared'));
+  let shdbp = null;
+  function shdb() {
+    if (shdbp) return shdbp;
+    shdbp = new Promise((res) => {
+      try {
+        const r = indexedDB.open('ews-ink-sh', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('rows', { keyPath: 'id' });
+        r.onsuccess = () => res(r.result);
+        r.onerror = r.onblocked = () => res(null);
+      } catch { res(null); }
+    });
+    return shdbp;
+  }
+  async function shSave() {
+    const db = await shdb();
+    if (!db) return;
+    return new Promise((res) => {
+      try {
+        const tx = db.transaction('rows', 'readwrite');
+        const st = tx.objectStore('rows');
+        st.clear();
+        sh.rows.forEach((r) => st.put(r));
+        tx.oncomplete = tx.onerror = tx.onabort = () => res();
+      } catch { res(); }
+    });
+  }
+  async function shLoad() {
+    const db = await shdb();
+    if (!db) return;
+    const rows = await new Promise((res) => { try { const q = db.transaction('rows').objectStore('rows').getAll(); q.onsuccess = () => res(q.result || []); q.onerror = () => res([]); } catch { res([]); } });
+    if (rows.length && !sh.rows.length) { sh.rows = rows; emitShared(); }
+  }
+  async function sfetch(path, { method = 'GET', body } = {}) {
+    const res = await fetch('/api' + path, { method, headers: { 'Content-Type': 'application/json', ...cfg.headers() }, body: body ? JSON.stringify(body) : undefined });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error || '오류가 발생했습니다.'), { status: res.status });
+    return data;
+  }
+  const hasTeamKey = () => !!cfg.headers()['X-Team-Token'];
+  // 곡(songId)·콘티(setlistId)를 열 때 그 팀의 공유 필기를 받아 이 기기 것을 바꾼다. 실패(오프라인 등)하면 저장해 둔 것을 그대로 쓴다.
+  async function pullShared({ songId, setlistId } = {}) {
+    if (!hasTeamKey() || navigator.onLine === false || (!songId && !setlistId)) return;
+    try {
+      const qs = [songId ? 'song=' + encodeURIComponent(songId) : '', setlistId ? 'setlist=' + encodeURIComponent(setlistId) : ''].filter(Boolean).join('&');
+      const r = await sfetch('/shared?' + qs);
+      const old = JSON.stringify(sh.rows);
+      const tid = cfg.teamId();
+      sh.rows = sh.rows.filter((x) => !(x.team_id === tid && ((songId && x.song_id === +songId) || (setlistId && x.setlist_id === +setlistId))));
+      for (const it of r.items || []) { sh.rows = sh.rows.filter((x) => x.id !== it.id); sh.rows.push(it); }
+      if (JSON.stringify(sh.rows) !== old) { shSave(); emitShared(); }
+    } catch (e) { /* 팀에 없거나 오프라인이면 조용히 */ }
+  }
+  // 이 악보 장(fid, 코드 악보는 -곡번호)에 보일 공유 행: 곡 기본(uid '')과, 콘티에서 열었으면 그 콘티 칸의 것
+  function shRowsFor(fid, sl) {
+    if (!sh.on) return [];
+    const me = ls.get('ews_author', '');
+    const tid = cfg.teamId();
+    return sh.rows
+      .filter((r) => r.team_id === tid && r.file_id === fid && (r.uid === '' || (sl && r.uid === sl.uid)) && !sh.off.has(r.author) && r.author !== me)
+      .sort((a, b) => a.id - b.id);
+  }
+  const shAuthors = () => {
+    const first = new Map();
+    for (const r of sh.rows.filter((x) => x.team_id === cfg.teamId())) if (!first.has(r.author) || r.id < first.get(r.author).id) first.set(r.author, { id: r.id, name: r.name });
+    return [...first.entries()].sort((a, b) => a[1].id - b[1].id).map(([author, v], i) => ({ author, name: v.name, color: SH_COLORS[i % SH_COLORS.length], off: sh.off.has(author), mine: author === ls.get('ews_author', '') }));
+  };
+  // 공유 행들을 그림으로: 올린 사람이 둘 이상 겹쳐 보이면 사람마다 윤곽색을 달리해 구분한다
+  function shSVG(rows, W, H, ow) {
+    if (!rows.length) return '';
+    const cols = new Map(shAuthors().map((a) => [a.author, a.color]));
+    const multi = new Set(rows.map((r) => r.author)).size > 1;
+    return `<g class="sh-layer">${rows.map((r) => (r.data && r.data.items ? r.data.items.map((it) => itemSVG(it, W, H, multi ? { c: cols.get(r.author) || '#0ea5e9', w: ow || 3 } : null)).join('') : '')).join('')}</g>`;
+  }
+  function shSetOn(on) { sh.on = !!on; ls.set('ews_shared_on', on ? '1' : '0'); emitShared(); }
+  function shToggleAuthor(author) { if (sh.off.has(author)) sh.off.delete(author); else sh.off.add(author); ls.set('ews_shared_off', JSON.stringify([...sh.off])); emitShared(); }
+  // 팀장: 내 필기(이 기기에 있는 것)를 팀에 올린다 / 내린다. target = { songId, fileId(코드 악보는 -곡번호), uid? }
+  const shKeyOf = (t) => (t.fileId < 0 ? codeKeyOf(t.songId, t.uid ? { uid: t.uid } : null) : t.uid ? slKey(t.uid, t.fileId) : t.fileId);
+  async function shMyCount(t) {
+    const rec = await rget(shKeyOf(t));
+    return rec && rec.data && rec.data.items ? rec.data.items.length : 0;
+  }
+  async function shUp(t, name) {
+    const rec = await rget(shKeyOf(t));
+    const items = rec && rec.data && rec.data.items ? rec.data.items : [];
+    const path = t.uid ? `/shared/slot/${t.uid}/${t.fileId}` : `/shared/song/${t.songId}/${t.fileId}`;
+    const r = await sfetch(path, { method: 'PUT', body: { author: shMe(), name: name || '팀장', data: { v: 1, items, del: [] } } });
+    await pullShared({ songId: t.songId, setlistId: t.setlistId });
+    return r;
+  }
+  async function shDown(id) {
+    await sfetch('/shared/' + id + '?author=' + shMe(), { method: 'DELETE' });
+    sh.rows = sh.rows.filter((r) => r.id !== id);
+    shSave();
+    emitShared();
   }
 
   // ---------- 그리기 도우미 ----------
@@ -270,18 +386,18 @@
     }
     return d + `L${X((n - 1) * 2).toFixed(1)} ${Y((n - 1) * 2).toFixed(1)}`;
   }
-  function itemSVG(it, W, H) {
+  function itemSVG(it, W, H, ol) {
     if (it.t === 'x') {
       const fs = (it.z / 10000) * W;
       const lines = String(it.s).split('\n');
       const x = (it.x / 10000) * W;
       const y = (it.y / 10000) * H + fs * 0.85;
-      return `<text class="itx" x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="${fs.toFixed(1)}" fill="${it.c}" stroke-width="${(fs * 0.18).toFixed(1)}">${lines
+      return `<text class="itx" x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-size="${fs.toFixed(1)}" fill="${it.c}" stroke-width="${(fs * 0.18).toFixed(1)}"${ol ? ` style="stroke:${ol.c}"` : ''}>${lines
         .map((l, i) => `<tspan x="${x.toFixed(1)}" dy="${i ? '1.25em' : '0'}">${esc(l) || ' '}</tspan>`)
         .join('')}</text>`;
     }
     const hl = it.t === 'h';
-    return `<path d="${strokeD(it.p, W, H, it.w / 10)}" fill="${it.c}" stroke="none"${hl ? ' class="hl"' : ''}/>`;
+    return `<path d="${strokeD(it.p, W, H, it.w / 10)}" fill="${it.c}" ${ol ? `stroke="${ol.c}" stroke-width="${ol.w}" stroke-opacity=".6" stroke-linejoin="round"` : 'stroke="none"'}${hl ? ' class="hl"' : ''}/>`;
   }
   const dataSVG = (data, W, H) => ((data && data.items) || []).map((it) => itemSVG(it, W, H)).join('');
 
@@ -319,7 +435,7 @@
     svg.setAttribute('aria-hidden', 'true');
     svg.setAttribute('preserveAspectRatio', 'none');
     host.appendChild(svg);
-    const o = { img, svg, fileId, slKey: sl ? slKey(sl.uid, fileId) : '', data: null, sdata: null };
+    const o = { img, svg, fileId, sl, slKey: sl ? slKey(sl.uid, fileId) : '', data: null, sdata: null };
     o.place = () => {
       const nw = img.naturalWidth, nh = img.naturalHeight;
       if (!nw || !nh) return;
@@ -333,7 +449,7 @@
       const H = (1000 * nh) / nw;
       svg.setAttribute('viewBox', `0 0 1000 ${H.toFixed(1)}`);
       o.H = H;
-      svg.innerHTML = dataSVG(o.data, 1000, H) + dataSVG(o.sdata, 1000, H);
+      svg.innerHTML = shSVG(shRowsFor(fileId, sl), 1000, H) + dataSVG(o.data, 1000, H) + dataSVG(o.sdata, 1000, H);
     };
     o.load = () => Promise.all([rget(fileId), o.slKey ? rget(o.slKey) : null]).then(([rec, srec]) => { o.data = rec ? rec.data : null; o.sdata = srec ? srec.data : null; o.place(); });
     overlays.add(o);
@@ -348,6 +464,7 @@
     }
   });
   window.addEventListener('resize', () => overlays.forEach((o) => o.svg.isConnected && o.place()));
+  window.addEventListener('ews-shared', () => overlays.forEach((o) => o.svg.isConnected && o.place()));
   // 곡 보기 화면: root 안의 이미지 악보(img.sheet)에 차례대로 필기 층을 붙인다
   function decorate(root, files, sl) {
     const imgs = (files || []).filter((f) => f.kind === 'image');
@@ -455,7 +572,10 @@
     }
     function layout() { fitBase(); clampView(); applyView(); redraw(); }
     function redraw() {
-      let html = under && under.items && under.items.length ? `<g class="ink-under" pointer-events="none">${dataSVG(under, 1000, H())}</g>` : '';
+      let html = '';
+      const shh = shSVG(shRowsFor(pages[page].id, sl), 1000, H());
+      if (shh) html += `<g class="ink-under" pointer-events="none">${shh}</g>`;
+      if (under && under.items && under.items.length) html += `<g class="ink-under" pointer-events="none">${dataSVG(under, 1000, H())}</g>`;
       html += dataSVG({ items: txtEdit ? items.filter((i) => i.id !== txtEdit.id) : items }, 1000, H());
       if (txtEdit) {
         if (txtEdit.s.trim()) html += itemSVG(txtEdit, 1000, H());
@@ -490,6 +610,7 @@
       fitBase(); resetView(); redraw();
       if (img.complete && img.naturalWidth) img.onload();
       if (sl) { pull(songId); pullSetlist(sl.setlistId); } else pull(songId);
+      pullShared({ songId, setlistId: sl && sl.setlistId });
     }
     const removeItem = (id) => { items = items.filter((i) => i.id !== id); del.add(id); };
     const addItem = (it) => { items = items.filter((i) => i.id !== it.id); items.push(it); del.delete(it.id); };
@@ -862,6 +983,7 @@
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('visibilitychange', onHide);
       window.removeEventListener('resize', layout);
+      window.removeEventListener('ews-shared', onShared);
       if (window.visualViewport) { visualViewport.removeEventListener('resize', fitVV); visualViewport.removeEventListener('scroll', fitVV); }
       document.body.style.overflow = prevOverflow;
       document.body.classList.remove('ink-open');
@@ -914,6 +1036,8 @@
       ov.style.bottom = 'auto';
       if (txtEdit) revealPoint();
     }
+    const onShared = () => { if (!txtEdit) redraw(); };
+    window.addEventListener('ews-shared', onShared);
     document.addEventListener('keydown', onKey);
     document.addEventListener('visibilitychange', onHide);
     window.addEventListener('resize', layout);
@@ -974,12 +1098,14 @@
     render();
   }
 
-  // ---------- 코드 악보 필기 (30차) ----------
+  // ---------- 코드 악보 필기 (30차 · 31차 다듬기) ----------
   // 코드 악보는 글자라서 키·글자 크기·단 수에 따라 줄 위치가 바뀐다. 그래서 필기를 "그림 좌표"가 아니라 "줄"에 붙인다.
   //  · 한 획(글자)은 처음 찍은 점이 있는 줄에 붙는다: a = { b: 줄 번호, h: 줄 글자 해시, v: 악보 버전, o: 회차(있을 때만) }
   //  · 좌표는 그 줄 상자 안 값: x = 줄 너비의 1/10000, y = 줄 높이의 1/1000 (줄 위·아래로 나가도 된다)
   //  · 줄 글자를 고쳐 번호가 밀려도 해시로 위아래 2줄 안에서 다시 찾는다. 못 찾으면 "안 보이는 필기"로 세어 정리할 수 있다.
   //  · 회차(o): 송폼 순서 악보에서 같은 구간이 여러 번 나올 때 "V1#1", "C#2" 처럼 몇 번째인지. o가 없으면 모든 회차에 보인다.
+  //  · 31차: 팀장이 공유한 필기(읽기 전용)가 내 필기 밑에 깔려 보이고, 필기 도구가 다듬어졌다(글자 위치 표시·끌어 옮기기, 닿는 즉시 지우는 지우개,
+  //    쓰는 중 모습 = 뗀 뒤 모습, 펜↔지우개 전환, 손가락 관성 스크롤, 두 손가락 확대[글자 크기], 화면을 떠나면 도구줄 닫기).
   const cviews = new Set();
   const codeMeta = (songId, sl) => ({ code: 1, ...(sl ? { sl: sl.uid, fid: -songId, setlistId: sl.setlistId } : {}) });
   function relPos(el, root) {
@@ -1000,6 +1126,8 @@
     }
     return { els: [], miss: true };
   }
+  // 이 코드 악보 위에 깔려 보일 팀 공유 필기(읽기 전용)
+  const sharedSources = (o) => shRowsFor(-o.songId, o.sl).map((r) => ({ key: 'sh:' + r.id, data: r.data, shared: true, author: r.author }));
   function cdraw(o) {
     const root = o.root;
     if (!root.isConnected) return;
@@ -1018,25 +1146,31 @@
     const miss = [];
     o.geo = [];
     let html = '';
-    for (const src of o.sources) {
+    const shS = sharedSources(o);
+    const multi = new Set(shS.map((x) => x.author)).size > 1;
+    const cols = new Map(shAuthors().map((a) => [a.author, a.color]));
+    for (const src of [...shS, ...o.sources]) {
+      const ol = src.shared && multi ? { c: cols.get(src.author) || '#0ea5e9', w: 3 } : null;
       for (const it of (src.data && src.data.items) || []) {
         const a = it.a;
         if (!a) continue;
+        if (!src.shared && o.hideId && it.id === o.hideId) continue; // 글자를 고치는 중이면 원래 글자는 숨긴다
         const lv = cache[a.v || 0] || (cache[a.v || 0] = lineEls(root, a.v || 0));
         const m = matchItem(lv, a);
-        if (m.miss) miss.push({ id: it.id, key: src.key });
+        if (m.miss && !src.shared) miss.push({ id: it.id, key: src.key });
         for (const el of m.els || []) {
           const r = relPos(el, root);
           if (!r.w || !r.h) continue;
           const sc = r.w / 1000;
-          html += `<g transform="translate(${r.x.toFixed(1)},${r.y.toFixed(1)}) scale(${sc.toFixed(4)})">${itemSVG(it, 1000, (10 * r.h) / sc)}</g>`;
-          o.geo.push({ id: it.id, key: src.key, it, r });
+          html += `<g data-id="${esc(it.id)}" transform="translate(${r.x.toFixed(1)},${r.y.toFixed(1)}) scale(${sc.toFixed(4)})">${itemSVG(it, 1000, (10 * r.h) / sc, ol)}</g>`;
+          if (!src.shared) o.geo.push({ id: it.id, key: src.key, it, r });
         }
       }
     }
     svg.innerHTML = html;
     o.miss = miss;
     cnote(o);
+    if (o.afterDraw) o.afterDraw();
   }
   function cnote(o) {
     if (!o.note) {
@@ -1063,13 +1197,21 @@
     o.sources.forEach((s, i) => { s.data = recs[i] ? recs[i].data : null; });
     cdraw(o);
   }
-  // root(.score) 안의 .ln[data-bl] 줄들에 필기를 겹쳐 보인다. opt = { songId, sl, readOnly }
+  // 한 곡·한 콘티를 짧은 시간에 여러 번 열어도 공유 필기는 20초에 한 번만 새로 받는다
+  const shPulled = new Map();
+  function pullSharedSoon(args) {
+    const k = (args.songId || '') + ':' + (args.setlistId || '');
+    if (Date.now() - (shPulled.get(k) || 0) < 20000) return;
+    shPulled.set(k, Date.now());
+    pullShared(args);
+  }
+  // root(.score) 안의 .ln[data-bl] 줄들에 필기를 겹쳐 보인다. opt = { songId, sl, readOnly, v, zoom: { get(), set(px) } }
   function codeView(root, opt) {
     for (const x of [...cviews]) if (!x.root.isConnected && !x.editing) { cviews.delete(x); try { x.ro && x.ro.disconnect(); } catch {} if (x.note) x.note.remove(); }
     const base = { key: codeKeyOf(opt.songId), meta: codeMeta(opt.songId), data: null };
     const sources = [base];
     if (opt.sl) sources.push({ key: codeKeyOf(opt.songId, opt.sl), meta: codeMeta(opt.songId, opt.sl), data: null, sl: true });
-    const o = { root, songId: opt.songId, sl: opt.sl, sources, readOnly: !!opt.readOnly, geo: [], miss: [], v: opt.v || 0 };
+    const o = { root, songId: opt.songId, sl: opt.sl, sources, readOnly: !!opt.readOnly, geo: [], miss: [], v: opt.v || 0, zoom: opt.zoom || null };
     cviews.add(o);
     o.refresh = () => cdraw(o);
     o.reload = () => cload(o);
@@ -1077,6 +1219,7 @@
     try { o.ro = new ResizeObserver(() => cdraw(o)); o.ro.observe(root); } catch {}
     o.edit = () => cedit(o);
     cload(o);
+    pullSharedSoon({ songId: opt.songId, setlistId: opt.sl && opt.sl.setlistId });
     return o;
   }
   window.addEventListener('ews-ink', (e) => {
@@ -1086,73 +1229,135 @@
     }
   });
   window.addEventListener('resize', () => cviews.forEach((o) => o.root.isConnected && cdraw(o)));
+  window.addEventListener('ews-shared', () => cviews.forEach((o) => o.root.isConnected && !(o.busy && o.busy()) && cdraw(o)));
 
-  // 필기 모드: 화면 아래 도구 줄이 뜨고, 코드 악보 위에 바로 쓴다. 펜슬·마우스 = 쓰기, 손가락 = 스크롤(☝ 켜면 쓰기).
+  // 필기 모드: 화면 아래 도구 줄이 뜨고, 코드 악보 위에 바로 쓴다. 펜슬·마우스 = 쓰기, 손가락 = 스크롤(☝ 켜면 쓰기), 두 손가락 = 확대.
   function cedit(o) {
     if (o.editing) return;
     o.editing = true;
     const target = o.sources[o.sources.length - 1]; // 콘티용이 있으면 콘티용에, 없으면 곡 기본 필기에 쓴다
-    const hasOcc = !!o.root.querySelector('.ln[data-o]');
-    const opts = { tool: 'pen', pen: { c: PEN_COLORS[0], w: 1 }, hl: { c: HL_COLORS[0], w: 1 }, tx: { c: PEN_COLORS[1], z: 1 }, finger: false, scope: hasOcc ? 'this' : 'all' };
-    const hist = [];
-    const bar = document.createElement('div');
-    bar.className = 'cink-bar';
-    document.body.appendChild(bar);
-    const items = () => target.data.items;
     if (!target.data) target.data = emptyData();
-    const commit = async (snap) => {
-      if (snap) { hist.push(snap); if (hist.length > 40) hist.shift(); }
-      await save(target.key, o.songId, target.data, target.meta);
-      cdraw(o);
-    };
+    const hasOcc = !!o.root.querySelector('.ln[data-o]');
+    const opts = { tool: 'pen', prev: 'pen', pen: { c: PEN_COLORS[0], w: 1 }, hl: { c: HL_COLORS[0], w: 1 }, tx: { c: PEN_COLORS[1], z: 1 }, finger: false, scope: hasOcc ? 'this' : 'all' };
+    const ER = 12; // 지우개 반지름(px)
+    const ZMIN = 12, ZMAX = 44;
+    const origSize = o.zoom ? o.zoom.get() : 0;
+    const hist = [];
+    const redoS = [];
+    const mk = (cls) => { const d = document.createElement('div'); d.className = cls; return d; };
+    const bar = mk('cink-bar');
+    const pnl = mk('cink-txt');
+    pnl.hidden = true;
+    pnl.innerHTML = `<textarea rows="2" maxlength="300" placeholder="글자 메모를 입력하세요" aria-label="글자 메모"></textarea><div class="cink-txr" data-r="opt"></div><div class="cink-txr"><button type="button" data-x="ok" class="done">확인</button><button type="button" data-x="del">삭제</button><button type="button" data-x="cancel">취소</button><span class="cink-hint">점선 표시를 끌거나 악보를 눌러 자리를 옮겨요</span></div>`;
+    document.body.append(bar, pnl);
+    const $ta = pnl.querySelector('textarea');
+    let S = null;
+    let act = null;
+    let txt = null; // 글자 입력창이 열려 있는 동안의 글자 { id, t, a, x, y, c, z, s, isNew }
+    let penDown = false;
+    let pinch = null;
+    let inertia = 0;
+    let liveG = null, liveRaf = 0, ec = null;
+    const touches = new Map();
+    const ignore = new Set();
     const snapNow = () => JSON.stringify({ items: target.data.items, del: target.data.del || [] });
-    function undo() {
-      const s = hist.pop();
-      if (!s) return;
-      const prev = JSON.parse(s);
+    function applySnap(js) {
+      const prev = JSON.parse(js);
       const cur = new Set(target.data.items.map((i) => i.id));
       const had = new Set(prev.items.map((i) => i.id));
       const del = new Set(target.data.del || []);
       cur.forEach((id) => { if (!had.has(id)) del.add(id); });
       had.forEach((id) => del.delete(id));
       target.data = { v: 1, items: prev.items, del: [...del].slice(-2000) };
-      commit(null);
     }
+    async function commit(snap) {
+      if (snap) { hist.push(snap); if (hist.length > 40) hist.shift(); redoS.length = 0; }
+      await save(target.key, o.songId, target.data, target.meta);
+      cdraw(o);
+      paint();
+    }
+    function undo() { const s = hist.pop(); if (s == null) return; redoS.push(snapNow()); applySnap(s); commit(null); }
+    function redo() { const s = redoS.pop(); if (s == null) return; hist.push(snapNow()); applySnap(s); commit(null); }
     const scopeLabel = () => (opts.scope === 'this' ? '이 회차만' : '모든 회차');
     function paint() {
       const t = opts.tool;
-      const colors = t === 'hl' ? HL_COLORS : t === 'tx' ? PEN_COLORS : PEN_COLORS;
+      const colors = t === 'hl' ? HL_COLORS : PEN_COLORS;
       const cur = opts[t] || opts.pen;
+      // 좁은 화면(아이폰)에서는 글자 이름표를 숨기고 그림만 보여 도구 줄이 악보를 덜 가린다
+      const tb = (id, ico, label) => `<button type="button" data-t="${id}" class="${t === id ? 'on' : ''}" aria-label="${label}" title="${label}"><span class="ico">${ico}</span><span class="lbl"> ${label}</span></button>`;
       bar.innerHTML =
-        `<button type="button" data-t="pen" class="${t === 'pen' ? 'on' : ''}">✎ 펜</button><button type="button" data-t="hl" class="${t === 'hl' ? 'on' : ''}">🖍 형광펜</button><button type="button" data-t="tx" class="${t === 'tx' ? 'on' : ''}">가 글자</button><button type="button" data-t="er" class="${t === 'er' ? 'on' : ''}">지우개</button>` +
+        `<div class="cink-row">${tb('pen', '✎', '펜')}${tb('hl', '🖍', '형광펜')}${tb('tx', '가', '글자')}${tb('er', '⌫', '지우개')}<button type="button" class="swap" data-sw="1" aria-label="${t === 'er' ? '펜으로' : '지우개로'} 바꾸기" title="펜과 지우개를 서로 바꿔요 (키보드 E)"><span class="ico">⇄</span><span class="lbl"> ${t === 'er' ? '펜으로' : '지우개로'}</span></button></div>` +
+        `<div class="cink-row">` +
         (t !== 'er' ? colors.map((c) => `<button type="button" class="sw${cur.c === c ? ' on' : ''}" data-c="${c}" style="background:${c}" aria-label="색"></button>`).join('') : '') +
-        (t === 'pen' || t === 'hl' ? `<button type="button" data-w="1">굵기 ${(cur.w || 0) + 1}</button>` : t === 'tx' ? `<button type="button" data-z="1">크기 ${(opts.tx.z || 0) + 1}</button>` : '') +
+        (t === 'pen' || t === 'hl' ? `<button type="button" data-w="1">굵기 ${(cur.w || 0) + 1}</button>` : t === 'tx' ? `<button type="button" data-z="1">크기 ${(opts.tx.z || 0) + 1}</button>` : `<span class="cink-hint">지울 필기에 대세요 (닿는 즉시 지워져요)</span>`) +
         `<button type="button" data-f="1" class="${opts.finger ? 'on' : ''}" title="켜면 손가락으로도 써요">☝ ${opts.finger ? '손가락 쓰기' : '손가락 스크롤'}</button>` +
-        (hasOcc ? `<button type="button" data-s="1">${scopeLabel()}</button>` : `<span class="cink-hint">회차별(이 회차만) 필기는 연주 모드에서</span>`) +
-        `<button type="button" data-u="1">↶</button><button type="button" class="done" data-d="1">완료</button>`;
+        (hasOcc ? `<button type="button" data-s="1">${scopeLabel()}</button>` : '') +
+        `</div><div class="cink-row">` +
+        `<button type="button" data-u="1" ${hist.length ? '' : 'disabled'} aria-label="되돌리기">↶</button><button type="button" data-r2="1" ${redoS.length ? '' : 'disabled'} aria-label="다시 하기">↷</button>` +
+        (o.zoom ? `<button type="button" data-zm="-1" aria-label="글자 작게">가−</button><button type="button" data-zm="1" aria-label="글자 크게">가＋</button>` : '') +
+        (!o.zoom ? '' : `<span class="cink-hint">두 손가락으로 벌리면 확대</span>`) +
+        `<button type="button" class="done" data-d="1">완료</button></div>`;
+      // 도구 줄이 차지하는 높이만큼 악보 아래에 여백을 둔다
+      requestAnimationFrame(() => { if (bar.isConnected) document.documentElement.style.setProperty('--cink-h', bar.offsetHeight + 'px'); });
     }
     paint();
     bar.onclick = (e) => {
       const b = e.target.closest('button');
-      if (!b) return;
+      if (!b || b.disabled) return;
       const d = b.dataset;
-      if (d.t) opts.tool = d.t;
+      if (d.t) { if (d.t !== 'er') opts.prev = d.t; opts.tool = d.t; if (d.t !== 'er') hideCursor(); }
+      else if (d.sw) swapTool();
       else if (d.c) (opts[opts.tool] || opts.pen).c = d.c;
       else if (d.w) { const x = opts[opts.tool]; x.w = (x.w + 1) % 3; }
       else if (d.z) opts.tx.z = (opts.tx.z + 1) % 3;
       else if (d.f) opts.finger = !opts.finger;
       else if (d.s) opts.scope = opts.scope === 'this' ? 'all' : 'this';
       else if (d.u) undo();
+      else if (d.r2) redo();
+      else if (d.zm) zoomStep(+d.zm * 2);
       else if (d.d) { stop(); return; }
       paint();
     };
-    const svg = o.svg;
-    cdraw(o);
-    const S = o.svg;
-    o.onStop = null;
-    // 점 하나가 속할 줄: 줄 상자와 가장 가까운(안이면 0) 줄. 마지막 줄 아래·첫 줄 위도 가까운 줄에 붙는다.
+    function swapTool() {
+      if (opts.tool === 'er') opts.tool = opts.prev || 'pen';
+      else { opts.prev = opts.tool === 'tx' ? 'pen' : opts.tool; opts.tool = 'er'; }
+      if (opts.tool !== 'er') hideCursor();
+      paint();
+    }
+
+    // ----- 펜 신호 실험: 펜의 버튼·지우개 끝이 보내는 신호를 받아 본다(애플펜슬 더블탭·스퀴즈는 웹에 오지 않는 것으로 알려져 있어, 오는지 확인만 한다) -----
+    const told = new Set();
+    const tellOnce = (k, msg) => { if (told.has(k)) return; told.add(k); cfg.toast(msg); };
+    function penSignal(e) {
+      if (e.pointerType !== 'pen') return;
+      if (e.buttons & 2) tellOnce('b2', '펜 버튼 신호를 받았어요. (펜↔지우개 전환에 써요)');
+      if (e.buttons & 32) tellOnce('b32', '펜의 지우개 끝 신호를 받았어요. (닿으면 지워요)');
+      if (e.buttons > 1 && !(e.buttons & 34)) tellOnce('b' + e.buttons, '펜의 낯선 신호(' + e.buttons + ')를 받았어요. 알려 주세요.');
+    }
+
+    // 더보기의 "필기 진단"을 켜면, 펜·손가락·버튼 신호가 오는 대로 화면 위쪽에 적어 준다(애플펜슬 더블탭·스퀴즈가 오는지 확인용)
+    let dbgBox = null;
+    const dbgRows = [];
+    const dbgOn = ls.get('ews_ink_dbg', '') === '1';
+    const dbgAdd = (txt) => {
+      if (!dbgOn) return;
+      if (!dbgBox) { dbgBox = document.createElement('div'); dbgBox.className = 'ink-dbg'; dbgBox.style.cssText = 'position:fixed;left:6px;top:calc(env(safe-area-inset-top) + 8px);bottom:auto;max-width:92vw;z-index:1100'; document.body.appendChild(dbgBox); }
+      dbgRows.push(txt);
+      if (dbgRows.length > 12) dbgRows.shift();
+      dbgBox.textContent = dbgRows.join('\n');
+    };
+    if (dbgOn) {
+      ['pointerdown', 'pointerup', 'pointercancel', 'contextmenu', 'auxclick', 'dblclick', 'touchstart', 'gesturestart'].forEach((n) => document.addEventListener(n, function dbgL(e) {
+        if (!o.editing) { document.removeEventListener(n, dbgL, true); return; }
+        const t = e.pointerType || (e.touches && e.touches[0] && e.touches[0].touchType) || '';
+        dbgAdd(`${n} ${t}${e.buttons != null ? ' b=' + e.buttons : ''}${e.pressure ? ' p=' + e.pressure.toFixed(2) : ''}${e.altitudeAngle != null && e.pointerType === 'pen' ? ' alt=' + e.altitudeAngle.toFixed(2) : ''}${e.twist ? ' tw=' + e.twist : ''}`);
+      }, true));
+      dbgAdd('진단 켜짐: 펜슬 더블탭·스퀴즈·버튼을 눌러 보세요');
+    }
+
+    // ----- 줄 찾기 -----
     function nearest(px, py) {
-      const els = [...o.root.querySelectorAll('.ln[data-bl]')].filter((e) => (+e.dataset.v || 0) === o.v);
+      const els = lineEls(o.root, o.v);
       let best = null, bd = 1e9;
       for (const el of els) {
         const r = relPos(el, o.root);
@@ -1164,130 +1369,449 @@
       }
       return best;
     }
-    const anchorOf = (el) => ({ b: +el.dataset.bl, h: el.dataset.h || '', v: +el.dataset.v || 0, ...(opts.scope === 'this' && el.dataset.o ? { o: el.dataset.o } : {}) });
+    const anchorOf = (el, scope) => ({ b: +el.dataset.bl, h: el.dataset.h || '', v: +el.dataset.v || 0, ...((scope || opts.scope) === 'this' && el.dataset.o ? { o: el.dataset.o } : {}) });
+    const lineFor = (a) => { const m = matchItem(lineEls(o.root, a.v || 0), a); return m.els && m.els[0]; };
     // 화면 좌표 → 악보 안 좌표. 연주 모드처럼 악보가 가로로 밀려 있어도(transform) 맞도록 겉보기 크기 비율로 나눈다.
     const pt = (e) => { const b = o.root.getBoundingClientRect(); const k = b.width / (o.root.offsetWidth || b.width) || 1; return [(e.clientX - b.left) / k, (e.clientY - b.top) / k]; };
-    // 연주 모드의 넘기기 손짓과 섞이지 않게, 필기 중에는 터치 이벤트를 위로 올리지 않는다
-    // 아이패드: 펜슬·손가락이 글자 선택(길게 누르기)·돋보기·스크리블로 넘어가 획이 끊기지 않게, 필기 중에는 선택과 기본 동작을 막는다.
-    ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((n) => S.addEventListener(n, (e) => { e.stopPropagation(); if (e.cancelable) e.preventDefault(); }, { passive: false }));
-    const noSel = (e) => e.preventDefault();
-    ['selectstart', 'contextmenu', 'dragstart', 'gesturestart'].forEach((n) => { S.addEventListener(n, noSel); o.root.addEventListener(n, noSel); });
-    o.root.classList.add('cink-editing');
-    try { const g = window.getSelection && window.getSelection(); if (g) g.removeAllRanges(); } catch {}
-    let act = null, live = null;
-    const touches = new Set();
+
+    // ----- 스크롤(손가락 한 개): 직접 밀고, 놓으면 관성으로 더 미끄러진다 -----
+    function scrollerEl() {
+      let e = o.root.parentElement;
+      while (e && e !== document.body && e !== document.documentElement) {
+        const cs = getComputedStyle(e);
+        if (/(auto|scroll)/.test(cs.overflowY) && e.scrollHeight > e.clientHeight + 1) return e;
+        e = e.parentElement;
+      }
+      return null;
+    }
+    const scrollBy = (dy) => { const e = scrollerEl(); if (e) e.scrollTop += dy; else window.scrollBy(0, dy); };
+    const stopInertia = () => { if (inertia) cancelAnimationFrame(inertia); inertia = 0; };
+    function startInertia(v) {
+      stopInertia();
+      let last = performance.now();
+      const step = (now) => {
+        const dt = Math.min(40, now - last);
+        last = now;
+        scrollBy(v * dt);
+        v *= Math.pow(0.94, dt / 16);
+        inertia = Math.abs(v) > 0.02 ? requestAnimationFrame(step) : 0;
+      };
+      inertia = requestAnimationFrame(step);
+    }
+
+    // ----- 두 손가락 확대: 화면 글자 크기를 바꿔 준다(줄에 붙은 필기는 그대로 따라간다). 끝나면 원래 크기로 돌아간다 -----
+    function zoomStep(d) {
+      if (!o.zoom) return;
+      const cur = o.zoom.get();
+      const ns = clamp(cur + d, ZMIN, ZMAX);
+      if (ns !== cur) o.zoom.set(ns);
+    }
+    function startPinch() {
+      if (!o.zoom) return;
+      const [a, b] = [...touches.values()];
+      stopInertia();
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, size: o.zoom.get(), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, s: 1, rb: o.root.getBoundingClientRect(), tf: o.root.style.transform, to: o.root.style.transformOrigin };
+    }
+    function movePinch() {
+      const [a, b] = [...touches.values()];
+      const ns = clamp(Math.round((pinch.size * Math.hypot(a.x - b.x, a.y - b.y)) / pinch.d), ZMIN, ZMAX);
+      pinch.s = ns / pinch.size;
+      o.root.style.transformOrigin = `${pinch.cx - pinch.rb.left}px ${pinch.cy - pinch.rb.top}px`;
+      o.root.style.transform = `scale(${pinch.s})`;
+    }
+    function endPinch() {
+      if (!pinch) return;
+      const p = pinch;
+      pinch = null;
+      o.root.style.transform = p.tf;
+      o.root.style.transformOrigin = p.to;
+      const ns = clamp(Math.round(p.size * p.s), ZMIN, ZMAX);
+      if (ns === o.zoom.get()) return;
+      const fy = (p.cy - p.rb.top) / (p.rb.height || 1); // 손가락 가운데가 가리키던 악보 안 세로 위치(비율)
+      o.zoom.set(ns);
+      requestAnimationFrame(() => {
+        const r = o.root.getBoundingClientRect();
+        scrollBy(r.top + fy * r.height - p.cy);
+      });
+    }
+
+    // ----- 지우개: 닿는 즉시 지운다. 닿는 곳에 ○ 표시 -----
+    const segD = (px, py, ax, ay, bx, by) => {
+      const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9;
+      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
+      return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+    };
+    const wch = (l) => [...l].reduce((s, c) => s + (c.charCodeAt(0) > 0x2e80 ? 1 : 0.58), 0);
+    function textBox(g) {
+      const it = g.it, fs = (it.z / 10000) * g.r.w, L = String(it.s).split('\n');
+      return { x: g.r.x + (it.x / 10000) * g.r.w, y: g.r.y + (it.y / 1000) * g.r.h, w: Math.max(...L.map(wch)) * fs, h: L.length * fs * 1.25 };
+    }
+    const nearBox = (b, x, y, m) => Math.hypot(Math.max(b.x - x, 0, x - (b.x + b.w)), Math.max(b.y - y, 0, y - (b.y + b.h))) <= m;
     function hitErase(x, y) {
       const dead = new Set();
       for (const g of o.geo) {
         if (g.key !== target.key) continue;
         const it = g.it;
-        if (it.t === 'x') {
-          const fs = (it.z / 10000) * g.r.w;
-          const L = String(it.s).split('\n');
-          const tx = g.r.x + (it.x / 10000) * g.r.w, ty = g.r.y + (it.y / 1000) * g.r.h;
-          const w = Math.max(...L.map((l) => l.length)) * fs * 0.9, h = L.length * fs * 1.3;
-          if (x >= tx - 6 && x <= tx + w + 6 && y >= ty - 6 && y <= ty + h + 6) dead.add(it.id);
-        } else {
-          for (let i = 0; i < it.p.length; i += 2) {
-            const sx = g.r.x + (it.p[i] / 10000) * g.r.w, sy = g.r.y + (it.p[i + 1] / 1000) * g.r.h;
-            if (Math.hypot(sx - x, sy - y) < 12) { dead.add(it.id); break; }
-          }
+        if (it.t === 'x') { if (nearBox(textBox(g), x, y, ER)) dead.add(it.id); continue; }
+        const wpx = ((it.w / 10) * g.r.w) / 1000;
+        const P = (i) => [g.r.x + (it.p[i] / 10000) * g.r.w, g.r.y + (it.p[i + 1] / 1000) * g.r.h];
+        for (let i = 0; i < it.p.length; i += 2) {
+          const a = P(i), b = i + 2 < it.p.length ? P(i + 2) : a;
+          if (segD(x, y, a[0], a[1], b[0], b[1]) <= ER + wpx / 2) { dead.add(it.id); break; }
         }
       }
       return dead;
     }
-    function liveSvg(a) {
-      if (!live) { live = document.createElementNS(NS, 'path'); S.appendChild(live); }
-      const sc = a.r.w / 1000;
-      const o2 = opts[a.tool];
-      const wpx = (a.w / 10) * sc;
-      live.setAttribute('d', a.pts.length > 1 ? 'M' + a.pts.map((p) => p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join('L') : `M${a.pts[0][0]} ${a.pts[0][1]}l.01 0`);
-      live.setAttribute('fill', 'none');
-      live.setAttribute('stroke', o2.c);
-      live.setAttribute('stroke-width', wpx.toFixed(2));
-      live.setAttribute('stroke-linecap', 'round');
-      live.setAttribute('stroke-linejoin', 'round');
-      live.setAttribute('class', a.tool === 'hl' ? 'hl' : '');
+    function eraseAt(x, y) {
+      const fresh = [...hitErase(x, y)].filter((id) => !act.erased.has(id));
+      if (!fresh.length) return;
+      fresh.forEach((id) => act.erased.add(id));
+      const f = new Set(fresh);
+      target.data.items = target.data.items.filter((i) => !f.has(i.id));
+      S.querySelectorAll('g[data-id]').forEach((g) => { if (f.has(g.getAttribute('data-id'))) g.remove(); });
+      o.geo = o.geo.filter((g) => !f.has(g.id));
     }
-    S.onpointerdown = (e) => {
-      if (e.pointerType === 'touch') {
-        touches.add(e.pointerId);
-        if (!opts.finger || touches.size > 1) { act = { id: e.pointerId, scroll: true, y: e.clientY }; if (touches.size > 1 && live) { live.remove(); live = null; } return; }
+    function showCursor(x, y) {
+      if (!ec || !ec.isConnected) {
+        ec = document.createElementNS(NS, 'circle');
+        ec.setAttribute('r', ER);
+        ec.setAttribute('fill', 'rgba(255,255,255,.35)');
+        ec.setAttribute('stroke', '#e11d48');
+        ec.setAttribute('stroke-width', '1.5');
+        ec.setAttribute('stroke-dasharray', '3 2');
+        ec.setAttribute('pointer-events', 'none');
+        S.appendChild(ec);
       }
-      e.preventDefault();
-      try { S.setPointerCapture(e.pointerId); } catch {}
-      const [x, y] = pt(e);
-      const n = nearest(x, y);
-      if (!n) return;
-      if (opts.tool === 'er') { act = { id: e.pointerId, erase: new Set(), snap: snapNow() }; hitErase(x, y).forEach((i) => act.erase.add(i)); return; }
-      if (opts.tool === 'tx') {
-        act = { id: e.pointerId, text: true, x, y, n };
-        return;
-      }
-      const w = WIDTHS[opts.tool][opts[opts.tool].w];
-      act = { id: e.pointerId, tool: opts.tool, pts: [[x, y]], r: n.r, el: n.el, w, snap: snapNow() };
-      liveSvg(act);
-    };
-    S.onpointermove = (e) => {
-      if (!act || act.id !== e.pointerId) return;
-      if (act.scroll) { window.scrollBy(0, act.y - e.clientY); act.y = e.clientY; return; }
-      const [x, y] = pt(e);
-      if (act.erase) { hitErase(x, y).forEach((i) => act.erase.add(i)); return; }
-      if (act.pts) {
-        const l = act.pts[act.pts.length - 1];
-        if (Math.hypot(x - l[0], y - l[1]) < 1.2) return;
-        act.pts.push([x, y]);
-        liveSvg(act);
-      }
-    };
-    const end = async (e) => {
-      touches.delete(e.pointerId);
-      if (!act || act.id !== e.pointerId) return;
-      const a = act;
-      act = null;
-      if (a.scroll) return;
-      if (live) { live.remove(); live = null; }
-      if (a.erase) {
-        if (a.erase.size) {
-          const ids = [...a.erase];
-          target.data = { v: 1, items: target.data.items.filter((i) => !a.erase.has(i.id)), del: [...(target.data.del || []), ...ids].slice(-2000) };
-          await commit(a.snap);
-        }
-        return;
-      }
-      if (a.text) {
-        if (e.type === 'pointercancel') return;
-        const s = (window.prompt('글자를 적어 주세요') || '').trim();
-        if (!s) return;
-        const r = a.n.r;
-        const sn = snapNow();
-        target.data.items.push({ id: uid(), t: 'x', c: opts.tx.c, x: Math.round(((a.x - r.x) / r.w) * 10000), y: Math.round(((a.y - r.y) / r.h) * 1000), z: TEXT_SIZES[opts.tx.z], s: s.slice(0, 300), a: anchorOf(a.n.el) });
-        await commit(sn);
-        return;
-      }
-      if (!a.pts || a.pts.length < 1) return; // 취소(pointercancel)돼도 그린 만큼은 남긴다
+      ec.setAttribute('cx', x.toFixed(1));
+      ec.setAttribute('cy', y.toFixed(1));
+      ec.removeAttribute('display');
+    }
+    function hideCursor() { if (ec) ec.setAttribute('display', 'none'); }
+
+    // ----- 획: 쓰는 중 보이는 모습 = 뗀 뒤 모습 (같은 변환을 거친다) -----
+    function buildStroke(a) {
       const r = a.r;
-      let pts = a.pts.map(([x, y]) => [((x - r.x) / r.w) * 10000, ((y - r.y) / r.h) * 1000]);
+      const pts = a.pts.map(([x, y]) => [((x - r.x) / r.w) * 10000, ((y - r.y) / r.h) * 1000]);
       const ratio = r.h / 1000 / (r.w / 10000);
-      let eps = 6;
+      let eps = 4;
       let sp = simplify(pts, ratio, eps);
       while (sp.length > 2800 && eps < 200) { eps *= 1.6; sp = simplify(pts, ratio, eps); }
       const p = [];
       for (const q of sp) p.push(Math.round(q[0]), Math.round(q[1]));
-      if (p.length < 2) return;
       if (p.length === 2) p.push(p[0], p[1]);
-      const pen = opts[a.tool];
-      target.data.items.push({ id: uid(), t: a.tool === 'pen' ? 's' : 'h', c: pen.c, w: a.w, p, a: anchorOf(a.el) });
+      return { id: uid(), t: a.tool === 'pen' ? 's' : 'h', c: opts[a.tool].c, w: a.w, p, a: anchorOf(a.el) };
+    }
+    function paintLive() {
+      if (liveRaf) return;
+      liveRaf = requestAnimationFrame(() => {
+        liveRaf = 0;
+        if (!act || !act.pts) return;
+        if (!liveG || !liveG.isConnected) { liveG = document.createElementNS(NS, 'g'); liveG.setAttribute('pointer-events', 'none'); S.appendChild(liveG); }
+        const r = act.r, sc = r.w / 1000;
+        liveG.setAttribute('transform', `translate(${r.x.toFixed(1)},${r.y.toFixed(1)}) scale(${sc.toFixed(4)})`);
+        liveG.innerHTML = itemSVG(buildStroke(act), 1000, (10 * r.h) / sc);
+      });
+    }
+    function clearLive() { if (liveRaf) { cancelAnimationFrame(liveRaf); liveRaf = 0; } if (liveG) { liveG.remove(); liveG = null; } }
+
+    // ----- 글자: 놓을 자리를 표시하고, 끌어서 옮기고, 입력창에서 고친다 -----
+    function drawExtras() {
+      if (!S || !S.isConnected) return;
+      S.querySelectorAll('.cink-ex').forEach((n) => n.remove());
+      const ex = o.ex;
+      if (!ex) return;
+      const el = lineFor(ex.item.a);
+      if (!el) return;
+      const r = relPos(el, o.root);
+      if (!r.w || !r.h) return;
+      const sc = r.w / 1000;
+      let g = '';
+      if (ex.item.s && ex.item.s.trim()) g += `<g transform="translate(${r.x.toFixed(1)},${r.y.toFixed(1)}) scale(${sc.toFixed(4)})">${itemSVG(ex.item, 1000, (10 * r.h) / sc)}</g>`;
+      if (ex.mark) {
+        const mx = r.x + (ex.item.x / 10000) * r.w, my = r.y + (ex.item.y / 1000) * r.h;
+        g += `<circle cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="10" fill="rgba(255,255,255,.6)" stroke="#e11d48" stroke-width="1.5" stroke-dasharray="3 2"/><path d="M${(mx - 16).toFixed(1)} ${my.toFixed(1)}h32M${mx.toFixed(1)} ${(my - 16).toFixed(1)}v32" stroke="#e11d48" stroke-width="1"/>`;
+      }
+      S.insertAdjacentHTML('beforeend', `<g class="cink-ex" pointer-events="none">${g}</g>`);
+    }
+    function textLive(item, mark) { o.ex = { item, mark }; drawExtras(); }
+    // 점(x,y)이 놓인 줄에 글자를 붙이고, 줄 안 좌표를 다시 계산한다
+    function placeAt(item, x, y, scope) {
+      const n = nearest(x, y);
+      if (!n) return;
+      item.a = anchorOf(n.el, scope);
+      item.x = Math.round(((x - n.r.x) / n.r.w) * 10000);
+      item.y = Math.round(((y - n.r.y) / n.r.h) * 1000);
+    }
+    function renderTxtBar() {
+      pnl.querySelector('[data-r="opt"]').innerHTML = PEN_COLORS.map((c) => `<button type="button" class="sw${txt.c === c ? ' on' : ''}" data-c="${c}" style="background:${c}" aria-label="색"></button>`).join('') + TEXT_SIZES.map((z, i) => `<button type="button" class="${txt.z === z ? 'on' : ''}" data-z="${z}" style="font-size:${12 + i * 4}px">가</button>`).join('');
+    }
+    function revealMark() {
+      if (!txt) return;
+      const el = lineFor(txt.a);
+      if (!el) return;
+      const r = relPos(el, o.root), rb = o.root.getBoundingClientRect();
+      const k = rb.width / (o.root.offsetWidth || rb.width) || 1;
+      const my = rb.top + (r.y + (txt.y / 1000) * r.h) * k;
+      const limit = pnl.getBoundingClientRect().top - 70;
+      if (my > limit) scrollBy(my - limit);
+    }
+    function fitVV() {
+      if (!txt) return;
+      const vv = window.visualViewport;
+      const kb = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
+      pnl.style.bottom = `${kb + 8}px`;
+      revealMark();
+    }
+    function openText(it, at) {
+      txt = it ? { ...it, isNew: false } : { id: uid(), t: 'x', a: null, x: 0, y: 0, c: opts.tx.c, z: TEXT_SIZES[opts.tx.z], s: '', isNew: true };
+      if (!it) { placeAt(txt, at[0], at[1]); if (!txt.a) { txt = null; return; } }
+      $ta.value = txt.s;
+      o.hideId = it ? it.id : null;
+      bar.style.display = 'none';
+      pnl.hidden = false;
+      // 탭한 뒤에 따라오는 클릭이 방금 나타난 입력창의 버튼을 누르지 않도록 잠깐 막는다
+      pnl.style.pointerEvents = 'none';
+      setTimeout(() => { pnl.style.pointerEvents = ''; }, 450);
+      pnl.querySelector('[data-x="del"]').hidden = txt.isNew;
+      document.body.classList.add('cink-txt-on');
+      renderTxtBar();
+      cdraw(o);
+      textLive(txt, true);
+      setTimeout(() => { fitVV(); $ta.focus(); }, 30);
+    }
+    function closeText() {
+      txt = null;
+      o.ex = null;
+      o.hideId = null;
+      pnl.hidden = true;
+      bar.style.display = '';
+      document.body.classList.remove('cink-txt-on');
+      try { $ta.blur(); } catch {}
+    }
+    $ta.addEventListener('input', () => { if (txt) { txt.s = $ta.value; textLive(txt, true); } });
+    pnl.onclick = async (e) => {
+      const b = e.target.closest('button');
+      if (!b || !txt) return;
+      const d = b.dataset;
+      if (d.c) { txt.c = d.c; renderTxtBar(); textLive(txt, true); return; }
+      if (d.z) { txt.z = +d.z; opts.tx.z = Math.max(0, TEXT_SIZES.indexOf(+d.z)); renderTxtBar(); textLive(txt, true); return; }
+      if (d.x === 'cancel') { closeText(); cdraw(o); paint(); return; }
+      const sn = snapNow();
+      const old = target.data.items.find((i) => i.id === txt.id);
+      if (d.x === 'del') {
+        if (old) target.data = { v: 1, items: target.data.items.filter((i) => i.id !== old.id), del: [...(target.data.del || []), old.id].slice(-2000) };
+        closeText();
+        await commit(old ? sn : null);
+        return;
+      }
+      if (d.x === 'ok') {
+        const s = $ta.value.replace(/\s+$/, '');
+        if (!s.trim()) {
+          if (old) target.data = { v: 1, items: target.data.items.filter((i) => i.id !== old.id), del: [...(target.data.del || []), old.id].slice(-2000) };
+          closeText();
+          await commit(old ? sn : null);
+          return;
+        }
+        const it = { id: txt.id, t: 'x', c: txt.c, x: txt.x, y: txt.y, z: txt.z, s: s.slice(0, 300), a: txt.a };
+        if (old) target.data.items = target.data.items.map((i) => (i.id === it.id ? it : i));
+        else target.data.items.push(it);
+        if (txt.isNew) opts.tx.c = it.c;
+        closeText();
+        await commit(sn);
+      }
+    };
+    const vvFn = () => fitVV();
+    if (window.visualViewport) { visualViewport.addEventListener('resize', vvFn); visualViewport.addEventListener('scroll', vvFn); }
+    function hitText(x, y) {
+      for (let i = o.geo.length - 1; i >= 0; i--) {
+        const g = o.geo[i];
+        if (g.key !== target.key || g.it.t !== 'x') continue;
+        if (nearBox(textBox(g), x, y, 6)) return g;
+      }
+      return null;
+    }
+
+    // ----- 선택·기본 동작 막기: 필기 중 글자 선택·돋보기·스크리블로 넘어가 획이 끊기지 않게 -----
+    S = o.svg;
+    cdraw(o);
+    S = o.svg;
+    o.afterDraw = drawExtras;
+    o.busy = () => !!act || !!pinch;
+    ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((n) => S.addEventListener(n, (e) => { e.stopPropagation(); if (e.cancelable) e.preventDefault(); }, { passive: false }));
+    const noSel = (e) => { if (e.type === 'contextmenu') tellOnce('ctx', '펜·손가락의 보조 신호(contextmenu)를 받았어요.'); e.preventDefault(); };
+    ['selectstart', 'contextmenu', 'dragstart', 'gesturestart'].forEach((n) => { S.addEventListener(n, noSel); o.root.addEventListener(n, noSel); });
+    o.root.classList.add('cink-editing');
+    try { const g = window.getSelection && window.getSelection(); if (g) g.removeAllRanges(); } catch {}
+    function cancelAct() {
+      if (act && act.erase && act.erased.size) { target.data = { v: 1, items: target.data.items, del: [...(target.data.del || []), ...act.erased].slice(-2000) }; commit(act.snap); }
+      if (act && act.tmove && act.tmove.moved) { o.hideId = null; o.ex = null; cdraw(o); }
+      clearLive();
+      act = null;
+    }
+    S.onpointerdown = (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      const pen = e.pointerType === 'pen';
+      penSignal(e);
+      if (e.pointerType === 'touch') {
+        if (penDown) { ignore.add(e.pointerId); return; } // 펜으로 쓰는 중에 닿은 손바닥은 무시
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touches.size >= 2) { cancelAct(); startPinch(); return; }
+        if (!opts.finger) { stopInertia(); act = { id: e.pointerId, scroll: true, y: e.clientY, t: performance.now(), v: 0, moved: false }; return; }
+      }
+      if (pen) { penDown = true; touches.clear(); pinch = null; cancelAct(); }
+      e.preventDefault();
+      try { S.setPointerCapture(e.pointerId); } catch {}
+      stopInertia();
+      const [x, y] = pt(e);
+      if (txt) { // 글자 입력창이 열려 있으면 어디를 눌러도 글자 자리가 그리로 옮겨진다(누른 채 끌어도 따라온다)
+        act = { id: e.pointerId, drag: true };
+        placeAt(txt, x, y, txt.isNew ? opts.scope : txt.a && txt.a.o ? 'this' : 'all');
+        textLive(txt, true);
+        return;
+      }
+      let tool = opts.tool;
+      if (pen && e.buttons & 32) tool = 'er'; // 펜의 지우개 끝
+      if (pen && e.buttons & 2) { swapTool(); return; } // 펜 버튼으로 펜↔지우개 전환
+      const n = nearest(x, y);
+      if (!n) return;
+      if (tool === 'er') {
+        act = { id: e.pointerId, erase: true, erased: new Set(), snap: snapNow() };
+        eraseAt(x, y);
+        showCursor(x, y);
+        return;
+      }
+      if (tool === 'tx') {
+        const hit = hitText(x, y);
+        if (hit) {
+          const b = textBox(hit);
+          act = { id: e.pointerId, tmove: hit, ox: b.x - x, oy: b.y - y, sx: x, sy: y, moved: false, draft: { ...hit.it } };
+        } else act = { id: e.pointerId, tnew: true, sx: x, sy: y, moved: false };
+        return;
+      }
+      act = { id: e.pointerId, tool, pts: [[x, y]], r: n.r, el: n.el, w: WIDTHS[tool][opts[tool].w], snap: snapNow() };
+      paintLive();
+    };
+    function hover(e) {
+      if (opts.tool === 'er' && (e.pointerType === 'pen' || e.pointerType === 'mouse') && !txt) { const [x, y] = pt(e); showCursor(x, y); }
+      else hideCursor();
+    }
+    S.onpointermove = (e) => {
+      if (ignore.has(e.pointerId)) return;
+      if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pinch && touches.size >= 2) { movePinch(); return; }
+      }
+      if (!act || act.id !== e.pointerId) { hover(e); return; }
+      if (act.scroll) {
+        const now = performance.now(), dy = act.y - e.clientY, dt = Math.max(1, now - act.t);
+        act.v = 0.7 * act.v + 0.3 * (dy / dt);
+        act.t = now;
+        act.y = e.clientY;
+        if (Math.abs(dy) > 0) act.moved = true;
+        scrollBy(dy);
+        return;
+      }
+      const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+      for (const ev of evs.length ? evs : [e]) {
+        if (e.buttons && !ev.buttons) continue; // 펜이 닿기 전 공중(호버) 위치가 묶여 오면 버린다
+        const [x, y] = pt(ev);
+        if (act.drag) { if (txt) placeAt(txt, x, y, txt.isNew ? opts.scope : txt.a && txt.a.o ? 'this' : 'all'); }
+        else if (act.erase) { eraseAt(x, y); showCursor(x, y); }
+        else if (act.tmove) {
+          if (!act.moved && Math.hypot(x - act.sx, y - act.sy) > 6) { act.moved = true; o.hideId = act.tmove.it.id; cdraw(o); }
+          if (act.moved) placeAt(act.draft, x + act.ox, y + act.oy, act.draft.a && act.draft.a.o ? 'this' : 'all');
+        } else if (act.tnew) { if (Math.hypot(x - act.sx, y - act.sy) > 8) act.moved = true; }
+        else if (act.pts) {
+          const l = act.pts[act.pts.length - 1];
+          if (Math.hypot(x - l[0], y - l[1]) >= 1.2) act.pts.push([x, y]);
+        }
+      }
+      if (act.drag && txt) textLive(txt, true);
+      else if (act.tmove && act.moved) textLive(act.draft, false);
+      else if (act.pts) paintLive();
+    };
+    S.onpointerleave = (e) => { if (e.pointerType !== 'touch') hideCursor(); };
+    const end = async (e) => {
+      if (ignore.delete(e.pointerId)) return;
+      if (e.pointerType === 'pen') penDown = false;
+      if (e.pointerType === 'touch') {
+        touches.delete(e.pointerId);
+        if (pinch) {
+          if (touches.size < 2) { endPinch(); touches.forEach((_, id) => ignore.add(id)); touches.clear(); } // 남은 한 손가락은 뗄 때까지 무시
+          return;
+        }
+      }
+      if (!act || act.id !== e.pointerId) return;
+      const a = act;
+      act = null;
+      if (a.scroll) { if (a.moved && performance.now() - a.t < 90 && Math.abs(a.v) > 0.08) startInertia(a.v); return; }
+      if (a.drag) return;
+      if (a.erase) {
+        if (e.pointerType === 'touch') hideCursor();
+        if (a.erased.size) {
+          target.data = { v: 1, items: target.data.items, del: [...(target.data.del || []), ...a.erased].slice(-2000) };
+          await commit(a.snap);
+        }
+        return;
+      }
+      if (a.tnew) { if (!a.moved && e.type !== 'pointercancel') openText(null, [a.sx, a.sy]); return; }
+      if (a.tmove) {
+        if (e.type === 'pointercancel') { o.hideId = null; o.ex = null; cdraw(o); return; }
+        if (!a.moved) { openText(a.tmove.it, null); return; }
+        const sn = snapNow();
+        target.data.items = target.data.items.map((i) => (i.id === a.draft.id ? { ...a.draft } : i));
+        o.hideId = null;
+        o.ex = null;
+        await commit(sn);
+        return;
+      }
+      clearLive();
+      if (!a.pts || a.pts.length < 1) return; // 취소(pointercancel)돼도 그린 만큼은 남긴다
+      const it = buildStroke(a);
+      if (it.p.length < 2) return;
+      target.data.items.push(it);
       await commit(a.snap);
     };
     S.onpointerup = end;
     S.onpointercancel = end;
+
+    // ----- 키보드(맥북): ⌘Z 되돌리기, ⌘⇧Z 다시, E 펜↔지우개 -----
+    const onKey = (e) => {
+      if (e.target && /^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName)) return;
+      if ((e.metaKey || e.ctrlKey) && e.code === 'KeyZ') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+      else if (!e.metaKey && !e.ctrlKey && !e.altKey && e.code === 'KeyE') { e.preventDefault(); swapTool(); }
+    };
+    document.addEventListener('keydown', onKey);
+
+    // ----- 화면을 떠나면 도구 줄도 닫는다(다른 메뉴로 가거나, 코드 악보가 가려지거나, 악보가 바뀌었을 때) -----
+    const guard = setInterval(() => { if (!o.root.isConnected || !o.root.offsetWidth) stop(); }, 400);
+    const onNav = () => stop();
+    window.addEventListener('hashchange', onNav);
+    window.addEventListener('pagehide', onNav);
     function stop() {
+      if (!o.editing) return;
+      cancelAct();
+      closeText();
       o.editing = false;
-      S.onpointerdown = S.onpointermove = S.onpointerup = S.onpointercancel = null;
+      clearInterval(guard);
+      stopInertia();
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('hashchange', onNav);
+      window.removeEventListener('pagehide', onNav);
+      if (window.visualViewport) { visualViewport.removeEventListener('resize', vvFn); visualViewport.removeEventListener('scroll', vvFn); }
+      if (S) S.onpointerdown = S.onpointermove = S.onpointerup = S.onpointercancel = S.onpointerleave = null;
+      o.afterDraw = null;
+      o.busy = null;
+      o.ex = null;
+      o.hideId = null;
       bar.remove();
+      pnl.remove();
+      if (dbgBox) { dbgBox.remove(); dbgBox = null; }
+      if (pinch) { o.root.style.transform = pinch.tf; o.root.style.transformOrigin = pinch.to; pinch = null; }
       o.root.classList.remove('cink-editing');
-      document.body.classList.remove('cink-on');
+      document.body.classList.remove('cink-on', 'cink-txt-on');
+      document.documentElement.style.removeProperty('--cink-h');
+      if (o.zoom && origSize && o.zoom.get() !== origSize) o.zoom.set(origSize); // 확대는 필기하는 동안만
       cdraw(o);
       cload(o);
       if (o.onStop) o.onStop();
@@ -1300,7 +1824,12 @@
     cfg = { ...cfg, ...c };
     window.addEventListener('online', flush);
     setTimeout(flush, 1500);
+    shLoad();
   }
 
-  window.Ink = { init, edit, codeView, attachImg, decorate, pull, pullSetlist, flush, get, save, mountVaultCard, hasVault, wipeLocal, mergeInk, simplify };
+  window.Ink = {
+    init, edit, codeView, attachImg, decorate, pull, pullSetlist, flush, get, save, mountVaultCard, hasVault, wipeLocal, mergeInk, simplify,
+    // 31차: 팀 공유 필기
+    shared: { pull: pullShared, pullSoon: pullSharedSoon, rows: () => sh.rows.filter((r) => r.team_id === cfg.teamId()), authors: shAuthors, isOn: () => sh.on, setOn: shSetOn, toggleAuthor: shToggleAuthor, me: shMe, myCount: shMyCount, up: shUp, down: shDown, load: shLoad },
+  };
 })();

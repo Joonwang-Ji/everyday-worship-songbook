@@ -147,7 +147,7 @@
     return data;
   }
   let servedFromCache = false;
-  if (window.Ink) Ink.init({ headers: () => authHeaders(), toast });
+  if (window.Ink) Ink.init({ headers: () => authHeaders(), toast, teamId: () => { const t = activeTeam(); return t ? t.id : 0; } });
 
   // 이미지·PDF 한 장 올리기 (사진은 먼저 줄인다)
   async function uploadFile(songId, file, variantId) {
@@ -621,7 +621,7 @@
       ${hasText && files.length ? '<div class="tabs" id="tabs"><button class="tab" data-tab="chord">코드 악보</button><button class="tab" data-tab="img">이미지 악보</button></div>' : ''}
       ${isLeader && files.length && !hasText ? `<div class="row" id="imgkeyrow" style="margin:6px 0"><span class="ctl-label">우리 팀 키</span><select id="imgkey" aria-label="우리 팀 기본 키">${['', ...(Chord.parseKey(origKey) && Chord.parseKey(origKey).minor ? KEYS_MINOR : KEYS_MAJOR)].map((k) => `<option value="${k}">${k || '선택'}</option>`).join('')}</select><button class="btn small" id="imgkeysave" type="button">팀 기본 키로 저장</button></div><p class="hint" style="margin-top:0">이미지 악보는 화면에서 키가 바뀌지 않아요. 우리 팀이 부르는 키를 기록해 두면 콘티에 곡을 넣을 때 기본값이 됩니다.</p>` : ''}
       ${!hasText && !files.length ? `<p class="muted">등록된 악보가 아직 없습니다.${me.canEdit ? ' 편집에서 코드 악보를 입력하거나 이미지·PDF를 올려 주세요.' : ''}</p>` : ''}
-      <div id="pane-chord">${hasText && window.Ink ? `<div class="row ink-entry"><button class="btn small" id="cinkbtn" type="button">${slInk ? '✎ 콘티용 필기하기' : '✎ 필기하기'}</button><span class="muted small">${slInk ? '이 콘티에서만 보여요 · ' : ''}내 필기는 나만 보여요 · 줄에 붙어서 키·글자 크기를 바꿔도 따라가요</span></div>` : ''}<div class="score" id="score"></div></div>
+      <div id="pane-chord">${hasText && window.Ink ? `<div class="row ink-entry"><button class="btn small" id="cinkbtn" type="button">${slInk ? '✎ 콘티용 필기하기' : '✎ 필기하기'}</button><button class="btn small shbtn" type="button" hidden>👥 팀 필기</button><span class="muted small">${slInk ? '이 콘티에서만 보여요 · ' : ''}내 필기는 나만 보여요 · 줄에 붙어서 키·글자 크기를 바꿔도 따라가요</span></div>` : ''}<div class="score" id="score"></div></div>
       <div id="pane-img" hidden></div>
       ${song.memo ? `<h2>메모</h2><div class="memo">${esc(song.memo)}</div>` : ''}
       <div class="sheet-wrap" id="ksheet" hidden>
@@ -821,7 +821,8 @@
     });
     draw();
     if (hasText && window.Ink) {
-      ci = Ink.codeView($score, { songId: song.id, sl: slInk || undefined, v: vSel });
+      // 31차: 두 손가락으로 벌려 확대하면 글자 크기가 바뀐다(필기하는 동안만, 끝나면 원래 크기)
+      ci = Ink.codeView($score, { songId: song.id, sl: slInk || undefined, v: vSel, zoom: { get: () => prefs.size, set: (px) => { prefs.size = px; draw(); } } });
       Ink.pull(song.id);
       if (slInk) Ink.pullSetlist(slInk.setlistId);
       const cb = document.getElementById('cinkbtn');
@@ -835,7 +836,7 @@
     const wantKey = q.get('key') || '';
     const keyBanner = wantKey && origKey && wantKey !== origKey ? `<div class="memo" style="margin-bottom:10px">이 콘티에서는 <b>${esc(wantKey)}</b> 키로 부릅니다. 이미지 악보는 원래 키(<b>${esc(origKey)}</b>) 기준입니다.</div>` : '';
     const hasImgFile = files.some((f) => f.kind === 'image');
-    $pi.innerHTML = (files.length ? keyBanner : '') + (hasImgFile ? '<div class="row ink-entry"><button class="btn small" id="inkbtn" type="button">' + (slInk ? '✎ 콘티용 필기하기' : '✎ 필기하기') + '</button><span class="muted small">' + (slInk ? '이 콘티에서만 보여요 · 내 필기는 나만 보여요' : '내 필기는 나만 보여요') + '</span></div>' : '') + Files.renderPane(files);
+    $pi.innerHTML = (files.length ? keyBanner : '') + (hasImgFile ? '<div class="row ink-entry"><button class="btn small" id="inkbtn" type="button">' + (slInk ? '✎ 콘티용 필기하기' : '✎ 필기하기') + '</button><button class="btn small shbtn" type="button" hidden>👥 팀 필기</button><span class="muted small">' + (slInk ? '이 콘티에서만 보여요 · 내 필기는 나만 보여요' : '내 필기는 나만 보여요') + '</span></div>' : '') + Files.renderPane(files);
     Files.bindPane($pi, files);
     if (hasImgFile) {
       Ink.decorate($pi, files, slInk);
@@ -843,6 +844,11 @@
       if (slInk) Ink.pullSetlist(slInk.setlistId);
       const ib = document.getElementById('inkbtn');
       if (ib) ib.onclick = () => Ink.edit({ files, start: 0, songId: song.id, title: song.title, sl: slInk || undefined });
+    }
+    // 31차: 팀 공유 필기 — 곡·콘티를 열 때 새로 받고, 👥 버튼에서 켜기/끄기·올리기·내리기
+    if (window.Ink && Ink.shared && me.team) {
+      Ink.shared.pullSoon({ songId: song.id, setlistId: slInk ? slInk.setlistId : undefined });
+      document.querySelectorAll('.shbtn').forEach((b) => bindSharedBtn(b, { song, files, hasText, slInk }));
     }
     function showTab(t, remember) {
       $pc.hidden = t !== 'chord';
@@ -1601,7 +1607,7 @@
       const mod = ev.metaKey || ev.ctrlKey;
       if (mod && !ev.altKey && code === 'KeyZ') { ev.preventDefault(); kbUndo(ev.shiftKey); return; }
       if (mod || ev.altKey) return;
-      if (code === 'Tab') { ev.preventDefault(); kbMove(ev.shiftKey ? -1 : 1, 'tab'); return; }
+      if (code === 'Tab' || code === 'Space') { ev.preventDefault(); kbMove(ev.shiftKey ? -1 : 1, 'tab'); return; } // 31차: 스페이스바도 Tab과 같다
       if (code === 'ArrowRight') { ev.preventDefault(); kbMove(1, 'char'); return; }
       if (code === 'ArrowLeft') { ev.preventDefault(); kbMove(-1, 'char'); return; }
       if (code === 'ArrowDown') { ev.preventDefault(); kbLine(1, false); return; }
@@ -3074,6 +3080,100 @@
     return `<button type="button" class="btn locked ${c.replace('primary', '').trim()}" data-lock="${kind}" data-go="${esc(go)}">🔒 ${label}</button>`;
   }
   // 아래에서 올라오는 창. 바깥을 누르거나 Esc로 닫는다.
+  // ---------- 팀 공유 필기 시트 (31차) ----------
+  // ctx = { song, files, hasText, slInk }  (slInk = { uid, setlistId } 콘티에서 열었을 때)
+  //  · 모두: 이 기기에서 팀 필기 보기 켜기/끄기, 올린 사람별 보이기/숨기기
+  //  · 팀장: 내 필기(이 기기에 있는 것)를 팀에 올리기·다시 올리기·내리기 / 관리자: 모든 공유를 내릴 수 있음
+  function openSharedSheet(ctx) {
+    if (!window.Ink || !Ink.shared) return;
+    const S = Ink.shared;
+    const { song, files, hasText, slInk } = ctx;
+    const imgs = (files || []).filter((f) => f.kind === 'image');
+    const leader = !!(me.team && me.team.isLeader);
+    const sh = showSheet('<p class="muted small">불러오는 중…</p>');
+    const fmt = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+    const rowsHere = () => S.rows().filter((r) => r.song_id === song.id && (r.uid === '' || (slInk && r.uid === slInk.uid)));
+    const label = (fid, uid) => (fid < 0 ? '코드 악보' : `이미지 ${Math.max(1, imgs.findIndex((f) => f.id === fid) + 1)}쪽`) + (uid ? ' · 콘티용' : ' · 곡 기본');
+    const targets = () => {
+      const out = [];
+      for (const uid of slInk ? [slInk.uid, ''] : ['']) {
+        if (hasText) out.push({ songId: song.id, fileId: -song.id, uid, setlistId: slInk ? slInk.setlistId : undefined });
+        for (const f of imgs) out.push({ songId: song.id, fileId: f.id, uid, setlistId: slInk ? slInk.setlistId : undefined });
+      }
+      return out;
+    };
+    async function render(msg) {
+      const rows = rowsHere();
+      const me0 = S.me();
+      const authors = S.authors().filter((a) => rows.some((r) => r.author === a.author));
+      let html = `<h2 style="margin-top:0">👥 팀 필기</h2>
+        <p class="muted small" style="margin:4px 0 8px">팀장이 올린 필기를 팀원이 <b>읽기 전용</b>으로 겹쳐 봐요. 내 필기는 그대로 따로 보이고, 이 설정은 이 기기에만 적용돼요.</p>
+        <div class="srow"><span>이 기기에서 팀 필기 보기</span><span class="row"><button type="button" class="seg ${S.isOn() ? 'on' : ''}" data-a="on" data-v="1">켜기</button><button type="button" class="seg ${S.isOn() ? '' : 'on'}" data-a="on" data-v="0">끄기</button></span></div>`;
+      if (msg) html += `<p class="${msg.err ? 'error' : 'muted'} small">${esc(msg.text)}</p>`;
+      html += `<h3 style="margin:12px 0 4px">이 곡에 올라온 필기</h3>`;
+      if (!rows.length) html += '<p class="muted small" style="margin:2px 0">아직 올라온 팀 필기가 없어요.</p>';
+      for (const a of authors) {
+        html += `<div class="srow" style="align-items:flex-start"><span><i class="shdot" style="background:${a.color}"></i><b>${esc(a.name)}</b>${a.mine ? ' <span class="pill ok">나</span>' : ''}</span><span class="row"><button type="button" class="seg ${a.off ? '' : 'on'}" data-a="au" data-v="${a.author}">${a.off ? '숨김' : '보임'}</button></span></div>`;
+        for (const r of rows.filter((x) => x.author === a.author)) {
+          const n = ((r.data && r.data.items) || []).length;
+          html += `<div class="srow sub"><span class="muted small">${esc(label(r.file_id, r.uid))} · ${n}개 · ${esc(fmt(r.updated_at))}</span>${(leader && a.author === me0) || me.isAdmin ? `<button type="button" class="seg" data-a="down" data-v="${r.id}">내리기</button>` : ''}</div>`;
+        }
+      }
+      if (leader) {
+        html += `<h3 style="margin:14px 0 4px">내 필기를 팀에 올리기</h3>
+          <p class="muted small" style="margin:2px 0 6px">이 기기에 있는 내 필기를 악보 장(쪽) 단위로 올려요. 다시 올리면 팀의 것이 내 최신 필기로 바뀌어요.</p>
+          <label for="sh-name" class="small">표시 이름 (팀원에게 보여요, 12자)</label><input id="sh-name" type="text" maxlength="12" value="${esc(ls.get('ews_author_name', '팀장'))}" autocomplete="off" style="margin-bottom:6px">`;
+        const ts = targets();
+        for (let i = 0; i < ts.length; i++) {
+          const t = ts[i];
+          const cnt = await S.myCount(t);
+          const mine = rows.find((r) => r.author === me0 && r.file_id === t.fileId && r.uid === t.uid);
+          html += `<div class="srow sub"><span class="small">${esc(label(t.fileId, t.uid))}<br><span class="muted">내 필기 ${cnt}개${mine ? ` · 공유 중(${((mine.data && mine.data.items) || []).length}개)` : ''}</span></span><span class="row">${cnt ? `<button type="button" class="seg" data-a="up" data-v="${i}">${mine ? '다시 올리기' : '올리기'}</button>` : ''}${mine ? `<button type="button" class="seg" data-a="down" data-v="${mine.id}">내리기</button>` : ''}</span></div>`;
+        }
+      } else if (me.team) {
+        html += '<p class="muted small" style="margin-top:12px">팀장이 되면(팀 화면에서 팀장 PIN 입력) 내 필기를 팀에 올릴 수 있어요.</p>';
+      }
+      html += '<button type="button" class="btn primary" data-a="close" style="width:100%;margin-top:10px">닫기</button>';
+      sh.wrap.querySelector('.sheet-card').innerHTML = html;
+    }
+    sh.wrap.addEventListener('click', async (ev) => {
+      const b = ev.target.closest('button');
+      if (!b || !b.dataset.a) return;
+      const a = b.dataset.a, v = b.dataset.v;
+      try {
+        if (a === 'close') return sh.close();
+        if (a === 'on') S.setOn(v === '1');
+        else if (a === 'au') S.toggleAuthor(v);
+        else if (a === 'down') {
+          if (!confirm('이 공유 필기를 팀에서 내릴까요? (내 필기는 그대로 남아요)')) return;
+          await S.down(+v);
+          toast('팀에서 내렸어요.');
+        } else if (a === 'up') {
+          const name = ((sh.q('#sh-name') || {}).value || '').trim() || '팀장';
+          ls.set('ews_author_name', name);
+          const r = await S.up(targets()[+v], name);
+          toast(r.removed ? '올릴 필기가 없어요.' : `팀에 올렸어요. (${r.count}개)`);
+        }
+      } catch (e) { return render({ err: 1, text: e.message }); }
+      render();
+    });
+    S.pull({ songId: song.id, setlistId: slInk ? slInk.setlistId : undefined }).then(() => sh.wrap.isConnected && render());
+    render();
+  }
+  // 곡 보기·연주 모드의 "👥 팀 필기" 버튼에 올라온 사람 수를 보여 준다
+  function bindSharedBtn(btn, ctx) {
+    if (!btn || !window.Ink || !Ink.shared) return;
+    btn.hidden = !me.team;
+    const upd = () => {
+      if (!btn.isConnected) { window.removeEventListener('ews-shared', upd); return; }
+      const n = new Set(Ink.shared.rows().filter((r) => r.song_id === ctx.song.id && (r.uid === '' || (ctx.slInk && r.uid === ctx.slInk.uid))).map((r) => r.author)).size;
+      btn.textContent = '👥 팀 필기' + (n ? ` ${n}` : '');
+    };
+    window.addEventListener('ews-shared', upd);
+    upd();
+    btn.onclick = () => openSharedSheet(ctx);
+  }
+
   function showSheet(html, onClose) {
     const wrap = document.createElement('div');
     wrap.className = 'sheet-wrap';
@@ -3889,6 +3989,7 @@
     // 콘티에서 연 연주 모드: 곡 칸마다 콘티용 필기가 따로 붙는다
     const slOf = (it) => (src.sl && it && it.uid ? { uid: it.uid, setlistId: +src.sl } : undefined);
     if (src.sl && window.Ink) Ink.pullSetlist(+src.sl);
+    if (window.Ink && Ink.shared && me.team && src.sl) Ink.shared.pullSoon({ setlistId: +src.sl }); // 31차: 팀 공유 필기
     g('pink').onclick = () => {
       if (cur && cur.tab === 'chord') { const sc = $pb.querySelector('.score'); if (sc && sc._cv) sc._cv.edit(); return; } // 30차: 코드 악보에 필기(회차별)
       if (!cur || !cur.pages.length) return;
@@ -4018,7 +4119,7 @@
         $pb.scrollTop = top;
       } else if (pages.length) {
         $pb.innerHTML = `<img class="sheet" src="${esc(pages[cur.page].url)}" alt="악보 ${cur.page + 1}">`;
-        if (window.Ink) Ink.attachImg($pb.querySelector('img.sheet'), pages[cur.page].id, slOf(cur.it));
+        if (window.Ink) { Ink.attachImg($pb.querySelector('img.sheet'), pages[cur.page].id, slOf(cur.it)); if (Ink.shared && me.team) Ink.shared.pullSoon({ songId: cur.song.id, setlistId: src.sl ? +src.sl : undefined }); }
         if (pages[cur.page + 1]) new Image().src = pages[cur.page + 1].url;
       } else {
         $pb.innerHTML = Files.renderPane(files); // PDF만 있는 곡: 열기 링크
@@ -4488,6 +4589,7 @@
           <div class="srow"><span>화면 색</span><span class="row">${seg('theme', [['auto', '자동'], ['light', '밝게'], ['dark', '어둡게']], P.theme)}</span></div>
           <div class="srow"><span>화면 꺼짐 방지</span><span class="row">${seg('wake', [['1', '켜기'], ['0', '끄기']], P.wake ? '1' : '0')}</span></div>
           ${'wakeLock' in navigator ? '' : '<p class="hint">이 브라우저는 화면 꺼짐 방지를 지원하지 않아요. 기기 설정의 자동 잠금 시간을 길게 바꿔 두세요.</p>'}
+          ${me.team && window.Ink && Ink.shared ? `<div class="srow"><span>팀 필기 보기</span><span class="row">${seg('shon', [['1', '켜기'], ['0', '끄기']], Ink.shared.isOn() ? '1' : '0')}<button type="button" class="seg" data-a="shsheet">자세히</button></span></div>` : ''}
           <p class="hint" style="margin-top:10px">코드 악보일 때만:</p>
           <div class="srow"><span>글자 크기</span><span class="row"><button type="button" class="seg" data-a="fdown">가−</button><b>${P.size}</b><button type="button" class="seg" data-a="fup">가+</button></span></div>
           <div class="srow"><span>2단 보기</span><span class="row">${seg('cols', [['auto', '자동'], ['1', '1단'], ['2', '2단']], P.cols)}</span></div>
@@ -4524,6 +4626,8 @@
       const v = b.dataset.v;
       if (a === 'close') return closeSheets();
       if (a === 'list') { closeSheets(); return openList(); }
+      if (a === 'shon') { Ink.shared.setOn(v === '1'); return openSettings(); }
+      if (a === 'shsheet') { closeSheets(); return openSharedSheet({ song: cur.song, files: cur.files, hasText: cur.hasText, slInk: slOf(cur.it) }); }
       if (a === 'fup') P.size = Math.min(48, P.size + 2);
       else if (a === 'fdown') P.size = Math.max(14, P.size - 2);
       else if (a === 'chords') { P.chords = v === '1'; ls.set('ews_chords', v); }
