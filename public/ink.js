@@ -1128,7 +1128,7 @@
         (t !== 'er' ? colors.map((c) => `<button type="button" class="sw${cur.c === c ? ' on' : ''}" data-c="${c}" style="background:${c}" aria-label="색"></button>`).join('') : '') +
         (t === 'pen' || t === 'hl' ? `<button type="button" data-w="1">굵기 ${(cur.w || 0) + 1}</button>` : t === 'tx' ? `<button type="button" data-z="1">크기 ${(opts.tx.z || 0) + 1}</button>` : '') +
         `<button type="button" data-f="1" class="${opts.finger ? 'on' : ''}" title="켜면 손가락으로도 써요">☝ ${opts.finger ? '손가락 쓰기' : '손가락 스크롤'}</button>` +
-        (hasOcc ? `<button type="button" data-s="1">${scopeLabel()}</button>` : '') +
+        (hasOcc ? `<button type="button" data-s="1">${scopeLabel()}</button>` : `<span class="cink-hint">회차별(이 회차만) 필기는 연주 모드에서</span>`) +
         `<button type="button" data-u="1">↶</button><button type="button" class="done" data-d="1">완료</button>`;
     }
     paint();
@@ -1168,7 +1168,12 @@
     // 화면 좌표 → 악보 안 좌표. 연주 모드처럼 악보가 가로로 밀려 있어도(transform) 맞도록 겉보기 크기 비율로 나눈다.
     const pt = (e) => { const b = o.root.getBoundingClientRect(); const k = b.width / (o.root.offsetWidth || b.width) || 1; return [(e.clientX - b.left) / k, (e.clientY - b.top) / k]; };
     // 연주 모드의 넘기기 손짓과 섞이지 않게, 필기 중에는 터치 이벤트를 위로 올리지 않는다
-    ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((n) => S.addEventListener(n, (e) => e.stopPropagation(), { passive: true }));
+    // 아이패드: 펜슬·손가락이 글자 선택(길게 누르기)·돋보기·스크리블로 넘어가 획이 끊기지 않게, 필기 중에는 선택과 기본 동작을 막는다.
+    ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((n) => S.addEventListener(n, (e) => { e.stopPropagation(); if (e.cancelable) e.preventDefault(); }, { passive: false }));
+    const noSel = (e) => e.preventDefault();
+    ['selectstart', 'contextmenu', 'dragstart', 'gesturestart'].forEach((n) => { S.addEventListener(n, noSel); o.root.addEventListener(n, noSel); });
+    o.root.classList.add('cink-editing');
+    try { const g = window.getSelection && window.getSelection(); if (g) g.removeAllRanges(); } catch {}
     let act = null, live = null;
     const touches = new Set();
     function hitErase(x, y) {
@@ -1260,7 +1265,7 @@
         await commit(sn);
         return;
       }
-      if (e.type === 'pointercancel' || !a.pts) return;
+      if (!a.pts || a.pts.length < 1) return; // 취소(pointercancel)돼도 그린 만큼은 남긴다
       const r = a.r;
       let pts = a.pts.map(([x, y]) => [((x - r.x) / r.w) * 10000, ((y - r.y) / r.h) * 1000]);
       const ratio = r.h / 1000 / (r.w / 10000);
@@ -1281,6 +1286,7 @@
       o.editing = false;
       S.onpointerdown = S.onpointermove = S.onpointerup = S.onpointercancel = null;
       bar.remove();
+      o.root.classList.remove('cink-editing');
       document.body.classList.remove('cink-on');
       cdraw(o);
       cload(o);
