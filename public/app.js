@@ -1188,6 +1188,7 @@
             </div>
             <label for="tsig-o">박자 <span class="hint" style="margin:0">때에 따라 다르면 여러 개 고를 수 있어요</span></label>
             <div class="chips tsig-chips" id="tsigchips"></div>
+            <div class="tsig-order" id="tsigorder" hidden></div>
             <input id="tsig" type="hidden" value="${esc(song.time_sig || '')}">
             <details class="moreinfo" id="bfdet" ${song.base_form ? 'open' : ''}>
               <summary>기본 송폼 · 전조 <span class="muted small">콘티에 곡을 넣을 때 미리 채워져요</span></summary>
@@ -1197,6 +1198,8 @@
             </details>
             <label for="tags">태그 (쉼표로 구분 · 아래 추천 칩을 눌러도 돼요)</label><input id="tags" type="text" placeholder="경배, 빠른곡" value="${esc(song.tags)}">
             <div id="tagchips"></div>
+            <div class="row" style="margin:4px 0 0"><button type="button" class="btn small" id="topicbtn">＋ 새 주제</button></div>
+            <div class="addtopic-row" id="topicrow" hidden><input id="topicin" type="text" maxlength="20" placeholder="새 주제 이름" aria-label="새 주제 이름"><button type="button" class="btn small primary" id="topicadd">추가</button></div>
             <label for="yt">원곡 영상 링크 <span class="muted small">(유튜브 · 연습할 때 곡 화면에서 바로 열려요)</span></label><input id="yt" type="url" placeholder="https://" value="${esc(song.youtube_url)}">
             <details class="moreinfo" id="moreinfo" ${song.tempo || song.memo || song.lyrics_extra ? 'open' : ''}>
               <summary>더 적을 정보 <span class="muted small">템포 · 메모 · 검색용 가사</span></summary>
@@ -1224,7 +1227,8 @@
             <div class="file-list" id="files"></div>
             <p class="hint" id="fnote" hidden>새 곡은 <b>저장</b>할 때 함께 올라갑니다.</p>
             <input type="file" id="fi" accept="image/*,application/pdf" multiple hidden>
-            <div class="row"><button class="btn" id="addfile" type="button">+ 이미지·PDF 추가</button><span class="muted small" id="fstat"></span></div>
+            <div class="row"><button class="btn" id="addfile" type="button">+ 이미지·PDF 추가</button><button class="btn" id="pasteimg" type="button">📋 이미지 붙여넣기</button><span class="muted small" id="fstat"></span></div>
+            <p class="hint" style="margin:6px 0 0">구글 등에서 이미지를 복사해 두었다면 붙여넣기 버튼(맥북은 ⌘V)으로 바로 넣어요. 내가 복사한 이미지만 들어가며, 앱이 주소로 가져오지는 않아요.</p>
           </div>
           <p class="error" id="err"></p>
           <div class="row">
@@ -2049,6 +2053,7 @@
       const again = (n) => (convDone[n] ? '✓ 복사함 · 다시 복사' : '프롬프트 복사');
       const sh = showSheet(`<h2 style="margin-top:0">Claude로 악보 변환</h2>
         <p class="hint" style="margin:0 0 8px">가사를 먼저 뽑아 다듬은 뒤, 코드를 얹어요. 변환은 Claude 앱에서 하고 결과만 여기로 붙여넣어요. 추가 비용이 없어요. <span class="muted">(번호를 누르면 끝낸 단계로 표시돼요)</span></p>
+        <p class="hint" style="margin:0 0 8px">내가 올린 악보 원본에 인쇄된 내용만 옮기는 도구예요. 가사나 코드를 다른 곳에서 가져와 채우지 않고, 교회 내부에서만 써요.</p>
         <div class="cv-status small" id="cv-status" role="status" aria-live="polite" hidden></div>
         <div class="cv-steps2">
           <div class="${cls(1)}" data-step="1">${head(1)}<div class="grow"><b>가사 뽑기</b> <button type="button" class="btn small primary${convDone[1] ? ' copied' : ''}" id="cv-copy1">${again(1)}</button><div class="muted small">Claude 앱 새 대화에 붙여넣고, 아래 악보도 함께 보내요.</div><div class="cv-fb" id="cv-fb1" hidden></div>${multi ? `<div class="cv-multi small"><b>악보가 ${files.length}장이에요.</b> 프롬프트에 "1쪽 → ${files.length}쪽 순서로 이어진 한 곡" 안내가 자동으로 들어가요. Claude에는 아래 순서대로 한 번에 보내세요.${nImg > 1 ? `<div class="row" style="margin-top:6px;flex-wrap:wrap"><span class="muted small">또는 세로로 이어 붙인 한 장으로</span><button type="button" class="btn small" data-mg="copy">합쳐서 복사</button><button type="button" class="btn small" data-mg="share">합쳐서 공유</button><button type="button" class="btn small" data-mg="save">합쳐서 저장</button></div>` : ''}</div>` : ''}${rows ? `<div class="cv-files">${rows}</div>` : '<div class="muted small">"이미지·PDF 악보"에 악보를 올리면 여기서 복사·공유할 수 있어요. (사진 앱의 사진을 바로 Claude에 붙여도 돼요)</div>'}<div class="muted small">이미지는 복사 후 Claude 입력칸에 붙여넣거나 공유로 보내세요.</div></div></div>
@@ -2251,6 +2256,15 @@
       const customs = tsigCustoms();
       o.value = customs.join(', ');
       o.classList.toggle('on', customs.length > 0);
+      // 29차: 둘 이상 고르면 순서(①대표 ②…)를 보여 주고 ◀▶로 바꿀 수 있다. 목록·곡 보기에서는 첫 번째가 진하게 보인다.
+      const ord = $('tsigorder');
+      if (cur.length < 2) { ord.hidden = true; ord.innerHTML = ''; return; }
+      const nums = '①②③④';
+      ord.hidden = false;
+      ord.innerHTML = '<span class="muted small">순서</span>' + cur.map((t, i) => `<span class="tsig-o-item${i === 0 ? ' main' : ''}">`
+        + `<button type="button" class="pbtn mini" data-tmv="${i}:-1" aria-label="${t} 앞으로" ${i === 0 ? 'disabled' : ''}>◀</button>`
+        + `<span>${nums[i]} ${t}${i === 0 ? ' <small>대표</small>' : ''}</span>`
+        + `<button type="button" class="pbtn mini" data-tmv="${i}:1" aria-label="${t} 뒤로" ${i === cur.length - 1 ? 'disabled' : ''}>▶</button></span>`).join('');
     }
     function drawTsig() {
       $('tsigchips').innerHTML = TSIG_PRESETS.map((t) => `<button type="button" class="chip" data-ts="${t}">${t}</button>`).join('')
@@ -2269,6 +2283,16 @@
       if (cur.includes(b.dataset.ts)) return setTsigs(cur.filter((t) => t !== b.dataset.ts));
       if (cur.length >= TSIG_MAX) return toast(`박자는 ${TSIG_MAX}개까지 고를 수 있어요.`);
       setTsigs([...cur, b.dataset.ts]);
+    };
+    $('tsigorder').onclick = (ev) => {
+      const b = ev.target.closest && ev.target.closest('button[data-tmv]');
+      if (!b || b.disabled) return;
+      const [i, dir] = b.dataset.tmv.split(':').map(Number);
+      const cur = tsigs();
+      const j = i + dir;
+      if (j < 0 || j >= cur.length) return;
+      [cur[i], cur[j]] = [cur[j], cur[i]];
+      setTsigs(cur);
     };
     $('tsigchips').onchange = (ev) => {
       if (!ev.target || ev.target.id !== 'tsig-o') return;
@@ -2303,6 +2327,38 @@
     };
     $('tags').oninput = drawTagChips;
     drawTagChips();
+    // 29차: 곡 편집 화면에서 새 주제 만들기. 곡에는 바로 붙고, 관리자 PIN이 있으면 추천 목록(주제 분류)에도 올라간다.
+    $('topicbtn').onclick = () => {
+      const row = $('topicrow');
+      row.hidden = !row.hidden;
+      if (!row.hidden) $('topicin').focus();
+    };
+    async function addTopic() {
+      const name = $('topicin').value.replace(/[,，]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 20);
+      if (!name) { toast('주제 이름을 입력해 주세요.'); return; }
+      let listed = tagInfo.presets.some((g) => g.items.includes(name));
+      if (!listed) {
+        if (!me.isAdmin) await askPin('admin');
+        if (me.isAdmin) {
+          try {
+            const r = await api('/admin/tags/add', { method: 'POST', body: { group: '주제', name } });
+            tagInfo.presets = r.presets;
+            listed = true;
+          } catch (e) { toast(e.message); }
+        }
+      }
+      const rank = new Map(tagInfo.presets.flatMap((g) => g.items).map((x, i) => [x, i]));
+      const next = [...new Set([...tagList(), name])];
+      next.sort((a, b) => (rank.has(a) ? rank.get(a) : 1e9) - (rank.has(b) ? rank.get(b) : 1e9) || a.localeCompare(b, 'ko'));
+      $('tags').value = next.join(', ');
+      drawTagChips();
+      $('tags').dispatchEvent(new Event('input', { bubbles: true }));
+      $('topicin').value = '';
+      $('topicrow').hidden = true;
+      toast(listed ? `"${name}" 주제를 추가하고 이 곡에 붙였어요.` : `"${name}"을(를) 이 곡에만 붙였어요. 추천 목록에는 관리자 PIN이 필요해요.`);
+    }
+    $('topicadd').onclick = addTopic;
+    $('topicin').onkeydown = (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); addTopic(); } };
     // ----- 외부에서 악보 찾기 (검색 페이지로만 연결) -----
     const drawExt = () => {
       const t = $('title').value.trim();
@@ -2358,9 +2414,8 @@
       return '';
     }
     $('addfile').onclick = () => $('fi').click();
-    $('fi').onchange = async () => {
-      const picked = [...$('fi').files];
-      $('fi').value = '';
+    // 고른 파일·붙여넣은 이미지를 같은 길로 넣는다 (새 곡은 저장 때 함께 올라감)
+    async function addPicked(picked) {
       if (!picked.length) return;
       $('err').textContent = '';
       if (!id) {
@@ -2370,7 +2425,49 @@
       }
       const msg = await uploadMany(id, picked);
       if (msg) $('err').textContent = msg;
+    }
+    $('fi').onchange = async () => {
+      const picked = [...$('fi').files];
+      $('fi').value = '';
+      await addPicked(picked);
     };
+    // 29차: 클립보드의 이미지를 붙여넣기. 내가 직접 복사한 이미지만 넣는다(주소를 받아 가져오는 기능은 없음).
+    const asPasted = (blob) => {
+      const ext = /png/i.test(blob.type) ? 'png' : /jpe?g/i.test(blob.type) ? 'jpg' : /webp/i.test(blob.type) ? 'webp' : /gif/i.test(blob.type) ? 'gif' : 'png';
+      return new File([blob], `붙여넣기-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.${ext}`, { type: blob.type || 'image/png' });
+    };
+    $('pasteimg').onclick = async () => {
+      if (!navigator.clipboard || !navigator.clipboard.read) { toast('이 브라우저는 버튼 붙여넣기를 지원하지 않아요. 맥북은 ⌘V, 아이폰·아이패드는 이미지 저장 후 "+ 이미지·PDF 추가"를 써 주세요.'); return; }
+      let got = [];
+      try {
+        const cbItems = await navigator.clipboard.read();
+        for (const ci of cbItems) {
+          const t = ci.types.find((x) => /^image\//.test(x));
+          if (t) got.push(asPasted(await ci.getType(t)));
+        }
+      } catch (e) {
+        toast('클립보드를 읽지 못했어요. 허용 창이 뜨면 "붙여넣기"를 눌러 주세요.');
+        return;
+      }
+      if (!got.length) { toast('클립보드에 이미지가 없어요. 구글에서 이미지를 길게 눌러(또는 우클릭) "복사"한 뒤 다시 눌러 주세요.'); return; }
+      await addPicked(got);
+      toast(`이미지 ${got.length}장을 붙여넣었어요.`);
+    };
+    // 맥북 ⌘V: 곡 편집 화면에서 이미지가 붙여넣어지면 받는다. 글자 붙여넣기(가사·코드)는 건드리지 않는다.
+    const onPasteImg = (ev) => {
+      if (!document.body.contains($('addfile'))) { document.removeEventListener('paste', onPasteImg); return; }
+      const cd2 = ev.clipboardData;
+      if (!cd2) return;
+      const imgs = [...(cd2.files || [])].filter((f) => /^image\//.test(f.type));
+      if (!imgs.length) return;
+      const tgt = ev.target;
+      const editable = tgt && (tgt.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(tgt.tagName));
+      if (editable && cd2.getData('text/plain')) return; // 글자가 함께 있으면 글자 붙여넣기로 둔다
+      ev.preventDefault();
+      addPicked(imgs.map((f) => (f.name && f.name !== 'image.png' ? f : asPasted(f))));
+      toast(`이미지 ${imgs.length}장을 붙여넣었어요.`);
+    };
+    document.addEventListener('paste', onPasteImg);
     $('files').onclick = async (ev) => {
       const d = ev.target.dataset;
       if (d.mv !== undefined || d.pmv !== undefined) {
@@ -2829,13 +2926,13 @@
   }
   function askPin(kind) {
     return new Promise((resolve) => {
-      let who = kind === 'leader' ? 'leader' : me.adminRequired ? 'admin' : 'leader';
+      let who = kind === 'admin' ? 'admin' : kind === 'leader' ? 'leader' : me.adminRequired ? 'admin' : 'leader';
       let done = false;
       const finish = (v) => { if (!done) { done = true; resolve(v); } };
       let sh = null;
       const draw = () => {
         const html = `
-          <h2 style="margin-top:0">${kind === 'leader' ? '콘티 편집은 팀장 PIN이 필요해요' : '악보 편집은 PIN이 필요해요'}</h2>
+          <h2 style="margin-top:0">${kind === 'leader' ? '콘티 편집은 팀장 PIN이 필요해요' : kind === 'admin' ? '추천 목록은 관리자 PIN이 필요해요' : '악보 편집은 PIN이 필요해요'}</h2>
           ${kind === 'song' && me.adminRequired && me.team ? `<div class="row" style="margin-bottom:8px"><button type="button" class="seg ${who === 'admin' ? 'on' : ''}" data-who="admin">관리자 PIN</button><button type="button" class="seg ${who === 'leader' ? 'on' : ''}" data-who="leader">팀장 PIN</button></div>` : ''}
           <form id="pinform">
             <input id="pinin" type="password" autocomplete="off" aria-label="${who === 'admin' ? '관리자 PIN' : '팀장 PIN'}" placeholder="${who === 'admin' ? '관리자 PIN' : '팀장 PIN'}">
@@ -2863,7 +2960,7 @@
               setActiveLeader(r.leaderToken);
             }
             await loadMe();
-            const ok = kind === 'leader' ? !!(me.team && me.team.isLeader) : !!me.canEdit;
+            const ok = kind === 'leader' ? !!(me.team && me.team.isLeader) : kind === 'admin' ? !!me.isAdmin : !!me.canEdit;
             if (!ok) { err.textContent = '로그인은 됐지만 이 PIN으로는 악보를 편집할 수 없어요. 팀장은 관리자가 악보 편집 권한을 켜 줘야 합니다.'; return; }
             toast(who === 'admin' ? '관리자로 로그인했습니다.' : '팀장으로 로그인했습니다.');
             finish(true);
@@ -3673,16 +3770,22 @@
       const base = shift;
       const delta = kdGet(it);
       shift = hasKey ? (((base + delta) % 12) + 12) % 12 : base + delta;
-      const capo = Number.isInteger(saved.capo) ? saved.capo : 0;
+      // 29차: 카포도 연주 모드 안에서 임시로 바꿀 수 있다(곡 보기에 저장된 값이 시작값, 나가면 그대로 복귀).
+      const baseCapo = Number.isInteger(saved.capo) ? saved.capo : 0;
+      const capo = cdHas(it) ? cdGet(it) : baseCapo;
       let tab = 'none';
       if (hasText && files.length) tab = it.view === 'image' ? 'img' : it.view === 'chord' ? 'chord' : ls.get('ews_tab_' + song.id, '') === 'img' ? 'img' : 'chord';
       else if (hasText) tab = 'chord';
       else if (files.length) tab = 'img';
-      return { song, full: fullSong, it, parsed, origKey, hasKey, files, pages, hasText, shift, base, delta, capo, tab, page: 0 };
+      return { song, full: fullSong, it, parsed, origKey, hasKey, files, pages, hasText, shift, base, delta, capo, baseCapo, tab, page: 0 };
     }
     // 곡 칸마다(같은 곡이 두 번 있어도 따로) 임시 키 변화량을 메모리에만 둔다
     const kd = new Map();
     const kdGet = (it) => kd.get(items.indexOf(it)) || 0;
+    // 29차: 임시 카포(0~7). 키 변화량과 같은 방식으로 메모리에만 둔다.
+    const cd = new Map();
+    const cdHas = (it) => cd.has(items.indexOf(it));
+    const cdGet = (it) => cd.get(items.indexOf(it)) || 0;
 
     let cur = null;
     let nav = 0;
@@ -3717,6 +3820,11 @@
         ? `<span class="kstep"><button class="pbtn mini" id="kdn" type="button" aria-label="반음 내리기">−</button><span class="keybadge big">${esc(kLabel)}</span><button class="pbtn mini" id="kup" type="button" aria-label="반음 올리기">+</button></span>`
           + (cur.delta ? `<button class="pbtn mini" id="kreset" type="button">원래대로${baseKeyTxt ? ' ' + esc(baseKeyTxt) : ''}</button>` : '')
         : keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '';
+      // 29차: 카포 −/+ (코드 악보에서만. 이미지 악보는 코드가 안 바뀌어 숨김)
+      const capoHtml = !isImg && hasText && hasKey
+        ? `<span class="kstep capo"><span class="muted small">카포</span><button class="pbtn mini" id="cdn" type="button" aria-label="카포 내리기">−</button><span class="keybadge big">${cur.capo ? cur.capo : '없음'}</span><button class="pbtn mini" id="cup" type="button" aria-label="카포 올리기">+</button></span>`
+          + (cur.capo !== cur.baseCapo ? `<button class="pbtn mini" id="creset" type="button">카포 원래대로</button>` : '')
+        : '';
       g('ptitle').textContent = (multi ? `${idx + 1}. ` : '') + song.title;
       // 다음 곡 미리보기: 제목 · 키 · 메모 (길면 말줄임). 누르면 다음 곡으로.
       const nx = items[idx + 1];
@@ -3725,7 +3833,8 @@
         : '<span class="play-next">마지막 곡</span>';
       g('pinfo').innerHTML = [
         keyHtml,
-        song.time_sig ? `<span class="pi tsig" title="박자"><b>${esc(SongFilter.tsigText(song.time_sig))}</b></span>` : '',
+        capoHtml,
+        song.time_sig ? `<span class="pi tsig" title="박자"><b>${SongFilter.tsigInner(song.time_sig, esc)}</b></span>` : '',
         it.form ? `<span class="pi"><b>송폼</b> ${formHtml(formEff(cur), keyTxt)}</span>` : '',
         SongForm.keyPathText(formEff(cur), keyTxt) ? `<span class="pi kcpath" title="전조"><b>♯ 키</b> ${esc(SongForm.keyPathText(formEff(cur), keyTxt))}</span>` : '',
         it.memo ? `<span class="pi"><b>메모</b> ${esc(it.memo)}</span>` : '',
@@ -4173,6 +4282,16 @@
         if (nd) kd.set(i, nd); else kd.delete(i);
         cur.delta = nd;
         cur.shift = cur.hasKey ? (((cur.base + nd) % 12) + 12) % 12 : cur.base + nd;
+        draw(true);
+        return;
+      }
+      // 29차: 카포 임시 변경 (0~7, 이 화면 안에서만)
+      const cb = ev.target.closest && ev.target.closest('#cdn, #cup, #creset');
+      if (cur && cb) {
+        const i = items.indexOf(cur.it);
+        const nc = cb.id === 'creset' ? cur.baseCapo : Math.max(0, Math.min(7, cur.capo + (cb.id === 'cup' ? 1 : -1)));
+        if (nc === cur.baseCapo) cd.delete(i); else cd.set(i, nc);
+        cur.capo = nc;
         draw(true);
         return;
       }

@@ -30,7 +30,13 @@
   // 박자는 "3/4,4/4"처럼 쉼표로 여러 개가 올 수 있다.
   const tsigList = (v) => String(v == null ? '' : v).split(/[,，]/).map((t) => t.trim()).filter(Boolean);
   const tsigText = (v) => tsigList(v).join(' · ');
-  const tsigHTML = (v, esc) => { const t = tsigText(v); return t ? `<span class="tsigbadge" title="박자">${esc(t)}</span>` : ''; };
+  // 29차: 첫 번째 박자가 "대표". 여러 개면 대표만 진하게, 나머지는 흐리게 보인다.
+  const tsigInner = (v, esc) => {
+    const l = tsigList(v);
+    if (l.length < 2) return esc(l.join(''));
+    return `<span class="tsig-main">${esc(l[0])}</span><span class="tsig-rest"> · ${l.slice(1).map(esc).join(' · ')}</span>`;
+  };
+  const tsigHTML = (v, esc) => { const l = tsigList(v); return l.length ? `<span class="tsigbadge" title="${l.length > 1 ? '박자 (앞의 것이 대표)' : '박자'}">${tsigInner(v, esc)}</span>` : ''; };
   // 키 배지 바로 오른쪽에 박자, 팀 키와 원키가 다르면 원키를 작게 덧붙인다. (곡 목록 줄·곡 고르는 창 공용)
   function keyTsigHTML(s, esc) {
     const team = String(s.team_key || '').trim();
@@ -230,5 +236,5 @@
     return { st, q: (p.get('q') || '').trim(), sort };
   }
 
-  return { OTHER_KEY, normKey, effKey, keyDiffers, tsigList, tsigText, tsigHTML, keyTsigHTML, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, tsigChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
+  return { OTHER_KEY, normKey, effKey, keyDiffers, tsigList, tsigText, tsigInner, tsigHTML, keyTsigHTML, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, tsigChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
 });

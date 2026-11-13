@@ -1060,6 +1060,21 @@ export async function onRequest({ request, env }) {
         await db.prepare(`INSERT INTO settings (k,v) VALUES ('tag_presets',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).bind(JSON.stringify(presets)).run();
         return json({ presets });
       }
+      // 29차: 곡 편집 화면에서 추천 목록에 태그 하나 추가 (관리자만). 이미 어느 분류에 있으면 그대로 둔다.
+      if (parts[1] === 'tags' && parts[2] === 'add' && method === 'POST') {
+        const body = await readBody();
+        const name = cleanTagName(body.name);
+        if (!name) throw new HttpError(400, '추가할 태그 이름을 입력해 주세요.');
+        const presets = await getPresets(db);
+        if (presets.some((g) => g.items.includes(name))) return json({ presets, added: false });
+        const want = cleanTagName(body.group).slice(0, 12);
+        const g = presets.find((x) => x.group === want) || presets[0];
+        if (!g) throw new HttpError(400, '추천 태그 분류가 없습니다. 앱 관리에서 분류를 먼저 만들어 주세요.');
+        if (g.items.length >= MAX_PRESET_ITEMS) throw new HttpError(400, `"${g.group}"에는 태그를 ${MAX_PRESET_ITEMS}개까지 넣을 수 있습니다.`);
+        g.items.push(name);
+        await db.prepare(`INSERT INTO settings (k,v) VALUES ('tag_presets',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v`).bind(JSON.stringify(presets)).run();
+        return json({ presets, added: true });
+      }
       // 태그 이름 바꾸기 / 합치기 / 모든 곡에서 지우기(to 를 비우면 지움). 추천 목록에도 같이 반영한다.
       if (parts[1] === 'tags' && parts[2] === 'rename' && method === 'POST') {
         const body = await readBody();
