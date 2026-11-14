@@ -1344,7 +1344,7 @@
     let tsel = null; // {li, pos, ci}  ci>=0 이면 코드가 선택된 것, -1이면 빈 자리
     let undoS = [], redoS = [];
     // 30차: 키보드 코드 입력(맥북). kbBuf = 치는 중인 코드, kbExt = 줄 끝 뒤로 띄어쓰기를 늘린 줄
-    let kbBuf = null, kbExt = null;
+    let kbBuf = null, kbExt = null, kbHint = '';
     const kbOK = () => !!(window.matchMedia && window.matchMedia('(hover: hover) and (pointer: fine)').matches);
     ls.del('ews_edit_mode'); // 예전의 "글자로 보기" 선택값은 더 쓰지 않는다
     const keyNow = () => Chord.guessKey(Chord.parseChordPro(ta.value), $('key').value);
@@ -1439,12 +1439,13 @@
       } else status = '코드를 붙일 글자를 탭하세요';
       if (kbBuf) status = `<b>${esc(Chord.pretty(kbBuf.text))}</b> 입력 중 · Tab 다음 글자 · Enter 다음 줄 · Esc 취소`;
       else if (kbOK() && l && l.kind === 'lyric') status += ' · ⌨ A~G 코드 · Tab 이동 · Enter 다음 줄';
+      if (kbHint) status = `<span class="te-hint">${esc(kbHint)}</span>`; // 32b: 못 받은 키를 눌렀을 때 이유를 알려 준다
       const canSplit = !!(l && l.kind === 'lyric' && tsel.pos > 0 && tsel.pos < l.text.length);
       // 32차: 키보드 없이 빈칸 넣기 — 줄 끝·가운데에 띄어쓰기를 넣어 그 자리에 코드만 놓을 수 있다(간주·중간 코드)
       const onLyric = !!(l && l.kind === 'lyric');
       const spAt = onLyric ? (tsel.pos >= l.text.length ? l.text.length - 1 : tsel.pos) : -1;
       const canUnspace = onLyric && spAt >= 0 && l.text[spAt] === ' ';
-      let h = `<div class="te-pal-row te-top"><button type="button" class="chip ctb sm" data-act="undo" aria-label="되돌리기" ${undoS.length ? '' : 'disabled'}>↶</button><button type="button" class="chip ctb sm" data-act="redo" aria-label="다시 하기" ${redoS.length ? '' : 'disabled'}>↷</button><span class="te-status">${status}</span>${onLyric ? `<button type="button" class="chip ctb sm" data-act="space" title="여기에 빈칸을 넣어요 (줄 끝이면 뒤로 한 칸)">␣ 빈칸</button>${canUnspace ? '<button type="button" class="chip ctb sm" data-act="unspace" title="빈칸 한 칸 지우기">␣✕</button>' : ''}` : ''}${canSplit ? '<button type="button" class="chip ctb sm" data-act="split" title="선택한 글자 앞에서 줄을 나눠요">✂ 줄 나누기</button>' : ''}</div>`;
+      let h = `<div class="te-pal-row te-top"><button type="button" class="chip ctb sm" data-act="undo" aria-label="되돌리기" ${undoS.length ? '' : 'disabled'}>↶</button><button type="button" class="chip ctb sm" data-act="redo" aria-label="다시 하기" ${redoS.length ? '' : 'disabled'}>↷</button><span class="te-status">${status}</span>${onLyric ? `<button type="button" class="chip ctb sm" data-act="space" title="여기에 빈칸을 넣어요 (줄 끝이면 뒤로 한 칸)">␣ 빈칸</button>${canUnspace ? '<button type="button" class="chip ctb sm" data-act="unspace" title="빈칸 한 칸 지우기">␣✕</button>' : ''}` : ''}${canSplit ? '<button type="button" class="chip ctb sm" data-act="split" title="선택한 글자 앞에서 줄을 나눠요">✂ 줄 나누기</button>' : ''}${kbOK() ? '<button type="button" class="chip ctb sm" data-act="kbhelp" title="키보드 단축키" aria-label="키보드 단축키">⌨</button>' : ''}</div>`;
       h += `<div class="te-pal-row">${roots.map((d) => `<button type="button" class="chip ctb" data-pc="${esc(d.chord)}"><b>${esc(Chord.pretty(d.chord))}</b>${d.label ? `<small>${esc(d.label)}</small>` : ''}</button>`).join('')}<button type="button" class="chip ctb" data-pc="?" title="불확실한 코드">?</button><button type="button" class="chip ctb sm" data-act="direct">다른 코드…</button></div>`;
       if (chordSel) {
         const chordOnly = !l.text.trim();
@@ -1473,7 +1474,8 @@
       const t = ev.target;
       kbBuf = null;
       // 팔레트 버튼을 눌러도 키보드가 계속 편집기로 가도록 포커스를 되돌린다(시트를 여는 버튼은 제외)
-      if (kbOK() && !t.closest('[data-gut],[data-op],[data-act="direct"]')) setTimeout(() => { const te = $('te-lines'); if (te && te.isConnected && !document.querySelector('.sheet-wrap')) te.focus({ preventScroll: true }); });
+      kbHint = '';
+      if (kbOK() && !t.closest('[data-gut],[data-op],[data-act="direct"],[data-act="kbhelp"]')) setTimeout(() => { const te = $('te-lines'); if (te && te.isConnected && !document.querySelector('.sheet-wrap')) te.focus({ preventScroll: true }); });
       const gut = t.closest('[data-gut]');
       if (gut) { lineSheet(+gut.dataset.gut); return; }
       const op = t.closest('[data-op]');
@@ -1514,6 +1516,7 @@
         return;
       }
       if (a === 'direct') { directSheet(); return; }
+      if (a === 'kbhelp') { kbHelpSheet(); return; }
       if (a === 'space' || a === 'unspace') {
         if (!tsel) return;
         const r = a === 'space' ? TabEdit.insertSpace(tm, tsel.li, tsel.pos) : TabEdit.removeSpace(tm, tsel.li, tsel.pos);
@@ -1584,6 +1587,52 @@
       kbBuf.ci = r.ci;
       setBody(TabEdit.serialize(r.model), { li: kbBuf.li, pos: kbBuf.pos, ci: r.ci }, !first);
     }
+    // 32b: 치던 코드를 그대로 두고(확정) 같은 칸에 코드를 하나 더 시작한다 — 줄 끝에 코드 몇 개를 몰아 적을 때
+    function kbStack(root) {
+      const b = kbBuf;
+      if (!ChordEdit.isChord(b.text)) { kbHint = `"${b.text}"가 아직 코드 모양이 아니에요. 마저 치거나 Esc로 지우세요.`; teRender(); return; }
+      kbBuf = null;
+      tsel = { li: b.li, pos: b.pos, ci: -1 };
+      kbType(root);
+    }
+    // 32b: "." = 바로 앞 코드를 한 번 더 (같은 줄의 앞쪽, 없으면 윗줄들의 마지막 코드)
+    function kbRepeat() {
+      kbCommit();
+      if (!tsel || !tm.lines[tsel.li] || tm.lines[tsel.li].kind !== 'lyric') return;
+      let prev = null;
+      const cur = tm.lines[tsel.li].chords;
+      for (let i = 0; i < cur.length; i++) if (cur[i].pos < tsel.pos || (cur[i].pos === tsel.pos && tsel.ci >= 0 && i < tsel.ci)) prev = cur[i].c;
+      for (let li = tsel.li - 1; prev == null && li >= 0; li--) {
+        const pl = tm.lines[li];
+        if (pl.kind === 'lyric' && pl.chords.length) prev = pl.chords[pl.chords.length - 1].c;
+      }
+      if (prev == null) { kbHint = '앞에 넣은 코드가 아직 없어요.'; teRender(); return; }
+      putChord(prev);
+    }
+    function kbHelpSheet() {
+      const row = (k, d) => `<tr><td class="kbk">${k}</td><td>${d}</td></tr>`;
+      const sh = showSheet(`<h2 style="margin-top:0">⌨ 키보드로 코드 넣기</h2>
+        <table class="kbhelp"><tbody>
+        ${row('A ~ G', '코드 시작 (대문자·소문자 상관없음)')}
+        ${row('m · 7 · sus4 · add9 · dim · maj7 …', '이어서 치면 코드 뒷부분')}
+        ${row('b · ⇧3(#)', '플랫 · 샵 (예: B b → B♭, F ⇧3 → F♯)')}
+        ${row('/ 다음 A ~ G', '베이스 (예: D / F ⇧3 → D/F♯)')}
+        ${row('⇧/ (?)', '불확실한 코드 ?')}
+        ${row('.', '바로 앞 코드를 한 번 더')}
+        ${row('Tab · Space · →', '다음 글자로 (줄 끝에서는 빈칸이 늘어나요)')}
+        ${row('⇧Tab · ⇧Space · ←', '앞 글자로')}
+        ${row('Enter · ⇧Enter', '다음 줄 · 윗줄 처음으로')}
+        ${row('↓ · ↑', '아랫줄 · 윗줄 같은 자리로')}
+        ${row('치는 중에 C · E · F', '같은 칸에 코드 하나 더')}
+        ${row('치는 중에 ⇧A · ⇧B · ⇧D · ⇧G', '같은 칸에 코드 하나 더 (그냥 누르면 add·♭·dim·aug의 글자)')}
+        ${row('⌫', '치던 글자 지우기 · 고른 코드 지우기')}
+        ${row('Esc', '치던 코드 취소 · 선택 풀기')}
+        ${row('⌘Z · ⌘⇧Z', '되돌리기 · 다시 하기')}
+        ${row('⌘S', '저장')}
+        </tbody></table>
+        <div class="row"><button type="button" class="btn" id="kh-no">닫기</button></div>`);
+      sh.q('#kh-no').onclick = () => sh.close();
+    }
     function kbMove(dir, unit) {
       kbCommit();
       if (!tsel) return;
@@ -1623,12 +1672,29 @@
       setBody(from.pop(), null, true);
     }
     $('te-lines').addEventListener('keydown', (ev) => {
-      if (!tsel || ev.isComposing) return;
+      // 32b: 진단(더보기 → 필기 진단)을 켜면 받은 키를 그대로 보여 준다 — 기기에 따라 키가 안 먹을 때 원인을 보기 위해
+      if (ls.get('ews_ink_dbg', '') === '1') toast(`키: code=${ev.code || '(없음)'} key=${ev.key} 조합=${ev.isComposing ? 'Y' : 'N'}`);
+      if (!tsel) return;
       if (ev.target !== ev.currentTarget && ev.target.closest && ev.target.closest('button, a, input, textarea, select')) return;
-      const code = ev.code;
+      // 32b: 이 칸은 글자 입력칸이 아니라서 입력기 "조합 중" 표시가 와도 무시하지 않는다(일부 기기에서 c·e 같은 키가 조합 중으로 옴).
+      //  code 가 비어 오는 기기는 key 글자로 대신 알아낸다(영문 글자·숫자·/·한글 두벌식 자모).
+      let code = ev.code;
+      if (!code || code === 'Unidentified') {
+        const k = ev.key || '';
+        const jamo = { 'ㅁ': 'A', 'ㅠ': 'B', 'ㅊ': 'C', 'ㅇ': 'D', 'ㄷ': 'E', 'ㄸ': 'E', 'ㄹ': 'F', 'ㅎ': 'G', 'ㅡ': 'M', 'ㅓ': 'J', 'ㄴ': 'S', 'ㅕ': 'U', 'ㅑ': 'I' };
+        if (/^[a-zA-Z]$/.test(k)) code = 'Key' + k.toUpperCase();
+        else if (jamo[k]) code = 'Key' + jamo[k];
+        else if (/^\d$/.test(k)) code = 'Digit' + k;
+        else if (k === '#') code = 'Digit3';
+        else if (k === '/' || k === '?') code = 'Slash';
+        else if (k === ' ') code = 'Space';
+        else code = k; // Tab, Enter, Escape, Backspace, ArrowLeft … 는 key 이름이 code 와 같다
+      }
       const mod = ev.metaKey || ev.ctrlKey;
       if (mod && !ev.altKey && code === 'KeyZ') { ev.preventDefault(); kbUndo(ev.shiftKey); return; }
       if (mod || ev.altKey) return;
+      const hadHint = !!kbHint;
+      kbHint = '';
       if (code === 'Tab' || code === 'Space') { ev.preventDefault(); kbMove(ev.shiftKey ? -1 : 1, 'tab'); return; } // 31차: 스페이스바도 Tab과 같다
       if (code === 'ArrowRight') { ev.preventDefault(); kbMove(1, 'char'); return; }
       if (code === 'ArrowLeft') { ev.preventDefault(); kbMove(-1, 'char'); return; }
@@ -1654,8 +1720,27 @@
         if (cur) apply(TabEdit.deleteChord(tm, tsel.li, tsel.ci), { li: tsel.li, pos: cur.pos, ci: -1 });
         return;
       }
-      const tok = ChordEdit.keyToken(code, ev.shiftKey, kbBuf ? kbBuf.text : '');
-      if (tok) { ev.preventDefault(); kbType(tok); }
+      if (code === 'Period' || code === 'NumpadDecimal' || ev.key === '.') {
+        ev.preventDefault();
+        if (kbBuf) { kbHint = '코드를 치는 중이에요. Tab·스페이스로 칸을 옮긴 뒤 . 을 누르세요.'; teRender(); } else kbRepeat();
+        return;
+      }
+      const buf = kbBuf ? kbBuf.text : '';
+      const L = (/^Key([A-G])$/.exec(code) || [])[1];
+      // 32b: 치는 중에 C·E·F(뒷부분에 안 쓰는 글자)나 Shift+A~G 를 누르면 같은 칸에 새 코드를 시작한다
+      if (L && buf && buf !== '?' && !buf.endsWith('/') && (ev.shiftKey || 'CEF'.includes(L))) { ev.preventDefault(); kbStack(L); return; }
+      const tok = ChordEdit.keyToken(code, ev.shiftKey || ev.key === '#' || ev.key === '?', buf);
+      if (tok) { ev.preventDefault(); kbType(tok); return; }
+      // 32b: 못 받는 키는 조용히 넘기지 않고 이유를 한 줄로 알려 준다 (글자·숫자·기호 키만)
+      if (/^(Key[A-Z]|Digit\d|Numpad\d|Slash)$/.test(code)) {
+        ev.preventDefault();
+        const name = /^Key/.test(code) ? code.slice(3) : ev.key;
+        if (!tm.lines[tsel.li] || tm.lines[tsel.li].kind !== 'lyric') kbHint = '가사 줄의 글자를 먼저 고르세요.';
+        else if (buf === '?') kbHint = '? 뒤에는 더 붙일 수 없어요. Tab·스페이스로 칸을 옮기세요.';
+        else if (buf) kbHint = `${Chord.pretty(buf)} 뒤에 ${name}은(는) 붙일 수 없어요. 다음 코드는 Tab·스페이스로 칸을 옮긴 뒤에, 같은 칸에 더 넣으려면 ⇧+A~G.`;
+        else kbHint = `${name}(으)로는 코드를 시작할 수 없어요. A~G로 시작해요.`;
+        teRender();
+      } else if (hadHint) teRender();
     });
     $('te-lines').addEventListener('blur', () => { if (kbBuf) kbCommit(); });
 
@@ -2836,6 +2921,19 @@
       }
     }
     $('save').onclick = () => save(false);
+    // 32b: ⌘S / Ctrl+S 로 저장 (이 화면을 떠나면 스스로 떨어진다)
+    const onSaveKey = (ev) => {
+      const sb = $('save');
+      if (!sb || !sb.isConnected) { document.removeEventListener('keydown', onSaveKey); return; }
+      if (!(ev.metaKey || ev.ctrlKey) || ev.altKey || ev.shiftKey || (ev.code !== 'KeyS' && String(ev.key).toLowerCase() !== 's')) return;
+      ev.preventDefault();
+      if (document.querySelector('.sheet-wrap:not([hidden])') || sb.disabled) return;
+      if (document.activeElement && document.activeElement.blur && document.activeElement !== document.body && document.activeElement.id !== 'te-lines') document.activeElement.blur();
+      const te = $('te-lines');
+      if (te && document.activeElement === te) { te.blur(); te.focus({ preventScroll: true }); } // 치던 코드를 확정한 뒤 저장
+      save(false);
+    };
+    document.addEventListener('keydown', onSaveKey);
     $('save2').onclick = () => save(false);
     const del = $('del');
     if (del) del.onclick = async () => {

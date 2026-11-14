@@ -844,3 +844,8 @@ body.cink-txt-on { padding-bottom: 300px; }
 .ink-hov { position: absolute; z-index: 5; border-radius: 50%; pointer-events: none; box-sizing: border-box; }
 .ink-hov[hidden] { display: none; }
 .cink-bar button.cancel { color: var(--muted, #666); }
+/* 32b: 키보드 안내 */
+.te-hint { color: var(--danger, #b42318); font-weight: 600; }
+.kbhelp { width: 100%; border-collapse: collapse; font-size: 14px; margin: 4px 0 12px; }
+.kbhelp td { padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.kbhelp .kbk { white-space: nowrap; font-weight: 700; padding-right: 12px; }
