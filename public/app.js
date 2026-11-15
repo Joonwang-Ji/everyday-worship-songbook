@@ -4308,6 +4308,8 @@
       let info = null;
       for (let pass = 0; pass < 4; pass++) {
         body.innerHTML = `<div class="score">${Chord.renderHTML(st.parsed, Object.assign({ refs: open }, base))}</div>`;
+        // 33차: 송폼 순서 보기는 구간을 단 가운데서 끊지 않는다(자리가 모자라면 구간째 다음 단으로)
+        body.classList.toggle('formview', !!arr);
         info = fitCols(body, varEl, wantPage);
         if (!refLines.length) break;
         const sc = body.querySelector('.score');

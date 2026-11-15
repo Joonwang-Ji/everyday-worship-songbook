@@ -346,7 +346,7 @@
           openPart(sAttr(secAt(i)) + (ri !== undefined ? ' data-open="1"' : ''));
         }
         closeChorus();
-        out.push('<div class="cm' + (ri !== undefined ? ' refopen' : '') + '"' + (ri !== undefined ? ' data-ri="' + ri + '" role="button" tabindex="0" title="탭하면 접어요"' : '') + '>' + esc(nameOf(ln.text)) + '</div>');
+        out.push('<div class="cm' + (ri !== undefined ? ' refopen' : '') + (ln.free ? ' free' : '') + '"' + (ri !== undefined ? ' data-ri="' + ri + '" role="button" tabindex="0" title="탭하면 접어요"' : '') + '>' + esc(nameOf(ln.text)) + '</div>');
       } else {
         const anc = ln.bi !== undefined && ri === undefined ? ' data-bl="' + ln.bi + '" data-h="' + (ln.h || '') + '" data-v="' + (ln.bv !== undefined ? ln.bv : o.v || 0) + '"' + (ln.occ ? ' data-o="' + ln.occ + '"' : '') : '';
         if (o.parts) {

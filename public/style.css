@@ -849,3 +849,6 @@ body.cink-txt-on { padding-bottom: 300px; }
 .kbhelp { width: 100%; border-collapse: collapse; font-size: 14px; margin: 4px 0 12px; }
 .kbhelp td { padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .kbhelp .kbk { white-space: nowrap; font-weight: 700; padding-right: 12px; }
+
+/* 33차: 송폼 순서 보기 — 구간을 단 가운데서 끊지 않는다 */
+.play-body.formview .score .part { break-inside: avoid; }

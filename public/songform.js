@@ -152,7 +152,7 @@
   //  · 송폼 순서대로 구간을 놓는다. 같은 구간이 다시 나오면, 직전에 나온 같은 이름의 구간과 키가 같을 때만 "위와 같음"(자리표시)로 두고,
   //    키가 달라졌으면(전조 뒤) 그 키의 코드로 다시 펼친다.
   //  · 전조 칩 자리에는 전조 표시줄(keychg)을 넣고, 그 뒤 줄들은 ks(누적 반음)를 갖는다 → renderHTML이 코드를 ks만큼 올려 그린다.
-  //  · 송폼에 있는데 악보에 없는 구간은 이름만 놓는다(missing 목록으로도 돌려준다). 악보에 있어도 송폼에 없는 구간은 빠진다(omitted).
+  //  · 송폼에 있는데 악보에 없는 구간은 이름만 놓는다(missing 목록으로도 돌려준다). 직접 적은 구간(그 밖의 구간)도 같다(33차). 악보에 있어도 송폼에 없는 구간은 빠진다(omitted).
   // 송폼에 구간이 하나도 없거나 Chord.buildSections가 없으면 null.
   // 28차: opt = {pick(id, nth) → 버전 번호, parsedFor(버전 번호) → 그 버전의 parsed}. 구간마다 다른 버전(한글·영어 가사 등)의 악보를 가져다 놓는다.
   //   nth = 그 구간 이름이 송폼에서 몇 번째로 나왔는지(전조·괄호 칩은 세지 않고, ×반복은 한 번으로 센다).
@@ -188,7 +188,30 @@
       }
       const { base, n } = splitRepeat(tok);
       const id = canonSection(base);
-      if (!id) { missing.push(tok); continue; }
+      if (!id) {
+        // 33차: 직접 적은 "그 밖의 구간"(예: 감사하리, 2절반복)도 송폼 순서 악보에 놓는다.
+        //  악보에 같은 이름의 구간({comment: 감사하리})이 있으면 그 줄들을, 없으면 이름만.
+        const name = String(base).trim();
+        if (!name) continue;
+        const fi = secs.findIndex((x) => !x.isRef && !x.id && String(x.label || '').trim() === name);
+        const fkey = '~' + name;
+        nthOf[fkey] = (nthOf[fkey] || 0) + 1;
+        const ftimes = Math.max(1, n);
+        if (lines.length && lines[lines.length - 1].type !== 'blank') lines.push({ type: 'blank' });
+        if (fi < 0) {
+          lines.push({ type: 'comment', text: name + (ftimes > 1 ? ' ×' + ftimes : ''), free: true });
+          missing.push(tok);
+          continue;
+        }
+        used.add(fi);
+        for (let r = 0; r < ftimes; r++) {
+          if (r && lines[lines.length - 1].type !== 'blank') lines.push({ type: 'blank' });
+          lines.push({ type: 'comment', text: name, free: true });
+          const occ = fkey + '#' + nthOf[fkey] + (ftimes > 1 ? '.' + (r + 1) : '');
+          for (const b of Chord.sectionBody(parsed, fi)) lines.push(Object.assign({}, b, ks ? { ks } : {}, { occ }));
+        }
+        continue;
+      }
       nthOf[id] = (nthOf[id] || 0) + 1;
       const vid = opt && opt.pick ? opt.pick(id, nthOf[id]) || 0 : 0;
       const P = (opt && opt.parsedFor ? opt.parsedFor(vid) : null) || parsed;
