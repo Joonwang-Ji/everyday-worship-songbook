@@ -167,12 +167,22 @@ function cleanInk(raw) {
   const del = (Array.isArray(raw && raw.del) ? raw.del : []).filter((d) => typeof d === 'string' && /^[A-Za-z0-9_-]{1,24}$/.test(d)).slice(-2000);
   return { v: 1, items, del };
 }
+// 저장된 필기 한 줄이 깨져 있어도 목록 전체가 막히지 않게 빈 필기로 대신한다
+function parseInk(s) {
+  try {
+    const d = JSON.parse(s);
+    if (d && typeof d === 'object') return d;
+  } catch {
+    /* 아래 기본값 */
+  }
+  return { v: 1, items: [], del: [] };
+}
 // 다른 기기에서 먼저 저장된 필기와 합친다: 지운 것은 계속 지운 채로, 같은 번호면 새로 온 것을 쓴다.
 function mergeInk(a, b) {
   const del = new Set([...(a.del || []), ...(b.del || [])]);
   const map = new Map();
   for (const it of [...(a.items || []), ...(b.items || [])]) if (!del.has(it.id)) map.set(it.id, it);
-  return { v: 1, items: [...map.values()].slice(0, MAX_INK_ITEMS), del: [...del].slice(-2000) };
+  return { v: 1, items: [...map.values()].slice(-MAX_INK_ITEMS), del: [...del].slice(-2000) };
 }
 async function vaultFromRequest(env, request) {
   const t = await readToken(env, request.headers.get('X-Vault-Token') || '');
@@ -337,9 +347,14 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_ann_file ON annotations(file_id)`,
 ];
 // 이미 운영 중인 표에는 CREATE TABLE IF NOT EXISTS 로 칸이 늘지 않으므로, 없는 칸만 ALTER 로 추가한다.
+const tableCols = new Map(); // 34차: 표마다 한 번만 칸 목록을 읽는다(시작할 때 DB 왕복 줄이기)
 async function ensureColumn(db, table, column, ddl) {
-  const { results } = await db.prepare(`PRAGMA table_info(${table})`).all();
-  if (results.some((c) => c.name === column)) return;
+  if (!tableCols.has(table)) {
+    const { results } = await db.prepare(`PRAGMA table_info(${table})`).all();
+    tableCols.set(table, new Set(results.map((c) => c.name)));
+  }
+  if (tableCols.get(table).has(column)) return;
+  tableCols.get(table).add(column);
   try {
     await db.prepare(`ALTER TABLE ${table} ADD COLUMN ${ddl}`).run();
   } catch (e) {
@@ -374,7 +389,13 @@ async function ensureSchema(db) {
   await ensureColumn(db, 'setlists', 'service_id', `service_id INTEGER`);
   await ensureColumn(db, 'setlists', 'leaders', `leaders TEXT NOT NULL DEFAULT ''`);
   await ensureColumn(db, 'setlists', 'is_temp', `is_temp INTEGER NOT NULL DEFAULT 0`);
+  // 34차: 자주 찾는 칸에 색인(곡별 파일 수 세기, 콘티 칸 번호로 필기 찾기)
+  await db.batch([
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_song_files_song ON song_files(song_id)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_setlist_items_uid ON setlist_items(uid)'),
+  ]);
   await addMidTempoOnce(db);
+  tableCols.clear();
   schemaReady = true;
 }
 // 빠르기에 "중간곡" 추가 (6차에서 요청). 관리자가 이미 추천 목록을 저장해 두었다면 기본값이 적용되지 않으므로,
@@ -428,12 +449,16 @@ async function throttleCheck(db, key) {
   const left = row ? row.until - Math.floor(Date.now() / 1000) : 0;
   if (left > 0) throw new HttpError(429, `시도 횟수가 너무 많습니다. ${Math.ceil(left / 60)}분 뒤에 다시 해 주세요.`);
 }
-async function throttleFail(db, key) {
-  const row = await db.prepare('SELECT n FROM auth_fails WHERE k=?').bind(key).first();
-  const n = (row ? row.n : 0) + 1;
-  const locked = n >= MAX_FAILS;
-  const until = locked ? Math.floor(Date.now() / 1000) + LOCK_SECONDS : 0;
-  await db.prepare('INSERT INTO auth_fails (k,n,until) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET n=excluded.n, until=excluded.until').bind(key, locked ? 0 : n, until).run();
+// 34차: 한 문장으로 센다(읽고→쓰기 사이에 동시 요청이 끼어들어 제한을 피하지 못하게). max번째 실패에서 잠그고 횟수는 0으로 되돌린다.
+async function throttleFail(db, key, max = MAX_FAILS) {
+  const until = Math.floor(Date.now() / 1000) + LOCK_SECONDS;
+  await db
+    .prepare(
+      `INSERT INTO auth_fails (k,n,until) VALUES (?1, CASE WHEN ?3<=1 THEN 0 ELSE 1 END, CASE WHEN ?3<=1 THEN ?2 ELSE 0 END)
+       ON CONFLICT(k) DO UPDATE SET until=CASE WHEN n+1>=?3 THEN ?2 ELSE until END, n=CASE WHEN n+1>=?3 THEN 0 ELSE n+1 END`
+    )
+    .bind(key, until, max)
+    .run();
   await sleep(500);
 }
 async function throttleOk(db, key) {
@@ -623,7 +648,6 @@ function lyricLines(chordpro) {
   }
   return out;
 }
-const lyricsOnly = (chordpro) => lyricLines(chordpro).map((l) => l.text).join(' ');
 // 검색어 → { all: 공백 없이 이은 전체, tokens: 단어별 }
 function parseQuery(q) {
   const tokens = String(q || '').split(/\s+/).map(searchKey).filter(Boolean);
@@ -691,7 +715,7 @@ async function getPresets(db) {
       /* 저장값이 깨졌으면 기본값 */
     }
   }
-  return DEFAULT_PRESETS;
+  return JSON.parse(JSON.stringify(DEFAULT_PRESETS)); // 상수를 그대로 주면 받은 쪽이 바꿔 버린다
 }
 const splitTags = (s) => (s ? s.split(',').map((t) => t.trim()).filter(Boolean) : []);
 // 곡의 태그를 추천 목록 순서(분류 순서 → 분류 안 순서)로 정렬한다. 추천에 없는 태그는 끝에 가나다순.
@@ -806,18 +830,25 @@ export async function onRequest({ request, env }) {
     const parts = url.pathname.replace(/^\/api\/?/, '').split('/').filter(Boolean);
     const method = request.method;
     const readBody = async () => {
+      let b;
       try {
-        return await request.json();
+        b = await request.json();
       } catch {
         throw new HttpError(400, '요청 형식이 올바르지 않습니다.');
       }
+      // 34차: null·숫자·배열이 오면 뒤에서 오류(500)가 나므로 여기서 막는다
+      if (!b || typeof b !== 'object' || Array.isArray(b)) throw new HttpError(400, '요청 형식이 올바르지 않습니다.');
+      return b;
     };
 
     // 로그인 (토큰 불필요)
     if (parts[0] === 'login' && method === 'POST') {
+      // 34차: 접속암호도 시도 횟수를 센다. 교회 와이파이는 여러 사람이 한 주소를 쓰므로 주소별로 20번까지 허용한다.
+      const loginKey = 'login:' + (request.headers.get('CF-Connecting-IP') || 'local');
+      await throttleCheck(db, loginKey);
       const { code } = await readBody();
-      if (!(await safeEqual(code || '', env.CHURCH_CODE))) {
-        await sleep(500);
+      if (!(await safeEqual(String(code || ''), env.CHURCH_CODE))) {
+        await throttleFail(db, loginKey, 20);
         throw new HttpError(401, '접속암호가 맞지 않습니다.');
       }
       return json({ token: await signToken(env, 'member', 180) });
@@ -897,7 +928,7 @@ export async function onRequest({ request, env }) {
           ? db.prepare('SELECT file_id, song_id, rev, data FROM vault_items WHERE vault_id=? AND song_id=?').bind(vault.id, sid)
           : db.prepare('SELECT file_id, song_id, rev, data FROM vault_items WHERE vault_id=? ORDER BY id LIMIT 400').bind(vault.id);
         const { results } = await q.all();
-        return json({ items: results.map((r) => ({ file_id: r.file_id, song_id: r.song_id, rev: r.rev, data: JSON.parse(r.data) })) });
+        return json({ items: results.map((r) => ({ file_id: r.file_id, song_id: r.song_id, rev: r.rev, data: parseInk(r.data) })) });
       }
       // 악보 한 장의 필기 저장 (base_rev가 서버와 다르면 다른 기기에서 먼저 저장된 것이므로 합쳐서 돌려준다)
       if (parts[1] === 'ink' && parts[2] && method === 'PUT') {
@@ -934,7 +965,7 @@ export async function onRequest({ request, env }) {
           ? db.prepare('SELECT uid, setlist_id, file_id, song_id, rev, data FROM vault_sl_items WHERE vault_id=? AND setlist_id=?').bind(vault.id, lid2)
           : db.prepare('SELECT uid, setlist_id, file_id, song_id, rev, data FROM vault_sl_items WHERE vault_id=? ORDER BY id LIMIT 800').bind(vault.id);
         const { results } = await q.all();
-        return json({ items: results.map((r) => ({ uid: r.uid, setlist_id: r.setlist_id, file_id: r.file_id, song_id: r.song_id, rev: r.rev, data: JSON.parse(r.data) })) });
+        return json({ items: results.map((r) => ({ uid: r.uid, setlist_id: r.setlist_id, file_id: r.file_id, song_id: r.song_id, rev: r.rev, data: parseInk(r.data) })) });
       }
       // 콘티 곡 한 칸 + 악보 한 장의 콘티용 필기 저장 (규칙은 곡 기본 필기와 같다)
       if (parts[1] === 'ink-sl' && parts[2] && parts[3] && method === 'PUT') {
@@ -1025,7 +1056,7 @@ export async function onRequest({ request, env }) {
           .prepare('SELECT id, team_id, song_id, file_id, uid, setlist_id, author, name, rev, data, updated_at FROM annotations WHERE team_id=?1 AND (song_id=?2 OR setlist_id=?3) ORDER BY id LIMIT 400')
           .bind(ctx.team.id, Number.isInteger(sid) ? sid : -1, Number.isInteger(lid) ? lid : -1)
           .all();
-        return json({ items: results.map((r) => ({ ...r, data: JSON.parse(r.data) })) });
+        return json({ items: results.map((r) => ({ ...r, data: parseInk(r.data) })) });
       }
       if ((parts[1] === 'song' || parts[1] === 'slot') && parts[2] && parts[3] && method === 'PUT') {
         requireLeader(ctx);
@@ -1093,7 +1124,7 @@ export async function onRequest({ request, env }) {
       const row = Number.isInteger(fid) && (await db.prepare('SELECT r2_key FROM song_files WHERE id=?').bind(fid).first());
       if (!row) throw new HttpError(404, '파일을 찾을 수 없습니다.');
       await db.batch([db.prepare('DELETE FROM song_files WHERE id=?').bind(fid), db.prepare('DELETE FROM vault_items WHERE file_id=?').bind(fid), db.prepare('DELETE FROM vault_sl_items WHERE file_id=?').bind(fid), db.prepare('DELETE FROM annotations WHERE file_id=?').bind(fid)]);
-      if (env.BUCKET) await env.BUCKET.delete(row.r2_key).catch(() => {});
+      if (env.BUCKET) await env.BUCKET.delete(row.r2_key).catch((e) => console.error('[ews] R2 파일 삭제 실패', e));
       return json({ ok: true });
     }
 
@@ -1484,7 +1515,7 @@ export async function onRequest({ request, env }) {
       if (parts[1] === 'delete' && method === 'POST') {
         requireLeader(ctx);
         const b = await readBody();
-        const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map((v) => parseInt(v, 10)).filter(Number.isInteger))].slice(0, 100);
+        const ids = [...new Set((Array.isArray(b.ids) ? b.ids : []).map((v) => parseInt(v, 10)).filter(Number.isInteger))].slice(0, 90); // D1은 한 문장에 값 100개까지
         if (!ids.length) throw new HttpError(400, '삭제할 콘티를 골라 주세요.');
         const mine = (await db.prepare(`SELECT id FROM setlists WHERE team_id=? AND id IN (${ids.map(() => '?').join(',')})`).bind(team.id, ...ids).all()).results.map((r) => r.id);
         if (mine.length) {
@@ -1494,7 +1525,7 @@ export async function onRequest({ request, env }) {
         return json({ ok: true, deleted: mine.length });
       }
       const lid = parts[1] ? parseInt(parts[1], 10) : null;
-      if (parts[1] && !Number.isInteger(lid)) throw new HttpError(404, '콘티를 찾을 수 없습니다.');
+      if (parts[1] && !(Number.isInteger(lid) && lid > 0)) throw new HttpError(404, '콘티를 찾을 수 없습니다.');
 
       if (!lid && method === 'GET') {
         const { results } = await db
@@ -1516,7 +1547,14 @@ export async function onRequest({ request, env }) {
         const now = nowIso();
         const r = await db.prepare('INSERT INTO setlists (team_id,date,title,memo,service_id,leaders,is_temp,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)').bind(team.id, s.date, s.title, s.memo, svc, s.leaders, s.is_temp, now, now).run();
         const id = r.meta.last_row_id;
-        if (s.items.length) await db.batch(itemInserts(db, id, s.items));
+        if (s.items.length) {
+          try {
+            await db.batch(itemInserts(db, id, s.items));
+          } catch (e) {
+            await db.prepare('DELETE FROM setlists WHERE id=?').bind(id).run().catch(() => {}); // 곡이 안 들어갔으면 빈 콘티를 남기지 않는다
+            throw e;
+          }
+        }
         return json({ id }, 201);
       }
 
@@ -1592,7 +1630,7 @@ export async function onRequest({ request, env }) {
     // ===== 곡 =====
     if (parts[0] === 'songs') {
       const id = parts[1] ? parseInt(parts[1], 10) : null;
-      if (parts[1] && !Number.isInteger(id)) throw new HttpError(404, '곡을 찾을 수 없습니다.');
+      if (parts[1] && !(Number.isInteger(id) && id > 0)) throw new HttpError(404, '곡을 찾을 수 없습니다.');
 
       // 목록 + 검색(제목·아티스트·태그·가사)
       if (!id && method === 'GET') {
@@ -1693,7 +1731,7 @@ export async function onRequest({ request, env }) {
             .run();
           fid = r.meta.last_row_id;
         } catch (e) {
-          await env.BUCKET.delete(key).catch(() => {});
+          await env.BUCKET.delete(key).catch((e) => console.error('[ews] R2 파일 삭제 실패', e));
           throw e;
         }
         await db.prepare('UPDATE songs SET updated_at=? WHERE id=?').bind(nowIso(), id).run();
@@ -1750,7 +1788,7 @@ export async function onRequest({ request, env }) {
           stmts.push(db.prepare('UPDATE setlist_items SET variant_id=NULL WHERE variant_id=?').bind(vid));
           stmts.push(db.prepare('DELETE FROM song_variants WHERE id=?').bind(vid));
           await db.batch(stmts);
-          if (env.BUCKET && files.length) await env.BUCKET.delete(files.map((f) => f.r2_key)).catch(() => {});
+          if (env.BUCKET && files.length) await env.BUCKET.delete(files.map((f) => f.r2_key)).catch((e) => console.error('[ews] R2 파일 삭제 실패', e));
           return json({ ok: true });
         }
         throw new HttpError(404, '요청한 주소를 찾을 수 없습니다.');
@@ -1893,7 +1931,7 @@ export async function onRequest({ request, env }) {
           db.prepare('DELETE FROM team_song_keys WHERE song_id=?').bind(id),
           db.prepare('DELETE FROM songs WHERE id=?').bind(id),
         ]);
-        if (env.BUCKET && files.length) await env.BUCKET.delete(files.map((f) => f.r2_key)).catch(() => {});
+        if (env.BUCKET && files.length) await env.BUCKET.delete(files.map((f) => f.r2_key)).catch((e) => console.error('[ews] R2 파일 삭제 실패', e));
         return json({ ok: true });
       }
     }
@@ -1901,6 +1939,8 @@ export async function onRequest({ request, env }) {
     throw new HttpError(404, '요청한 주소를 찾을 수 없습니다.');
   } catch (e) {
     if (e instanceof HttpError) return json({ error: e.message, ...(e.extra || {}) }, e.status);
-    return json({ error: '서버 오류가 발생했습니다: ' + (e && e.message ? e.message : e) }, 500);
+    // 34차: 내부 오류문(DB 문장 등)은 화면으로 보내지 않고 Cloudflare 기록에만 남긴다
+    console.error('[ews] 서버 오류', request.method, new URL(request.url).pathname, e && e.stack ? e.stack : e);
+    return json({ error: '서버 오류가 발생했습니다. 잠시 뒤 다시 해 주세요.' }, 500);
   }
 }

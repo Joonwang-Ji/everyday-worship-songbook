@@ -441,7 +441,8 @@ label.check input { width: 22px; height: 22px; flex: none; margin-top: 1px; }
 #prevsl { width: 100%; margin-bottom: 4px; }
 
 /* ===== 11차: 곡 편집 화면 정리 ===== */
-.editbar { position: sticky; top: calc(46px + env(safe-area-inset-top)); z-index: 8; display: flex; align-items: center; gap: 10px; background: var(--bg); padding: 6px 0; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
+/* 34차: 위 머리띠는 스크롤과 함께 올라가므로(5.5차) 편집 줄은 화면 맨 위에 붙는다. 전에는 46px 아래에 붙어 그 틈으로 본문이 비쳤다. */
+.editbar { position: sticky; top: env(safe-area-inset-top); box-shadow: 0 calc(-1 * env(safe-area-inset-top)) 0 var(--bg); z-index: 8; display: flex; align-items: center; gap: 10px; background: var(--bg); padding: 6px 0; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
 .editbar h2 { margin: 0; flex: 1; font-size: 18px; text-align: center; }
 .moreinfo { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 6px; }
 .moreinfo > summary { cursor: pointer; font-weight: 700; min-height: 40px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -685,7 +686,7 @@ summary { padding: 6px 0; }
   .fw-body { grid-template-columns: 1fr 1fr; grid-template-rows: none; }
   .fw-ref { border-bottom: 0; border-right: 1px solid var(--line); }
 }
-.refdock { grid-column: 1 / -1; position: sticky; top: calc(98px + env(safe-area-inset-top)); z-index: 7; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.refdock { grid-column: 1 / -1; position: sticky; top: calc(54px + env(safe-area-inset-top)); z-index: 7; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
 .rd-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); }
 .rd-bar .small { flex: 1; }
 .rd-body { max-height: 38vh; overflow: auto; padding: 8px 10px; -webkit-overflow-scrolling: touch; }
