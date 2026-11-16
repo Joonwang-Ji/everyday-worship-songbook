@@ -46,7 +46,13 @@ async function networkFirst(req, cacheName, timeoutMs, fallbackUrl, evt) {
   });
   net.catch(() => {});
   try {
-    return await Promise.race([net, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs))]);
+    const res = await Promise.race([net, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs))]);
+    // 34차: 서버 오류(5xx)면 저장해 둔 것이 있을 때 그것을 보여 준다
+    if (res && res.status >= 500) {
+      const hit = await cache.match(req);
+      if (hit) return cacheName === DATA ? markCached(hit) : hit;
+    }
+    return res;
   } catch (err) {
     const hit = (await cache.match(req)) || (fallbackUrl ? await cache.match(fallbackUrl) : null);
     if (hit) {

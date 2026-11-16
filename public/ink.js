@@ -81,7 +81,7 @@
     const del = new Set([...((a && a.del) || []), ...((b && b.del) || [])]);
     const map = new Map();
     for (const it of [...((a && a.items) || []), ...((b && b.items) || [])]) if (!del.has(it.id)) map.set(it.id, it);
-    return { v: 1, items: [...map.values()].slice(0, MAX_ITEMS), del: [...del].slice(-2000) };
+    return { v: 1, items: [...map.values()].slice(-MAX_ITEMS), del: [...del].slice(-2000) }; // 넘치면 서버와 같이 옛 획부터 버린다
   }
 
   // ---------- 개인 보관함 (서버 연결) ----------
@@ -426,6 +426,8 @@
   // sl = { uid, setlistId } 이면 곡 기본 필기 위에 콘티용 필기를 겹쳐 보인다
   function attachImg(img, fileId, sl) {
     if (!img || !fileId || img.dataset.inkOn) return;
+    // 34차: 화면에서 사라진 악보의 필기 층은 여기서 정리한다(연주 모드에서 쪽을 넘길 때마다 쌓이던 것)
+    for (const x of [...overlays]) if (!x.svg.isConnected) { overlays.delete(x); try { x.ro && x.ro.disconnect(); } catch {} }
     const host = img.parentElement;
     if (!host) return;
     img.dataset.inkOn = '1';
@@ -1000,6 +1002,7 @@
       await loadPage();
     }
     function teardown() {
+      window.removeEventListener('hashchange', onNavAway);
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('visibilitychange', onHide);
       window.removeEventListener('resize', layout);
@@ -1057,6 +1060,9 @@
       if (txtEdit) revealPoint();
     }
     const onShared = () => { if (!txtEdit) redraw(); };
+    // 34차: 뒤로 가기로 화면이 바뀌면 필기를 저장하고 닫는다(필기 창이 새 화면 위에 남던 것)
+    const onNavAway = () => { onClose = null; close(); };
+    window.addEventListener('hashchange', onNavAway);
     window.addEventListener('ews-shared', onShared);
     document.addEventListener('keydown', onKey);
     document.addEventListener('visibilitychange', onHide);
@@ -1864,6 +1870,7 @@
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('hashchange', onNav);
       window.removeEventListener('pagehide', onNav);
+      ['selectstart', 'contextmenu', 'dragstart', 'gesturestart'].forEach((n) => o.root.removeEventListener(n, noSel)); // 34차: 필기를 끝낸 뒤에도 글자 선택이 막혀 있던 것
       if (window.visualViewport) { visualViewport.removeEventListener('resize', vvFn); visualViewport.removeEventListener('scroll', vvFn); }
       if (S) S.onpointerdown = S.onpointermove = S.onpointerup = S.onpointercancel = S.onpointerleave = null;
       o.afterDraw = null;

@@ -261,7 +261,7 @@
     const out = [`📅 ${[date, name].filter(Boolean).join(' ')}`];
     const who = leaderList(s.leaders);
     if (who.length) out.push(`🎤 인도: ${who.join(', ')}`);
-    if ((s.memo || '').trim()) out.push(...s.memo.trim().split('\n').map((l) => '※ ' + l.trim()).filter((l) => l !== '※'));
+    if ((s.memo || '').trim()) out.push(...s.memo.trim().split('\n').map((l) => l.trim()).filter(Boolean).map((l) => '※ ' + l));
     out.push('');
     (s.items || []).forEach((it, i) => {
       const key = (it.key || it.original_key || '').trim();

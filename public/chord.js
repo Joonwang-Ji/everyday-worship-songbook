@@ -257,6 +257,8 @@
     const conv = (c, ks) => {
       if (!c) return '';
       const pp = planFor(ks);
+      // 34차: 키를 옮기지 않았으면 적힌 표기 그대로 둔다(C키의 Bb가 A♯로 바뀌어 보이던 것). 표기를 ♯/♭로 고른 경우는 예전대로.
+      if (o.acc === 'auto' && ((pp.semis % 12) + 12) % 12 === 0) return c;
       return transposeChord(c, pp.semis, pp.flats);
     };
     const out = [];

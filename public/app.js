@@ -9,7 +9,7 @@
     set(k, v) { try { localStorage.setItem(k, v); } catch {} },
     del(k) { try { localStorage.removeItem(k); } catch {} },
   };
-  const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : '');
 
   let me = { canEdit: false, adminRequired: false, isAdmin: false, team: null, inviteEnabled: false };
@@ -18,7 +18,7 @@
     $toast.textContent = msg;
     $toast.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => ($toast.hidden = true), 2600);
+    toastTimer = setTimeout(() => ($toast.hidden = true), Math.min(8000, Math.max(2600, String(msg || '').length * 90))); // 34차: 긴 안내는 읽을 시간을 준다
   }
 
   // ---------- 가입한 팀들 (9차: 팀 전환) ----------
@@ -186,7 +186,7 @@
     for (let guard = 0; guard < 12; guard++) {
       me = await api('/me');
       // 만료/무효가 된 열쇠는 이 기기에서 지운다
-      if (!me.isAdmin && ls.get('ews_admin', '')) ls.del('ews_admin');
+      if (!me.isAdmin && ls.get('ews_admin', '') && !servedFromCache) ls.del('ews_admin'); // 34차: 느린 인터넷에서 온 옛 저장본으로는 지우지 않는다
       const a = activeTeam();
       if (me.team) {
         const t = me.team;
@@ -203,7 +203,7 @@
         ls.set('ews_team_active', String(t.id));
         return;
       }
-      if (!a) return;
+      if (!a || servedFromCache) return;
       teamsSet(teamsGet().map((x) => (x.team === a.team ? { ...x, stale: true, leader: '' } : x)));
       ensureActive();
     }
@@ -305,18 +305,40 @@
 
   // ---------- 라우터 ----------
   let teardown = null; // 연주 모드처럼 화면을 떠날 때 정리할 일(화면 꺼짐 방지 해제 등)
+  // 34차: 화면마다 "떠날 때 할 일"을 여러 개 걸 수 있다(document에 건 리스너 떼기, 임시저장 등).
+  let leaveFns = [];
+  const onLeave = (fn) => leaveFns.push(fn);
+  // 34차: 저장하지 않은 변경이 있으면 true를 돌려주는 함수(콘티 편집). 다른 화면으로 가려 할 때 한 번 물어본다.
+  let leaveGuard = null;
+  let curHash = location.hash;
+  let skipHash = false;
+  function onHash() {
+    if (skipHash) { skipHash = false; return; }
+    let dirty = false;
+    try { dirty = !!(leaveGuard && leaveGuard()); } catch {}
+    if (dirty && !confirm('저장하지 않은 변경이 있어요. 그대로 나갈까요?')) {
+      skipHash = true;
+      location.hash = curHash;
+      return;
+    }
+    route();
+  }
   async function route() {
     routeGen++;
+    leaveGuard = null;
+    curHash = location.hash;
     if (teardown) {
       try { teardown(); } catch {}
       teardown = null;
     }
+    for (const fn of leaveFns.splice(0)) { try { fn(); } catch {} }
     $app.classList.remove('wide');
     $app.onclick = null;
     const [hash, qs] = (location.hash.replace(/^#/, '') || '/').split('?');
     const q = new URLSearchParams(qs || '');
     window.scrollTo(0, 0);
-    document.querySelectorAll('.sheet-wrap').forEach((n) => n.remove()); // 열려 있던 아래 창은 닫는다
+    document.querySelectorAll('.sheet-wrap').forEach((n) => { if (n._off) n._off(); n.remove(); }); // 열려 있던 아래 창은 닫는다
+    if (document.querySelector('.fwin')) { document.querySelectorAll('.fwin').forEach((n) => n.remove()); document.body.style.overflow = ''; } // 송폼 만들기 창이 열린 채 뒤로 갔을 때
     document.querySelector('main').classList.remove('wide');
     try {
       if (!ls.get('ews_token', '')) return viewLogin();
@@ -351,10 +373,12 @@
         clearSession();
         return viewLogin('다시 로그인해 주세요.');
       }
-      $app.innerHTML = `<div class="card"><p class="error">${esc(e.message)}</p><a class="btn" href="#/">처음으로</a></div>`;
+      $app.innerHTML = `<div class="card"><p class="error">${esc(e.message)}</p><div class="row"><button class="btn primary" id="retry" type="button">다시 시도</button><a class="btn" href="#/">처음으로</a></div></div>`;
+      const rb = document.getElementById('retry');
+      if (rb) rb.onclick = () => route();
     }
   }
-  window.addEventListener('hashchange', route);
+  window.addEventListener('hashchange', onHash);
 
   // ---------- 로그인 ----------
   function viewLogin(msg) {
@@ -389,7 +413,6 @@
 
   // ---------- 4차 공용: 추천 태그(주제·빠르기·절기), 외부 검색 링크, 날짜 표시 ----------
   // 곡 태그는 자유롭게 쓰되, 관리자가 정해 둔 추천 목록은 칩으로 보여 준다.
-  const OTHER_KEY = SongFilter.OTHER_KEY;
   const groupTags = SongFilter.groupTags; // 추천 목록의 분류별 태그 + 곡에 쓰인 "기타" (songfilter.js)
   const extLinksHTML = (q) => {
     const e = encodeURIComponent;
@@ -493,7 +516,7 @@
         $ext.innerHTML = `<p class="small" style="margin:0 0 8px">${shown.length ? '다른 곡도 찾고 있나요?' : '앱에 없는 곡이에요.'} 외부에서 “${esc(listState.q)}” 검색하기</p>
           <div class="row">${extLinksHTML(listState.q)}</div>
           ${me.canEdit ? `<p style="margin:10px 0 0"><a class="btn small primary" href="#/new?title=${encodeURIComponent(listState.q)}">+ “${esc(listState.q.slice(0, 20))}” 새 곡으로 등록</a></p>` : ''}
-          <p class="hint" style="margin-bottom:0">찾았다면 위 “새 곡으로 등록”을 눌러 <b>📋 가사 붙여넣기로 시작</b>이나 <b>🪄 Claude로 변환</b>(악보 캡처)을 쓰면 빨라요. 외국곡은 Ultimate Guitar의 코드 악보를 복사해 붙여넣을 수 있어요. 외부 사이트의 악보는 저작권이 있을 수 있으니, 교회 내부 용도로만 확인해 주세요.</p>`;
+          <p class="hint" style="margin-bottom:0">찾았다면 위 “새 곡으로 등록”을 눌러 <b>📋 가사·코드 붙여넣기</b>이나 <b>🪄 Claude로 변환</b>(악보 캡처)을 쓰면 빨라요. 외국곡은 Ultimate Guitar의 코드 악보를 복사해 붙여넣을 수 있어요. 외부 사이트의 악보는 저작권이 있을 수 있으니, 교회 내부 용도로만 확인해 주세요.</p>`;
       } else {
         $ext.hidden = true;
       }
@@ -511,7 +534,7 @@
     let timer;
     $q.oninput = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => { listState.q = $q.value.trim(); load().catch((e) => toast(e.message)); }, 250);
+      timer = setTimeout(() => { if (!$q.isConnected) return; listState.q = $q.value.trim(); load().catch((e) => toast(e.message)); }, 250);
     };
     $chips.onclick = (ev) => {
       const b = ev.target.closest && ev.target.closest('button.chip');
@@ -576,7 +599,7 @@
       const k = Chord.parseKey(keyName);
       return hasKey && k ? (((k.idx - kobj.idx) % 12) + 12) % 12 : null;
     };
-    let persist = true;
+    let persist = Number.isInteger(saved.shift) || Number.isInteger(saved.capo); // 34차: 직접 바꾼 적이 있을 때만 이 기기의 키로 저장(열기만 해도 저장되던 것 고침)
     const fromSetlist = startFrom(q.get('key'));
     if (fromSetlist !== null) {
       st.shift = fromSetlist;
@@ -657,7 +680,7 @@
             </div>
             <div class="row">
               <span class="ctl-label">글자</span>
-              <button class="btn small" id="fdown">가−</button><button class="btn small" id="fup">가+</button>
+              <button class="btn small" id="fdown" aria-label="글자 작게">가−</button><button class="btn small" id="fup" aria-label="글자 크게">가+</button>
               <button class="btn small" id="chtoggle"></button>
               <button class="btn small" id="coltoggle"></button>
             </div>
@@ -712,7 +735,7 @@
           sh.close();
           showFileResult(r.blob, (song.title || '악보').replace(/[\\/:*?"<>|]/g, '').slice(0, 60) + (soundKey ? ' ' + soundKey : '') + '.pdf', 'pdf', r.warnings);
         } catch (e) {
-          toast(e.message || 'PDF를 만들지 못했어요.');
+          toast(e && e.message && /[가-힣]/.test(e.message) ? e.message : 'PDF를 만들지 못했어요. 잠시 뒤 다시 해 주세요.');
           $mp.disabled = false;
           $mp.innerHTML = orig;
         }
@@ -748,6 +771,7 @@
     }
     const onWinResize = () => { if (document.body.contains($score)) applyCols(); else window.removeEventListener('resize', onWinResize); };
     window.addEventListener('resize', onWinResize);
+    onLeave(() => window.removeEventListener('resize', onWinResize));
     const viewOpen = new Set(); // 탭해서 펼친 자리표시({ref}) 줄 번호
     let ci = null; // 30차: 코드 악보 필기 층
     function draw() {
@@ -849,7 +873,7 @@
     const hasImgFile = files.some((f) => f.kind === 'image');
     $pi.innerHTML = (files.length ? keyBanner : '') + (hasImgFile ? '<div class="row ink-entry"><button class="btn small" id="inkbtn" type="button">' + (slInk ? '✎ 콘티용 필기하기' : '✎ 필기하기') + '</button><button class="btn small shbtn" type="button" hidden>👥 팀 필기</button><span class="muted small">' + (slInk ? '이 콘티에서만 보여요 · 내 필기는 나만 보여요' : '내 필기는 나만 보여요') + '</span></div>' : '') + Files.renderPane(files);
     Files.bindPane($pi, files);
-    if (hasImgFile) {
+    if (hasImgFile && window.Ink) {
       Ink.decorate($pi, files, slInk);
       Ink.pull(song.id);
       if (slInk) Ink.pullSetlist(slInk.setlistId);
@@ -878,15 +902,6 @@
   }
 
   // ---------- 곡 편집 ----------
-  const SAMPLE = `{title: 곡 제목}
-{key: G}
-{comment: V1}
-[G]주님은 [C]나의 [G]목자
-[Em]부족함이 [D]없으리
-{comment: C}
-{soc}
-[C]찬양해 [D]찬양해 [G]주님을
-{eoc}`;
 
   // ---------- 악보 참고 창 도우미 (23차) ----------
   // files: [{kind:'image'|'pdf', url}] → box 안에 이미지 악보를 한 장씩(‹ ›) 보여 주고, 누르면 전체 화면으로 확대. PDF는 열기 링크.
@@ -1185,7 +1200,7 @@
     if (!me.canEdit) {
       $app.innerHTML = `<div class="card"><p>악보를 편집할 권한이 없습니다.</p>
         <p class="muted small">관리자이거나, 관리자가 악보 편집 권한을 켜 준 팀의 팀장만 악보를 등록·수정할 수 있습니다.</p>
-        ${me.adminRequired ? lockBtn('song', 'PIN 입력', location.hash || '#/songs', 'primary') + ' ' : '<p class="error">관리자 PIN(ADMIN_PIN)이 설정되어 있지 않아 아무도 편집할 수 없습니다. 설치 안내를 확인해 주세요.</p>'}<a class="btn" href="#/songs">목록</a></div>`;
+        ${me.adminRequired ? lockBtn('song', 'PIN 입력', location.hash || '#/songs', 'primary') + ' ' : '<p class="error">관리자 PIN이 아직 설정되어 있지 않아 아무도 편집할 수 없습니다. 앱 관리자에게 문의해 주세요.</p>'}<a class="btn" href="#/songs">목록</a></div>`;
       return;
     }
     document.querySelector('main').classList.add('wide');
@@ -1449,7 +1464,7 @@
       h += `<div class="te-pal-row">${roots.map((d) => `<button type="button" class="chip ctb" data-pc="${esc(d.chord)}"><b>${esc(Chord.pretty(d.chord))}</b>${d.label ? `<small>${esc(d.label)}</small>` : ''}</button>`).join('')}<button type="button" class="chip ctb" data-pc="?" title="불확실한 코드">?</button><button type="button" class="chip ctb sm" data-act="direct">다른 코드…</button></div>`;
       if (chordSel) {
         const chordOnly = !l.text.trim();
-        h += `<div class="te-pal-row"><button type="button" class="chip ctb sm" data-act="left">◀</button><button type="button" class="chip ctb sm" data-act="right">▶</button><button type="button" class="chip ctb sm" data-act="more">${chordOnly ? '＋ 코드 이어 붙이기' : '＋ 같은 자리에 하나 더'}</button><button type="button" class="chip ctb sm danger" data-act="del">코드 삭제</button></div>`;
+        h += `<div class="te-pal-row"><button type="button" class="chip ctb sm" data-act="left" aria-label="코드 왼쪽으로">◀</button><button type="button" class="chip ctb sm" data-act="right" aria-label="코드 오른쪽으로">▶</button><button type="button" class="chip ctb sm" data-act="more">${chordOnly ? '＋ 코드 이어 붙이기' : '＋ 같은 자리에 하나 더'}</button><button type="button" class="chip ctb sm danger" data-act="del">코드 삭제</button></div>`;
         const bn = ChordEdit.bassNotes(gk.key);
         h += `<div class="te-pal-row"><span class="ctl-label">모양</span>${ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-pq="${esc(q)}">${esc(Chord.pretty('C' + lab).slice(1))}</button>`).join('')}${bn ? `<span class="ctl-label">베이스</span>${bn.map((n) => `<button type="button" class="chip ctb sm" data-pb="${esc(n)}">/${esc(Chord.pretty(n))}</button>`).join('')}<button type="button" class="chip ctb sm" data-pb="">없음</button>` : ''}</div>`;
       }
@@ -2206,7 +2221,7 @@
     const clipGet = () => { try { return JSON.parse(sessionStorage.getItem(CLIP_KEY) || 'null'); } catch { return null; } };
     const clipSet = (raws, kind) => {
       try { sessionStorage.setItem(CLIP_KEY, JSON.stringify({ raws, kind })); } catch { /* 저장 못 해도 시스템 복사는 된다 */ }
-      try { navigator.clipboard.writeText(raws.join('\n')); } catch { /* 선택 사항 */ }
+      try { navigator.clipboard.writeText(raws.join('\n')).catch(() => {}); } catch { /* 선택 사항 */ }
     };
     // 복사해 둔 줄·구간을 at번째 줄 앞에 넣는다. 구간(이름표로 시작)이면 앞뒤를 빈 줄로 띄운다.
     function pasteAt(at, raws) {
@@ -2747,6 +2762,7 @@
       toast(`이미지 ${imgs.length}장을 붙여넣었어요.`);
     };
     document.addEventListener('paste', onPasteImg);
+    onLeave(() => document.removeEventListener('paste', onPasteImg)); // 34차: 다음 편집 화면까지 살아남아 옛 곡에 올리던 것 고침
     $('files').onclick = async (ev) => {
       const d = ev.target.dataset;
       if (d.mv !== undefined || d.pmv !== undefined) {
@@ -2759,7 +2775,7 @@
         drawFiles();
         if (d.mv !== undefined && id) {
           try { await api(`/songs/${id}/files/order`, { method: 'PUT', body: { ids: files.map((f) => f.id) } }); }
-          catch (e) { $('err').textContent = e.message; }
+          catch (e) { [arr[ix], arr[j]] = [arr[j], arr[ix]]; drawFiles(); $('err').textContent = e.message; toast('순서를 저장하지 못했어요. ' + e.message); }
         }
         return;
       }
@@ -2770,9 +2786,11 @@
         if (!confirm('이 악보 파일을 삭제할까요?')) return;
         try {
           await api('/files/' + d.del, { method: 'DELETE' });
-          files.splice(files.findIndex((f) => String(f.id) === d.del), 1);
+          const fx = files.findIndex((f) => String(f.id) === d.del);
+          if (fx >= 0) files.splice(fx, 1);
           drawFiles();
         } catch (e) {
+          toast(e.message);
           $('err').textContent = e.message;
         }
       }
@@ -2789,10 +2807,11 @@
 
     // ----- 기본 송폼 (22차): 콘티의 송폼 입력기와 같은 것을 쓴다. 값은 숨은 칸 #bform 에 글자로 넣어 두고, 저장·임시저장은 다른 칸과 똑같이 처리된다 -----
     const bfData = { items: [{ form: song.base_form || '', original_key: song.original_key || '', song_id: id || 0 }] };
-    const bfEd = createFormEditor($('bformhost'), bfData, {});
+    const bfSync = () => { $('bform').value = bfData.items[0].form; $('bform').dispatchEvent(new Event('input', { bubbles: true })); };
+    const bfEd = createFormEditor($('bformhost'), bfData, {}, { onChange: bfSync }); // 34차: Enter로 넣은 구간도 저장되게
     bfEd.bind();
     const bfDraw = () => { bfData.items[0].form = $('bform').value; bfData.items[0].original_key = $('key').value; bfEd.draw(0); };
-    $('bformhost').addEventListener('click', () => { $('bform').value = bfData.items[0].form; $('bform').dispatchEvent(new Event('input', { bubbles: true })); });
+    $('bformhost').addEventListener('click', bfSync);
     $('key').addEventListener('change', () => { bfData.items[0].original_key = $('key').value; bfEd.draw(0); });
     bfDraw();
 
@@ -2835,6 +2854,7 @@
         if (!confirm('이 버전을 삭제할까요?\n이 버전의 코드 악보와 이미지가 모두 지워지고, 되돌릴 수 없어요.')) return;
         try {
           await api(`/songs/${id}/variants/${editVid}`, { method: 'DELETE' });
+          savedOk = true;
           ls.del(draftKey);
           if (ls.get('ews_sv_' + id, '0') === String(editVid)) ls.set('ews_sv_' + id, '0');
           toast('버전을 삭제했어요.');
@@ -2851,6 +2871,9 @@
     const readForm = () => Object.fromEntries(Object.entries(FIELDS).map(([k, i]) => [k, $(i).value]));
     const baseline = JSON.stringify(readForm());
     let draftTimer;
+    let savedOk = false; // 저장·삭제에 성공하면 true (떠날 때 임시저장을 다시 만들지 않는다)
+    // 34차: 입력 직후(0.6초 안)에 화면을 떠나도 마지막 입력이 임시저장에 남게 한다
+    onLeave(() => { clearTimeout(draftTimer); if (!savedOk) saveDraft(); });
     function saveDraft() {
       if (!ta.isConnected) return;
       const f = readForm();
@@ -2899,6 +2922,7 @@
       try {
         const r = id && editVid ? await api(`/songs/${id}/variants/${editVid}`, { method: 'PUT', body }) : id ? await api('/songs/' + id, { method: 'PUT', body }) : await api('/songs', { method: 'POST', body });
         clearTimeout(draftTimer);
+        savedOk = true;
         ls.del(draftKey);
         if (!id && pending.length) {
           const msg = await uploadMany(r.id, pending);
@@ -2912,7 +2936,7 @@
         if (editVid) ls.set('ews_sv_' + id, String(editVid)); else if (id) ls.set('ews_sv_' + id, '0');
         location.hash = '#/song/' + r.id + (editVid ? '?v=' + editVid : '');
       } catch (e) {
-        if (e.status === 409 && confirm(`"${e.data.duplicate.title}" 곡이 이미 있습니다.\n그래도 새 곡으로 저장할까요?`)) return save(true, true);
+        if (e.status === 409 && confirm(`"${e.data.duplicate.title}" 곡이 이미 있습니다.\n그래도 새 곡으로 저장할까요?`)) return await save(true, true);
         if (e.status === 403) { await loadMe(); }
         err.textContent = e.message;
       } finally {
@@ -2934,12 +2958,15 @@
       save(false);
     };
     document.addEventListener('keydown', onSaveKey);
+    onLeave(() => document.removeEventListener('keydown', onSaveKey)); // 34차: 다른 편집 화면으로 가도 옛 화면의 ⌘S가 남던 것 고침
     $('save2').onclick = () => save(false);
     const del = $('del');
     if (del) del.onclick = async () => {
       if (!confirm(`"${song.title}" 곡을 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) return;
       try {
         await api('/songs/' + id, { method: 'DELETE' });
+        savedOk = true;
+        ls.del(draftKey);
         toast('삭제했습니다.');
         location.hash = '#/songs';
       } catch (e) {
@@ -3065,12 +3092,6 @@
     const yr = y !== Number(todayKst().slice(0, 4)) ? `${y}.` : '';
     return `${yr}${m}/${dd}(${'일월화수목금토'[new Date(y, m - 1, dd).getDay()]})`;
   };
-  function nextSunday() {
-    const d = new Date();
-    d.setDate(d.getDate() + ((7 - d.getDay()) % 7));
-    const p = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-  }
   // 16차: 예배 종류의 기본 요일(0=일 … 6=토). 오늘이 그 요일이면 오늘, 아니면 가장 가까운 다음 날.
   const DAY_NAMES = '일월화수목금토';
   function nextWeekday(n) {
@@ -3306,6 +3327,7 @@
       if (onClose) onClose();
     }
     wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+    wrap._off = () => document.removeEventListener('keydown', onEsc); // 화면을 옮기며 창이 지워질 때 쓴다
     document.addEventListener('keydown', onEsc);
     document.body.appendChild(wrap);
     return { wrap, close, q: (sel) => wrap.querySelector(sel) };
@@ -3651,6 +3673,8 @@
       route();
     };
     el('logout').onclick = () => {
+      // 34차: 로그아웃하면 이 기기의 필기까지 지워지므로 먼저 물어본다
+      if (!confirm('로그아웃할까요?\n이 기기에 저장된 필기와 오프라인 악보가 지워져요.\n(필기 보관함을 연결해 두었다면 다시 연결했을 때 돌아옵니다.)')) return;
       clearSession();
       route();
     };
@@ -3698,6 +3722,8 @@
         ${me.team ? '' : '<p><button class="btn" id="skip">팀 없이 곡만 볼게요</button></p><p class="muted small">팀 없이도 곡 목록과 악보는 볼 수 있습니다. 콘티는 팀에 가입해야 볼 수 있어요.</p>'}`;
       el('jf').onsubmit = async (ev) => {
         ev.preventDefault();
+        if (el('jf').dataset.busy) return;
+        el('jf').dataset.busy = '1';
         el('jerr').textContent = '';
         try {
           const r = await api('/teams/join', { method: 'POST', body: { code: el('jc').value } });
@@ -3707,6 +3733,8 @@
           goHash('#/setlists');
         } catch (e) {
           el('jerr').textContent = e.message;
+        } finally {
+          if (el('jf')) delete el('jf').dataset.busy;
         }
       };
       const cf = el('cf');
@@ -3968,7 +3996,7 @@
         await loadExporter();
         await fn((t) => { btn.textContent = t; });
       } catch (e) {
-        toast(e.message || `${label}을 만들지 못했습니다.`);
+        toast(e && e.message && /[가-힣]/.test(e.message) ? e.message : `${label}을 만들지 못했습니다. 잠시 뒤 다시 해 주세요.`);
       } finally {
         btn.disabled = false;
         btn.innerHTML = orig;
@@ -4239,6 +4267,12 @@
         $pb.scrollTop = top;
       } else if (pages.length) {
         $pb.innerHTML = `<img class="sheet" src="${esc(pages[cur.page].url)}" alt="악보 ${cur.page + 1}">`;
+        // 34차: 이미지를 못 받으면(오프라인·주소 만료) 빈 화면 대신 안내와 다시 시도
+        $pb.querySelector('img.sheet').onerror = () => {
+          $pb.innerHTML = '<div class="center" style="padding:40px 16px"><p class="muted">악보 이미지를 불러오지 못했어요.<br>인터넷 연결을 확인해 주세요.</p><button class="btn primary" type="button" id="imgretry">다시 시도</button></div>';
+          const rb = $pb.querySelector('#imgretry');
+          if (rb) rb.onclick = () => { songCache.delete(cur.song.id); show(idx, cur.page); };
+        };
         if (window.Ink) { Ink.attachImg($pb.querySelector('img.sheet'), pages[cur.page].id, slOf(cur.it)); if (Ink.shared && me.team) Ink.shared.pullSoon({ songId: cur.song.id, setlistId: src.sl ? +src.sl : undefined }); }
         if (pages[cur.page + 1]) new Image().src = pages[cur.page + 1].url;
       } else {
@@ -4644,10 +4678,12 @@
 
     // ----- 화면 꺼짐 방지 -----
     let wl = null;
+    let wakeGone = false;
     async function acquireWake() {
       if (!P.wake || !('wakeLock' in navigator) || document.visibilityState !== 'visible' || wl) return;
       try {
         wl = await navigator.wakeLock.request('screen');
+        if (wakeGone) { wl.release().catch(() => {}); wl = null; return; } // 34차: 요청하는 사이 연주 모드를 나갔으면 바로 푼다
         wl.addEventListener('release', () => { wl = null; });
       } catch { wl = null; }
     }
@@ -4713,7 +4749,7 @@
           ${'wakeLock' in navigator ? '' : '<p class="hint">이 브라우저는 화면 꺼짐 방지를 지원하지 않아요. 기기 설정의 자동 잠금 시간을 길게 바꿔 두세요.</p>'}
           ${me.team && window.Ink && Ink.shared ? `<div class="srow"><span>팀 필기 보기</span><span class="row">${seg('shon', [['1', '켜기'], ['0', '끄기']], Ink.shared.isOn() ? '1' : '0')}<button type="button" class="seg" data-a="shsheet">자세히</button></span></div>` : ''}
           <p class="hint" style="margin-top:10px">코드 악보일 때만:</p>
-          <div class="srow"><span>글자 크기</span><span class="row"><button type="button" class="seg" data-a="fdown">가−</button><b>${P.size}</b><button type="button" class="seg" data-a="fup">가+</button></span></div>
+          <div class="srow"><span>글자 크기</span><span class="row"><button type="button" class="seg" data-a="fdown" aria-label="글자 작게">가−</button><b>${P.size}</b><button type="button" class="seg" data-a="fup" aria-label="글자 크게">가+</button></span></div>
           <div class="srow"><span>2단 보기</span><span class="row">${seg('cols', [['auto', '자동'], ['1', '1단'], ['2', '2단']], P.cols)}</span></div>
           <div class="srow"><span>긴 악보</span><span class="row">${seg('pages', [['1', '쪽 넘기기'], ['0', '세로 스크롤']], P.pages ? '1' : '0')}</span></div>
           <div class="srow"><span>구간 이름</span><span class="row">${seg('names', [['full', '풀네임'], ['abbr', '약어']], P.names)}</span></div>
@@ -4749,7 +4785,7 @@
       if (a === 'close') return closeSheets();
       if (a === 'list') { closeSheets(); return openList(); }
       if (a === 'shon') { Ink.shared.setOn(v === '1'); return openSettings(); }
-      if (a === 'shsheet') { closeSheets(); return openSharedSheet({ song: cur.song, files: cur.files, hasText: cur.hasText, slInk: slOf(cur.it) }); }
+      if (a === 'shsheet') { closeSheets(); if (!cur) return; return openSharedSheet({ song: cur.song, files: cur.files, hasText: cur.hasText, slInk: slOf(cur.it) }); }
       if (a === 'fup') P.size = Math.min(48, P.size + 2);
       else if (a === 'fdown') P.size = Math.max(14, P.size - 2);
       else if (a === 'chords') { P.chords = v === '1'; ls.set('ews_chords', v); }
@@ -4802,6 +4838,7 @@
     window.addEventListener('offline', onNet);
     window.addEventListener('ews-net', onNet);
     teardown = () => {
+      wakeGone = true;
       releaseWake();
       document.removeEventListener('keydown', onKey);
       document.removeEventListener('visibilitychange', onVis);
@@ -4911,7 +4948,7 @@
     for (const it of items) {
       try {
         const { song } = await api('/songs/' + it.song_id);
-        for (const f of song.files || []) if (f.kind === 'image') await fetch(f.url).then((r) => r.blob());
+        for (const f of song.files || []) if (f.kind === 'image') await fetch(f.url).then((r) => { if (!r.ok) throw new Error('img'); return r.blob(); });
       } catch {
         fail++;
       }
@@ -5173,6 +5210,7 @@
         quickAdd(imgs.map((f) => (f.name && f.name !== 'image.png' ? f : asPastedQ(f))));
       };
       document.addEventListener('paste', onPasteQ);
+      onLeave(() => document.removeEventListener('paste', onPasteQ)); // 34차: 다시 열면 두 번 올라가던 것 고침
     }
     // 이미 있는 임시악보 곡(콘티를 다시 고칠 때)의 미리보기는 한 번만 받아 둔다
     const loadThumbs = () => {
@@ -5469,10 +5507,8 @@
     drawResults();
     loadThumbs();
 
-    const doSave = async (play) => {
-      el('err').textContent = '';
-      if (play && !data.items.length) return toast('곡을 먼저 넣어 주세요.');
-      const body = {
+    const buildBody = () => {
+      return {
         date: el('sd').value,
         title: el('st').value,
         memo: el('sm').value,
@@ -5483,12 +5519,24 @@
           return { song_id: it.song_id, key: it.key, form: it.form, memo: it.memo, view: it.view, variant_id: it.variant_id || 0, variant_map: it.variant_map || {}, ...(it.uid ? { uid: it.uid } : {}) };
         }),
       };
+    };
+    // 34차: 저장하지 않고 나가려 하면 한 번 물어본다. 처음 손을 대기 직전의 내용을 기준으로 삼는다(기본값이 늦게 채워져도 헛경고가 없게).
+    let baseSnap = null;
+    const snap = () => { if (baseSnap === null) baseSnap = JSON.stringify(buildBody()); };
+    ['pointerdown', 'keydown', 'paste'].forEach((t) => document.addEventListener(t, snap, true));
+    onLeave(() => ['pointerdown', 'keydown', 'paste'].forEach((t) => document.removeEventListener(t, snap, true)));
+    leaveGuard = () => baseSnap !== null && !!el('sd') && JSON.stringify(buildBody()) !== baseSnap;
+    const doSave = async (play) => {
+      el('err').textContent = '';
+      if (play && !data.items.length) return toast('곡을 먼저 넣어 주세요.');
+      const body = buildBody();
       el('save').disabled = true;
       el('saveplay').disabled = true;
       try {
         if (qBusy) throw new Error('악보를 올리는 중이에요. 끝난 뒤에 저장해 주세요.');
         await flushQuickEdits();
         const r = id ? await api('/setlists/' + id, { method: 'PUT', body }) : await api('/setlists', { method: 'POST', body });
+        leaveGuard = null;
         toast('저장했습니다.');
         location.hash = (play ? '#/play/' : '#/setlist/') + r.id;
       } catch (e) {
@@ -5506,6 +5554,7 @@
         if (!confirm(`"${setlistTitle({ title: data.title, date: data.date, service_name: svcName() })}" 콘티를 삭제할까요?\n삭제하면 되돌릴 수 없습니다.`)) return;
         try {
           await api('/setlists/' + id, { method: 'DELETE' });
+          leaveGuard = null;
           toast('삭제했습니다.');
           location.hash = '#/setlists';
         } catch (e) {
@@ -5651,7 +5700,7 @@
       const box = el('mgres');
       const show = (r) => {
         const un = r.unknown.length ? `<div style="margin-top:6px">알아보지 못한 이름(그대로 둠): ${r.unknown.map((u) => `<code>${esc(u.name)}</code>×${u.count}`).join(' ')}</div>` : '';
-        box.innerHTML = `<div>곡 <b>${r.songs.changed}</b>곡 / ${r.songs.total}곡에서 이름표 ${r.lines}줄이 바뀌어요 · 콘티 송폼 <b>${r.items.changed}</b>칸 / ${r.items.total}칸</div>${un}${r.done_at ? `<div class="muted" style="margin-top:6px">마지막 변환: ${esc(String(r.done_at).replace('T', ' ').slice(0, 16))} (UTC)</div>` : ''}`;
+        box.innerHTML = `<div>곡 <b>${r.songs.changed}</b>곡 / ${r.songs.total}곡에서 이름표 ${r.lines}줄이 바뀌어요 · 콘티 송폼 <b>${r.items.changed}</b>칸 / ${r.items.total}칸</div>${un}${r.done_at ? `<div class="muted" style="margin-top:6px">마지막 변환: ${esc(fmtTime(r.done_at))}</div>` : ''}`;
         el('mgrun').disabled = !(r.songs.changed || r.items.changed);
       };
       el('mgbak').onclick = async () => {

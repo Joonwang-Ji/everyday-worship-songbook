@@ -11,7 +11,7 @@
     '첨부한 악보(이미지 또는 PDF)에서 가사만 뽑아줘. 코드는 쓰지 마. 설명 없이 결과만, 코드 블록 하나로 출력해줘.',
     '',
     '[가사]',
-    '- 가사는 첨부한 악보에 인쇄된 그대로 적어줘. 번역하거나 고치거나 지어내지 마. 기억이나 검색으로 가사를 보충하거나 채우지 말고, 잘 안 보이는 글자는 ?로 표시해줘.',
+    '- 가사는 첨부한 악보에 인쇄된 그대로 적어줘. 번역하거나 고치거나 지어내지 마. 기억이나 검색, 다른 곡의 가사로 보충하거나 채우지 말고, 잘 안 보이는 글자는 ?로 표시해줘.',
     '- 가사에 섞여 있는 절 번호(1. 2. ①), 연결선·밑줄·붙임줄·쉼표·마침표·물결·괄호 같은 기호, 반복 기호(%, ||:, :||), 쪽 번호는 빼고 글자만 적어줘. 단, 구간 이름 {comment: …}와 {ci: …} 메모 줄은 그대로 써.',
     '- 악보 오선 줄의 줄바꿈을 따르지 말고, 가사의 뜻(문장·구절) 단위로 줄을 나눠줘. 한 줄은 노래로 한 호흡(대략 한 소절) 정도로 해줘.',
     '- 한 멜로디 아래에 1절·2절 가사가 위아래로 겹쳐 적혀 있으면 V1, V2로 나눠서 각각 따로 적어줘.',
@@ -114,14 +114,22 @@
     let s = String(raw == null ? '' : raw).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
     if (looksChordOverLyrics(s)) s = fromChordsOverLyrics(s);
     // 코드 울타리(```chordpro … ```)
-    const fence = /```[a-zA-Z]*\n([\s\S]*?)```/.exec(s);
-    if (fence) s = fence[1];
+    // 34차: 블록이 여러 개면(쪽마다 나눠 준 답) 모두 이어 붙인다. 블록 안은 전부 악보 내용이므로 잡담 지우기를 하지 않는다.
+    const fences = [...s.matchAll(/```[a-zA-Z]*\n([\s\S]*?)```/g)].map((m) => m[1].replace(/\n+$/, ''));
+    const fenced = fences.length > 0;
+    if (fenced) s = fences.join('\n\n');
     s = s.replace(/```[a-zA-Z]*/g, '');
     let lines = s.split('\n').map((l) => l.replace(/\s+$/, ''));
-    // 앞뒤 잡담 줄
-    while (lines.length && (!lines[0].trim() || CHATTER_HEAD.test(lines[0].trim())) ) lines.shift();
-    const tail = lines.findIndex((l) => CHATTER_TAIL.test(l.trim()));
-    if (tail > 0) lines = lines.slice(0, tail);
+    while (lines.length && !lines[0].trim()) lines.shift();
+    if (!fenced) {
+      // 앞 잡담: "Here is the result:" "다음은 변환 결과입니다." 처럼 : . ! 로 끝나는 안내 한 줄만 지운다.
+      // ("Here I am to worship", "다음은 없네" 같은 가사 첫 줄을 지우지 않게 — 34차)
+      while (lines.length && (!lines[0].trim() || (CHATTER_HEAD.test(lines[0].trim()) && /[:：.!。]$/.test(lines[0].trim())))) lines.shift();
+      // 뒤 잡담: 빈 줄 다음에 오고, 그 뒤가 3줄 이하이며 코드·구간 표시가 없을 때만 자른다. (가사 중간의 "I hope …" 줄에서 끊기지 않게)
+      for (let i = lines.length - 1; i > 0 && i >= lines.length - 4; i--) {
+        if (CHATTER_TAIL.test(lines[i].trim()) && !lines[i - 1].trim() && !lines.slice(i).some((l) => /[\[{]/.test(l))) { lines = lines.slice(0, i); break; }
+      }
+    }
 
     let key = '';
     let nChords = 0;
@@ -185,10 +193,10 @@
         nUnknown++;
         return '[?]';
       });
-      // 끝없이 반복되는 같은 줄(작은 AI 모델이 자주 하는 실수)은 연속 2줄까지만 남긴다
+      // 끝없이 반복되는 같은 줄은 연속 8줄까지만 남긴다 (34차: 2줄 → 8줄. 악보에 같은 줄이 서너 번 인쇄된 곡이 잘리지 않게)
       if (fixed === prevLine) {
         run++;
-        if (run > 2) { nRepeat++; continue; }
+        if (run > 8) { nRepeat++; continue; }
       } else { run = 1; prevLine = fixed; }
       out.push(fixed);
     }
