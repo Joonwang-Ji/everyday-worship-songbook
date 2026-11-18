@@ -1782,7 +1782,7 @@
         else if (b.dataset.b !== undefined) st.bass = b.dataset.b;
         else if (b.id === 'dc-no') { sh.close(); return; }
         else if (b.id === 'dc-ok') {
-          const v = inp.value.trim();
+          const v = ChordEdit.normalizeChord(inp.value);
           if (!v || !ChordEdit.isChord(v)) { sh.q('#dc-err').textContent = '코드 모양이 아니에요. 예: G, Am7, D/F#, Csus4'; return; }
           sh.close();
           putChord(v);
