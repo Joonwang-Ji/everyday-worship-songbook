@@ -3,7 +3,7 @@
 // - 곡·콘티 정보: 같은 방식. 한 번 열어 본 곡/콘티는 오프라인에서도 열린다.
 // - 악보 이미지: 한 번 받으면 저장해 두고 그대로 쓴다. (파일 번호가 같으면 내용도 같음)
 // 로그아웃하면 앱이 이 저장소(ews-data, ews-img)를 지운다.
-const VER = 'v2';
+const VER = 'v3';
 const SHELL = `ews-shell-${VER}`;
 const DATA = `ews-data-${VER}`;
 const IMG = `ews-img-${VER}`;

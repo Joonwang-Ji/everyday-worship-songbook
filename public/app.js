@@ -1606,6 +1606,8 @@
     function kbStack(root) {
       const b = kbBuf;
       if (!ChordEdit.isChord(b.text)) { kbHint = `"${b.text}"가 아직 코드 모양이 아니에요. 마저 치거나 Esc로 지우세요.`; teRender(); return; }
+      // 40차: 괄호가 열려 있으면(예: "(A") 새 코드가 아니라 같은 괄호 안에 띄어 붙인다 → (A Dm)
+      if (b.text.startsWith('(') && !b.text.endsWith(')')) { kbType(' ' + root); return; }
       kbBuf = null;
       tsel = { li: b.li, pos: b.pos, ci: -1 };
       kbType(root);
@@ -1633,6 +1635,7 @@
         ${row('b · ⇧3(#)', '플랫 · 샵 (예: B b → B♭, F ⇧3 → F♯)')}
         ${row('/ 다음 A ~ G', '베이스 (예: D / F ⇧3 → D/F♯)')}
         ${row('⇧/ (?)', '불확실한 코드 ?')}
+        ${row('⇧9 ( … ⇧0 )', '괄호 코드 — 연주자 선택·생략 가능 (예: ⇧9 A ⇧D m ⇧0 → (A Dm))')}
         ${row('.', '바로 앞 코드를 한 번 더')}
         ${row('Tab · Space · →', '다음 글자로 (줄 끝에서는 빈칸이 늘어나요)')}
         ${row('⇧Tab · ⇧Space · ←', '앞 글자로')}
@@ -1701,6 +1704,8 @@
         else if (jamo[k]) code = 'Key' + jamo[k];
         else if (/^\d$/.test(k)) code = 'Digit' + k;
         else if (k === '#') code = 'Digit3';
+        else if (k === '(') code = 'Digit9';
+        else if (k === ')') code = 'Digit0';
         else if (k === '/' || k === '?') code = 'Slash';
         else if (k === ' ') code = 'Space';
         else code = k; // Tab, Enter, Escape, Backspace, ArrowLeft … 는 key 이름이 code 와 같다
@@ -1743,8 +1748,8 @@
       const buf = kbBuf ? kbBuf.text : '';
       const L = (/^Key([A-G])$/.exec(code) || [])[1];
       // 32b: 치는 중에 C·E·F(뒷부분에 안 쓰는 글자)나 Shift+A~G 를 누르면 같은 칸에 새 코드를 시작한다
-      if (L && buf && buf !== '?' && !buf.endsWith('/') && (ev.shiftKey || 'CEF'.includes(L))) { ev.preventDefault(); kbStack(L); return; }
-      const tok = ChordEdit.keyToken(code, ev.shiftKey || ev.key === '#' || ev.key === '?', buf);
+      if (L && buf && buf !== '?' && buf !== '(' && !buf.endsWith('/') && (ev.shiftKey || 'CEF'.includes(L))) { ev.preventDefault(); kbStack(L); return; }
+      const tok = ChordEdit.keyToken(code, ev.shiftKey || ev.key === '#' || ev.key === '?' || ev.key === '(' || ev.key === ')', buf);
       if (tok) { ev.preventDefault(); kbType(tok); return; }
       // 32b: 못 받는 키는 조용히 넘기지 않고 이유를 한 줄로 알려 준다 (글자·숫자·기호 키만)
       if (/^(Key[A-Z]|Digit\d|Numpad\d|Slash)$/.test(code)) {
@@ -1783,7 +1788,7 @@
         else if (b.id === 'dc-no') { sh.close(); return; }
         else if (b.id === 'dc-ok') {
           const v = ChordEdit.normalizeChord(inp.value);
-          if (!v || !ChordEdit.isChord(v)) { sh.q('#dc-err').textContent = '코드 모양이 아니에요. 예: G, Am7, D/F#, Csus4'; return; }
+          if (!v || !ChordEdit.isChord(v)) { sh.q('#dc-err').textContent = '코드 모양이 아니에요. 예: G, Am7, D/F#, Csus4, (Am), (A Dm)'; return; }
           sh.close();
           putChord(v);
           return;

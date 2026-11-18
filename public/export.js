@@ -15,21 +15,31 @@
   // 39차: 코드는 세리프 이탤릭 굵게. 루트는 크게, 덧붙임(7·sus4 …)은 작게 올려서 한 덩어리로 보이게 한다 (화면 .ch 와 같은 비율)
   const CFONT = '"Times New Roman", Georgia, "Noto Serif", "Apple SD Gothic Neo", serif';
   function chordRuns(shown, px) {
-    const q = Chord.chordParts(shown);
-    if (!q) return [{ t: String(shown), px, dy: 0 }];
-    const r = [{ t: q.root, px: px * 1.12, dy: 0 }];
-    if (q.q) r.push({ t: q.q, px, dy: 0 });
-    if (q.ext) r.push({ t: q.ext, px: px * 0.72, dy: -px * 0.3 });
-    if (q.bass) r.push({ t: '/' + q.bass, px: px * 0.9, dy: 0 });
+    const g = Chord.chordGroup(shown);
+    if (!g.items.length) return [{ t: String(shown), px, dy: 0 }];
+    const r = [];
+    if (g.open) r.push({ t: '(', px, dy: 0, light: true });
+    g.items.forEach((q, i) => {
+      if (i) r.push({ t: ' ', px, dy: 0 });
+      if (q.raw !== undefined) { r.push({ t: q.raw, px, dy: 0 }); return; }
+      r.push({ t: q.root, px: px * 1.12, dy: 0 });
+      if (q.q) r.push({ t: q.q, px, dy: 0 });
+      if (q.ext) r.push({ t: q.ext, px: px * 0.72, dy: -px * 0.3 });
+      if (q.bass) r.push({ t: '/' + q.bass, px: px * 0.9, dy: 0 });
+    });
+    if (g.close) r.push({ t: ')', px, dy: 0, light: true });
     return r;
   }
+  const runFont = (r) => (r.light ? '400 ' : 'italic 800 ') + r.px + 'px ' + CFONT; // 괄호는 연하고 가늘게
   function chordWidth(g, shown, px) {
     let w = 0;
-    for (const r of chordRuns(shown, px)) { g.font = 'italic 800 ' + r.px + 'px ' + CFONT; w += g.measureText(r.t).width; }
+    for (const r of chordRuns(shown, px)) { g.font = runFont(r); w += g.measureText(r.t).width; }
     return w;
   }
   function drawChord(g, shown, x, y, px) {
-    for (const r of chordRuns(shown, px)) { g.font = 'italic 800 ' + r.px + 'px ' + CFONT; g.fillText(r.t, x, y + r.dy); x += g.measureText(r.t).width; }
+    const a = g.globalAlpha;
+    for (const r of chordRuns(shown, px)) { g.font = runFont(r); g.globalAlpha = r.light ? a * 0.45 : a; g.fillText(r.t, x, y + r.dy); x += g.measureText(r.t).width; }
+    g.globalAlpha = a;
   }
   const font = (px, weight) => `${weight || 400} ${px}px ${FONT}`;
   function mk(w, h) {

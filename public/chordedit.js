@@ -9,16 +9,24 @@
 
   // ---------- 코드 모양 검사 ----------
   // 루트(A–G, #/b) + 품질(m, maj7, 7, sus4, dim, aug, add9 …) + 슬래시 베이스. [?]·N.C.는 허용.
-  const CHORD_RE = /^[A-G][#b]?(?:maj|min|dim|aug|sus|add|m|M|\+|-|°|ø|[#b]?\d{1,2}|\([#b+-]?\d{1,2}\))*(?:\/[A-G][#b]?)?$/;
+  const CHORD_RE = /^[A-G][#b]?(?:maj|min|dim|aug|sus|add|m|M|\+|-|°|ø|[#b]?\d{1,2}|\((?:add|sus|maj|m)?[#b+-]?\d{1,2}\))*(?:\/[A-G][#b]?)?$/;
   function isChord(s) {
     s = String(s == null ? '' : s).trim();
-    if (!s || s.length > 14) return false;
+    if (!s || s.length > 24) return false;
     if (s === '?' || /^N\.?C\.?$/i.test(s)) return true;
-    return CHORD_RE.test(s);
+    // 40차: (Am) · (A Dm) · "(A"·"Dm)" 괄호 코드 — 안쪽이 모두 코드여야 한다
+    const g = Chord.peelGroup(s);
+    if (g.group) return g.parts.length > 0 && g.parts.every((x) => x.length <= 14 && CHORD_RE.test(x));
+    return s.length <= 14 && CHORD_RE.test(s);
   }
   // 39차: 손으로 친 코드의 대소문자를 바로잡는다. em→Em, e/g#→E/G#, ebmaj7→Ebmaj7, EM7·Emaj7 은 그대로(M7은 장7로 보존).
   function normalizeChord(s) {
     s = String(s == null ? '' : s).trim();
+    const g = Chord.peelGroup(s);
+    if (g.group || /\s/.test(s)) return g.open + (g.group ? g.parts : s.split(/\s+/)).map(normalizeOne).join(' ') + g.close;
+    return normalizeOne(s);
+  }
+  function normalizeOne(s) {
     const m = /^([a-gA-G])([#b♯♭]?)(.*?)(?:\/([a-gA-G])([#b♯♭]?))?$/.exec(s);
     if (!m) return s;
     const acc = (a) => (a === '♯' ? '#' : a === '♭' ? 'b' : a);
@@ -27,7 +35,7 @@
     return m[1].toUpperCase() + acc(m[2]) + rest + (m[4] ? '/' + m[4].toUpperCase() + acc(m[5]) : '');
   }
   function rootPc(chord) {
-    const m = /^([A-G])([#b]?)/.exec(chord || '');
+    const m = /^([A-G])([#b]?)/.exec(String(chord || '').replace(/^\(/, ''));
     if (!m) return null;
     return mod12(LETTER[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0));
   }
@@ -214,23 +222,28 @@
   // 돌려주는 것: 이어 붙일 글자(token) 또는 null(무시). buf는 지금까지 친 코드 글자.
   function keyToken(code, shift, buf) {
     buf = buf || '';
+    // 40차: 괄호 코드 "(A Dm)" — 지금 치는 코드(cur)는 앞의 "("와 띄어쓰기 앞부분을 뺀 마지막 조각
+    const closed = buf.endsWith(')');
+    const cur = buf.replace(/^\(/, '').split(' ').pop();
     let m = /^Key([A-Z])$/.exec(code);
     if (m) {
       const L = m[1];
-      if (buf === '?') return null;
-      if (!buf || buf.endsWith('/')) return /[A-G]/.test(L) ? L : null;
-      if (L === 'B') return /^[A-G]$/.test(buf) || /\/[A-G]$/.test(buf) || /\d$/.test(buf) ? 'b' : null;
+      if (closed || cur === '?') return null;
+      if (!cur || cur.endsWith('/')) return /[A-G]/.test(L) ? L : null;
+      if (L === 'B') return /^[A-G]$/.test(cur) || /\/[A-G]$/.test(cur) || /\d$/.test(cur) ? 'b' : null;
       return 'majsudig'.includes(L.toLowerCase()) ? L.toLowerCase() : null;
     }
     m = /^(?:Digit|Numpad)(\d)$/.exec(code);
     if (m) {
-      if (shift && code === 'Digit3') return buf && /[A-G]$|\d$/.test(buf) ? '#' : null;
-      if (shift || !buf || buf === '?' || buf.endsWith('/')) return null;
+      if (shift && code === 'Digit9') return !buf ? '(' : null;
+      if (shift && code === 'Digit0') return buf.startsWith('(') && !closed && cur && cur !== '?' && !cur.endsWith('/') ? ')' : null;
+      if (shift && code === 'Digit3') return cur && !closed && /[A-G]$|\d$/.test(cur) ? '#' : null;
+      if (shift || closed || !cur || cur === '?' || cur.endsWith('/')) return null;
       return m[1];
     }
     if (code === 'Slash') {
       if (shift) return !buf ? '?' : null;
-      return buf && buf !== '?' && !buf.includes('/') && !buf.endsWith('/') ? '/' : null;
+      return cur && cur !== '?' && !cur.includes('/') && !cur.endsWith('/') && !closed ? '/' : null;
     }
     return null;
   }

@@ -45,8 +45,27 @@
     return FLAT_MAJORS.has(major);
   }
 
+  // 40차: 괄호 코드 — (Am) · (A Dm) 처럼 코드 전체(또는 여러 개)를 괄호로 감싼 것. 바깥 괄호·띄어쓰기를 떼어 안쪽 코드마다 처리한다.
+  // 괄호가 한쪽만 있는 "(A"·"Dm)"(칸을 나눠 적은 경우)도 받는다. Am(add9)처럼 코드 안쪽의 괄호는 코드의 일부다.
+  function peelGroup(s) {
+    s = String(s == null ? '' : s);
+    const open = s[0] === '(';
+    let body = open ? s.slice(1) : s, close = '';
+    const n = (c) => body.split(c).length - 1;
+    if (body.endsWith(')') && n('(') < n(')')) { close = ')'; body = body.slice(0, -1); }
+    if (!open && !close) return { open: '', close: '', parts: [s], group: false };
+    return { open: open ? '(' : '', close, parts: body.split(/\s+/).filter(Boolean), group: true };
+  }
+  const mapGroup = (chord, one) => {
+    const g = peelGroup(chord);
+    return g.group ? g.open + g.parts.map(one).join(' ') + g.close : one(chord);
+  };
+
   // "Am7", "D/F#", "Bbmaj7" → 반음 이동. 코드가 아닌 것([?], N.C.)은 그대로 둔다.
   function transposeChord(chord, semis, flats) {
+    return mapGroup(chord, (c) => transposeOne(c, semis, flats));
+  }
+  function transposeOne(chord, semis, flats) {
     const m = /^([A-G][#b]?)([^/]*)(?:\/([A-G][#b]?))?$/.exec(chord);
     if (!m) return chord;
     const root = parseNote(m[1]);
@@ -58,6 +77,9 @@
   // 30차: 화면·PDF에 보이는 코드 글자를 제대로 된 기호로 바꾼다(저장·이조 계산은 계속 # b 영문 글자).
   //   C#→C♯ · Bb→B♭ · Am7b5→Am7♭5 · C#11→C♯11 · (39차: dim·aug는 글자 그대로) · 슬래시 베이스(D/F#→D/F♯)
   function pretty(chord) {
+    return mapGroup(chord, prettyOne);
+  }
+  function prettyOne(chord) {
     const m = /^([A-G][#b]?)([^/]*)(?:\/(.*))?$/.exec(String(chord == null ? '' : chord));
     if (!m) return String(chord == null ? '' : chord);
     const acc = (x) => x.replace(/^([A-G])#/, '$1♯').replace(/^([A-G])b/, '$1♭');
@@ -72,12 +94,18 @@
     if (!m) return null;
     return { root: m[1], q: m[2] || '', ext: m[3] || '', bass: m[4] || '' };
   }
-  // 코드 한 덩어리 HTML: 세리프 이탤릭 굵게, 덧붙임은 작게 올림 (스타일은 style.css .ch)
+  // 괄호 코드까지 포함해 나눈다: {open, close, items:[{root,q,ext,bass} | {raw}]}
+  function chordGroup(shown) {
+    const g = peelGroup(shown);
+    return { open: g.open, close: g.close, items: g.parts.map((t) => chordParts(t) || { raw: t }) };
+  }
+  const partHTML = (p) => (p.raw !== undefined ? esc(p.raw) : '<span class="cr">' + esc(p.root) + '</span>' + (p.q ? '<span class="cq">' + esc(p.q) + '</span>' : '') +
+    (p.ext ? '<span class="cx">' + esc(p.ext) + '</span>' : '') + (p.bass ? '<span class="cb">/' + esc(p.bass) + '</span>' : ''));
+  // 코드 한 덩어리 HTML: 세리프 이탤릭 굵게, 덧붙임은 작게 올림, 괄호는 연하게 (스타일은 style.css .ch)
   function chordHTML(shown) {
-    const p = chordParts(shown);
-    if (!p) return esc(shown);
-    return '<span class="cr">' + esc(p.root) + '</span>' + (p.q ? '<span class="cq">' + esc(p.q) + '</span>' : '') +
-      (p.ext ? '<span class="cx">' + esc(p.ext) + '</span>' : '') + (p.bass ? '<span class="cb">/' + esc(p.bass) + '</span>' : '');
+    const g = chordGroup(shown);
+    if (!g.items.length) return esc(shown);
+    return (g.open ? '<span class="cp">(</span>' : '') + g.items.map(partHTML).join(' ') + (g.close ? '<span class="cp">)</span>' : '');
   }
 
   // acc(27차): 'sharp'/'flat'이면 검은 건반 키 이름을 모두 그 표기로, 'auto'(기본)이면 흔히 쓰는 이름(Db·Eb·F#·Ab·Bb …)을 쓰되
@@ -401,7 +429,7 @@
 
   return {
     MAJOR_NAMES, MINOR_NAMES,
-    parseKey, keyUsesFlats, transposeChord, pretty, chordParts, chordHTML, transposeKey, noteName,
+    parseKey, keyUsesFlats, transposeChord, pretty, chordParts, chordGroup, chordHTML, peelGroup, transposeKey, noteName,
     parseChordPro, lineHash, guessKey, plan, renderHTML, sectionBody, buildSections, shiftMemoKey,
   };
 });
