@@ -56,13 +56,28 @@
   }
 
   // 30차: 화면·PDF에 보이는 코드 글자를 제대로 된 기호로 바꾼다(저장·이조 계산은 계속 # b 영문 글자).
-  //   C#→C♯ · Bb→B♭ · Am7b5→Am7♭5 · C#11→C♯11 · Bdim→B° · Caug→C+ · 슬래시 베이스(D/F#→D/F♯)
+  //   C#→C♯ · Bb→B♭ · Am7b5→Am7♭5 · C#11→C♯11 · (39차: dim·aug는 글자 그대로) · 슬래시 베이스(D/F#→D/F♯)
   function pretty(chord) {
     const m = /^([A-G][#b]?)([^/]*)(?:\/(.*))?$/.exec(String(chord == null ? '' : chord));
     if (!m) return String(chord == null ? '' : chord);
     const acc = (x) => x.replace(/^([A-G])#/, '$1♯').replace(/^([A-G])b/, '$1♭');
-    const q = m[2].replace(/dim/g, '°').replace(/aug/g, '+').replace(/([#b])(?=\d)/g, (x) => (x === '#' ? '♯' : '♭'));
+    const q = m[2].replace(/([#b])(?=\d)/g, (x) => (x === '#' ? '♯' : '♭'));
     return acc(m[1]) + q + (m[3] ? '/' + acc(m[3]) : '');
+  }
+
+  // 39차: 화면에 보이는 코드(pretty 결과)를 모양 단위로 나눈다 — 루트(C♯) · 단조 m · 덧붙임(7 sus4 maj7 add9 …, 작게) · 베이스(/E)
+  function chordParts(shown) {
+    const t = String(shown == null ? '' : shown);
+    const m = /^([A-G][♯♭]?)(m(?!aj))?([^/]*)(?:\/(.*))?$/.exec(t);
+    if (!m) return null;
+    return { root: m[1], q: m[2] || '', ext: m[3] || '', bass: m[4] || '' };
+  }
+  // 코드 한 덩어리 HTML: 세리프 이탤릭 굵게, 덧붙임은 작게 올림 (스타일은 style.css .ch)
+  function chordHTML(shown) {
+    const p = chordParts(shown);
+    if (!p) return esc(shown);
+    return '<span class="cr">' + esc(p.root) + '</span>' + (p.q ? '<span class="cq">' + esc(p.q) + '</span>' : '') +
+      (p.ext ? '<span class="cx">' + esc(p.ext) + '</span>' : '') + (p.bass ? '<span class="cb">/' + esc(p.bass) + '</span>' : '');
   }
 
   // acc(27차): 'sharp'/'flat'이면 검은 건반 키 이름을 모두 그 표기로, 'auto'(기본)이면 흔히 쓰는 이름(Db·Eb·F#·Ab·Bb …)을 쓰되
@@ -371,7 +386,7 @@
               ln.segs
                 .map(
                   (s) =>
-                    '<span class="sg"><span class="ch">' + esc(pretty(conv(s.chord, ln.ks))) + '</span><span class="ly">' + esc(s.text) + '</span></span>'
+                    '<span class="sg"><span class="ch">' + chordHTML(pretty(conv(s.chord, ln.ks))) + '</span><span class="ly">' + esc(s.text) + '</span></span>'
                 )
                 .join('') +
               '</div>'
@@ -386,7 +401,7 @@
 
   return {
     MAJOR_NAMES, MINOR_NAMES,
-    parseKey, keyUsesFlats, transposeChord, pretty, transposeKey, noteName,
+    parseKey, keyUsesFlats, transposeChord, pretty, chordParts, chordHTML, transposeKey, noteName,
     parseChordPro, lineHash, guessKey, plan, renderHTML, sectionBody, buildSections, shiftMemoKey,
   };
 });

@@ -16,6 +16,16 @@
     if (s === '?' || /^N\.?C\.?$/i.test(s)) return true;
     return CHORD_RE.test(s);
   }
+  // 39차: 손으로 친 코드의 대소문자를 바로잡는다. em→Em, e/g#→E/G#, ebmaj7→Ebmaj7, EM7·Emaj7 은 그대로(M7은 장7로 보존).
+  function normalizeChord(s) {
+    s = String(s == null ? '' : s).trim();
+    const m = /^([a-gA-G])([#b♯♭]?)(.*?)(?:\/([a-gA-G])([#b♯♭]?))?$/.exec(s);
+    if (!m) return s;
+    const acc = (a) => (a === '♯' ? '#' : a === '♭' ? 'b' : a);
+    let rest = m[3];
+    if (!/M/.test(rest)) rest = rest.toLowerCase();
+    return m[1].toUpperCase() + acc(m[2]) + rest + (m[4] ? '/' + m[4].toUpperCase() + acc(m[5]) : '');
+  }
   function rootPc(chord) {
     const m = /^([A-G])([#b]?)/.exec(chord || '');
     if (!m) return null;
@@ -225,5 +235,5 @@
     return null;
   }
 
-  return { keyToken, isChord, diatonic, bassNotes, chordAt, changeChord, sectionEdit, check, SECTION_NAMES, QUALITIES: [['', '장'], ['m', 'm'], ['7', '7'], ['maj7', 'maj7'], ['m7', 'm7'], ['sus4', 'sus4'], ['add9', 'add9'], ['dim', 'dim'], ['6', '6']] };
+  return { keyToken, isChord, normalizeChord, diatonic, bassNotes, chordAt, changeChord, sectionEdit, check, SECTION_NAMES, QUALITIES: [['', '장'], ['m', 'm'], ['7', '7'], ['maj7', 'maj7'], ['m7', 'm7'], ['sus4', 'sus4'], ['add9', 'add9'], ['dim', 'dim'], ['6', '6']] };
 });

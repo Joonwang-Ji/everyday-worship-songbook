@@ -12,6 +12,25 @@
   const formText = (f, k) => (window.SongForm ? SongForm.formDisplay(String(f || '').trim(), k) : String(f || '').trim());
   const M = 90; // 바깥 여백
 
+  // 39차: 코드는 세리프 이탤릭 굵게. 루트는 크게, 덧붙임(7·sus4 …)은 작게 올려서 한 덩어리로 보이게 한다 (화면 .ch 와 같은 비율)
+  const CFONT = '"Times New Roman", Georgia, "Noto Serif", "Apple SD Gothic Neo", serif';
+  function chordRuns(shown, px) {
+    const q = Chord.chordParts(shown);
+    if (!q) return [{ t: String(shown), px, dy: 0 }];
+    const r = [{ t: q.root, px: px * 1.12, dy: 0 }];
+    if (q.q) r.push({ t: q.q, px, dy: 0 });
+    if (q.ext) r.push({ t: q.ext, px: px * 0.72, dy: -px * 0.3 });
+    if (q.bass) r.push({ t: '/' + q.bass, px: px * 0.9, dy: 0 });
+    return r;
+  }
+  function chordWidth(g, shown, px) {
+    let w = 0;
+    for (const r of chordRuns(shown, px)) { g.font = 'italic 800 ' + r.px + 'px ' + CFONT; w += g.measureText(r.t).width; }
+    return w;
+  }
+  function drawChord(g, shown, x, y, px) {
+    for (const r of chordRuns(shown, px)) { g.font = 'italic 800 ' + r.px + 'px ' + CFONT; g.fillText(r.t, x, y + r.dy); x += g.measureText(r.t).width; }
+  }
   const font = (px, weight) => `${weight || 400} ${px}px ${FONT}`;
   function mk(w, h) {
     const c = document.createElement('canvas');
@@ -223,7 +242,7 @@
       let cur = [];
       for (const u of units) { cur.push(u); if (/\s$/.test(u.text)) { groups.push(cur); cur = []; } }
       if (cur.length) groups.push(cur);
-      const uw = (u) => Math.max(tw(LYR, 400, u.text), u.chord ? tw(CHD, 700, u.chord) + 14 * scale : 0);
+      const uw = (u) => Math.max(tw(LYR, 400, u.text), u.chord ? chordWidth(g, u.chord, CHD) + 14 * scale : 0);
       const rows = [];
       let row = { items: [], w: 0 };
       const put = (u) => { row.items.push({ x: row.w, chord: u.chord, text: u.text }); row.w += uw(u); };
@@ -296,7 +315,7 @@
         need(CH_H + LY_H + ROW_GAP);
         if (inChorus && barY === null) barY = y;
         for (const u of row.items) {
-          if (u.chord) { g.font = font(CHD, 700); g.fillStyle = CHORD; g.fillText(u.chord, X0 + u.x, y + Math.round(CHD * 1.05)); }
+          if (u.chord) { g.fillStyle = CHORD; drawChord(g, u.chord, X0 + u.x, y + Math.round(CHD * 1.05), CHD); }
           if (u.text.trim()) { g.font = font(LYR, 400); g.fillStyle = INK; g.fillText(u.text, X0 + u.x, y + CH_H + Math.round(LYR * 1.05)); }
         }
         y += CH_H + LY_H + ROW_GAP;

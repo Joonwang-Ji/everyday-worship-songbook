@@ -83,7 +83,10 @@ textarea.code { font-family: ui-monospace, "SF Mono", Menlo, "D2Coding", monospa
 .ln { margin: 2px 0; }
 .ln.plain { white-space: pre-wrap; line-height: 1.6; }
 .sg { display: inline-flex; flex-direction: column; vertical-align: bottom; }
-.ch { font-weight: 800; color: var(--chord); font-size: .88em; line-height: 1.35; min-height: 1.35em; padding-right: .45em; white-space: pre; }
+.ch { font-family: "Times New Roman", Georgia, "Noto Serif", "Apple SD Gothic Neo", serif; font-style: italic; letter-spacing: .01em; font-weight: 800; color: var(--chord); font-size: .88em; line-height: 1.35; min-height: 1.35em; padding-right: .45em; white-space: pre; }
+.ch .cr { font-size: 1.12em; }
+.ch .cx { font-size: .72em; position: relative; top: -.32em; margin-left: .04em; }
+.ch .cb { font-size: .9em; }
 .ly { white-space: pre; line-height: 1.5; min-height: 1.5em; }
 .cm { display: inline-block; margin: 14px 0 4px; padding: 1px 10px; font-size: .78em; font-weight: 700; background: var(--accent-bg); color: var(--brand); border-radius: 6px; }
 .chorus { border-left: 3px solid var(--brand); padding-left: 10px; margin: 2px 0; }
