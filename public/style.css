@@ -230,6 +230,26 @@ span.play-next { cursor: default; }
   .pbtn { padding-top: 4px; padding-bottom: 4px; }
 }
 
+/* ---- 35차: 연주 모드 상단 "한 줄" (기본) — 키·BPM·박자는 제목 줄에, 송폼·메모·다음 곡은 그 아래에 항상 보임. 설정에서 "자세히"로 되돌림 ---- */
+.play-chips { display: flex; align-items: center; gap: 8px; flex: none; }
+.play-chips:empty { display: none; }
+.play-chips .pi, .play-chips .keybadge { white-space: nowrap; }
+.play-chips .pi.bpm b { font-size: 16px; }
+.play-chips .pi.tsig b { font-size: 17px; padding: 0; }
+.play-chips button.pkey { border: 1px solid var(--brand); background: var(--accent-bg); cursor: pointer; font-family: inherit; min-height: 32px; }
+.play.hdr1 .play-top { padding-bottom: 3px; }
+.play.hdr1 .play-title { padding: 2px 0; font-size: 16px; }
+.play.hdr1 .play-info { font-size: 13.5px; line-height: 1.3; gap: 0 10px; max-height: none; overflow: visible; margin-top: 1px; }
+.play.hdr1 .play-info .pi { white-space: normal; }
+.play.hdr1 .play-next { max-width: 100%; margin-left: 0; }
+.sheet-card .kstep { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.sheet-card .kstep .pbtn { min-width: 44px; min-height: 40px; font-size: 20px; }
+.sheet-card .srow .row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+@media (orientation: landscape) and (max-height: 520px) {
+  .play-chips { order: 2; }
+  .play.hdr1 .play-info { font-size: 13px; }
+}
+
 /* ---- 개편: 상단 막대 · 아래 메뉴 · 큰 버튼 · 아래에서 올라오는 창 ---- */
 .top { position: relative; padding: 6px 16px; padding-top: calc(6px + env(safe-area-inset-top)); }
 .brand-name { font-size: 15px; }
@@ -853,3 +873,18 @@ body.cink-txt-on { padding-bottom: 300px; }
 
 /* 33차: 송폼 순서 보기 — 구간을 단 가운데서 끊지 않는다 */
 .play-body.formview .score .part { break-inside: avoid; }
+
+/* ---- 36차: 콘티 흐름 점검 줄 ---- */
+.flow { padding: 8px 12px; margin: 0 0 12px; }
+.flow-head { font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 2px; }
+.flow-row { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; }
+.flow-lab { flex: none; width: 2.6em; font-size: 12px; color: var(--muted); }
+.flow-seq { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 4px; }
+.flow-arr { font-style: normal; color: var(--muted); font-size: 13px; }
+.flow-k { font-weight: 800; font-size: 15px; }
+.flow-k.far { color: #b54708; background: #fef0c7; border-radius: 6px; padding: 0 5px; }
+.flow-t { font-weight: 700; font-size: 13px; border-radius: 999px; padding: 0 8px; background: var(--accent-bg); color: var(--brand); }
+.flow-t.tf { background: #fde4d8; color: #b4401f; }
+.flow-t.ts { background: #e0eaf7; color: #2c5a94; }
+.flow-t.tu { background: transparent; color: var(--muted); font-weight: 400; }
+
