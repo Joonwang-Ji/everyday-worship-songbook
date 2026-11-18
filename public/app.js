@@ -4101,6 +4101,7 @@
       chords: ls.get('ews_chords', '1') === '1',
       acc: ls.get('ews_acc', 'auto'),
       theme: ls.get('ews_play_theme', 'auto'),
+      head: ls.get('ews_play_head', '1') === 'full' ? 'full' : '1', // 35차: 상단 정보 — '1' 한 줄(기본) / 'full' 자세히(예전 방식)
       wake: ls.get('ews_play_wake', '1') === '1',
       cols: ['auto', '1', '2'].includes(ls.get('ews_play_cols', 'auto')) ? ls.get('ews_play_cols', 'auto') : 'auto',
       pages: ls.get('ews_play_pages', '1') !== '0', // 긴 코드 악보: 쪽 넘기기(기본) / 세로 스크롤
@@ -4114,6 +4115,7 @@
           <div class="play-row">
             <a class="pbtn" id="pexit" href="${exitHref}" aria-label="연주 모드 나가기">✕</a>
             <button class="play-title" id="ptitle" type="button"></button>
+            <span class="play-chips" id="pchips"></span>
             <span class="play-off" id="poff" hidden>오프라인</span>
             <button class="pbtn" id="pink" type="button" aria-label="악보에 필기" hidden>✎</button>
             <button class="pbtn" id="pgear" type="button" aria-label="설정">⚙</button>
@@ -4128,6 +4130,7 @@
         </div>
         <div class="play-sheet" id="psheet" hidden></div>
         <div class="play-sheet" id="plsheet" hidden></div>
+        <div class="play-sheet" id="pctl" hidden></div>
       </div>`;
     const g = (id) => document.getElementById(id);
     const $play = g('play');
@@ -4205,9 +4208,19 @@
 
     let cur = null;
     let nav = 0;
+    let ctlHtml = ''; // 35차: 한 줄 모드에서 아래 창에 넣을 조정 버튼들
+    function paintCtl() {
+      g('pctl').innerHTML = `<div class="sheet-card">
+        <h2 style="margin-top:0">연주 전 조정</h2>
+        ${ctlHtml || '<p class="hint">조정할 것이 없어요.</p>'}
+        <p class="hint">연주 중에 봐야 하는 정보(송폼·메모·다음 곡)는 위에 계속 보여요. 나가면 콘티의 키로 돌아옵니다.</p>
+        <button type="button" class="btn primary" data-a="close" style="width:100%">닫기</button>
+      </div>`;
+    }
     function applyLook() {
       $play.classList.toggle('dark', P.theme === 'dark');
       $play.classList.toggle('light', P.theme === 'light');
+      $play.classList.toggle('hdr1', P.head === '1');
       $play.style.setProperty('--song-size', P.size + 'px');
     }
     // keepPlace: 글자 크기·키·표시를 바꿔 다시 그릴 때, 화면 맨 위에 있던 줄이 있는 쪽으로 돌아온다
@@ -4228,18 +4241,20 @@
         keyTxt = cur.delta && hasKey ? Chord.plan(origKey, cur.shift, 0, P.acc).soundKey : it.key || origKey || '';
         if ((it.key && origKey && it.key !== origKey) || (cur.delta && hasKey && origKey)) extra = `악보는 원키 ${origKey} 기준`;
       }
+      const compact = P.head === '1'; // 35차: 한 줄 — 연주 전에 만지는 버튼은 아래 창(#pctl)으로, 연주 중에 봐야 할 정보만 위에 둔다
+      const bc = compact ? 'pbtn' : 'pbtn mini';
       // 키 −/+ : 코드 악보, 또는 키를 아는 이미지 악보에서만
       const canKey = (!isImg && hasText) || (isImg && hasKey);
       const baseKeyTxt = hasKey ? Chord.plan(origKey, cur.base, 0, P.acc).soundKey : '';
       const kLabel = keyTxt || (cur.shift ? (cur.shift > 0 ? '+' : '') + cur.shift : '원키');
       const keyHtml = canKey
-        ? `<span class="kstep"><button class="pbtn mini" id="kdn" type="button" aria-label="반음 내리기">−</button><span class="keybadge big">${esc(kLabel)}</span><button class="pbtn mini" id="kup" type="button" aria-label="반음 올리기">+</button></span>`
-          + (cur.delta ? `<button class="pbtn mini" id="kreset" type="button">원래대로${baseKeyTxt ? ' ' + esc(baseKeyTxt) : ''}</button>` : '')
+        ? `<span class="kstep"><button class="${bc}" id="kdn" type="button" aria-label="반음 내리기">−</button><span class="keybadge big">${esc(kLabel)}</span><button class="${bc}" id="kup" type="button" aria-label="반음 올리기">+</button></span>`
+          + (cur.delta ? `<button class="${bc}" id="kreset" type="button">원래대로${baseKeyTxt ? ' ' + esc(baseKeyTxt) : ''}</button>` : '')
         : keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '';
       // 29차: 카포 −/+ (코드 악보에서만. 이미지 악보는 코드가 안 바뀌어 숨김)
       const capoHtml = !isImg && hasText && hasKey
-        ? `<span class="kstep capo"><span class="muted small">카포</span><button class="pbtn mini" id="cdn" type="button" aria-label="카포 내리기">−</button><span class="keybadge big">${cur.capo ? cur.capo : '없음'}</span><button class="pbtn mini" id="cup" type="button" aria-label="카포 올리기">+</button></span>`
-          + (cur.capo !== cur.baseCapo ? `<button class="pbtn mini" id="creset" type="button">카포 원래대로</button>` : '')
+        ? `<span class="kstep capo"><span class="muted small">카포</span><button class="${bc}" id="cdn" type="button" aria-label="카포 내리기">−</button><span class="keybadge big">${cur.capo ? cur.capo : '없음'}</span><button class="${bc}" id="cup" type="button" aria-label="카포 올리기">+</button></span>`
+          + (cur.capo !== cur.baseCapo ? `<button class="${bc}" id="creset" type="button">카포 원래대로</button>` : '')
         : '';
       g('ptitle').textContent = (multi ? `${idx + 1}. ` : '') + song.title;
       // 다음 곡 미리보기: 제목 · 키 · 메모 (길면 말줄임). 누르면 다음 곡으로.
@@ -4247,20 +4262,40 @@
       const nextHtml = !multi ? '' : nx
         ? `<button class="play-next" id="pnext" type="button">다음 ▶ ${idx + 2}. ${esc(nx.title || '')}${nx.key ? ' · <b>' + esc(nx.key) + '</b>' : ''}${nx.memo ? ' · ' + esc(nx.memo) : ''}</button>`
         : '<span class="play-next">마지막 곡</span>';
-      g('pinfo').innerHTML = [
-        keyHtml,
-        capoHtml,
-        song.time_sig ? `<span class="pi tsig" title="박자"><b>${SongFilter.tsigInner(song.time_sig, esc)}</b></span>` : '',
+      const tsigHtml = song.time_sig ? `<span class="pi tsig" title="박자"><b>${SongFilter.tsigInner(song.time_sig, esc)}</b></span>` : '';
+      const bpmHtml = song.tempo ? `<span class="pi bpm" title="템포(BPM)"><b>♩${esc(song.tempo)}</b></span>` : ''; // 35차: BPM
+      const swapHtml = hasText && files.length ? `<button class="${bc}" id="pswap" type="button">${isImg ? '코드 악보로' : '이미지 악보로'}</button>` : '';
+      const formBtnHtml = !isImg && hasText && it.form && arrangedFor(cur) ? `<button class="${bc}" id="pform" type="button">${formViewOn(cur) ? '악보 순서로' : '송폼 순서로'}</button>` : '';
+      const restHtml = [
         it.form ? `<span class="pi"><b>송폼</b> ${formHtml(formEff(cur), keyTxt)}</span>` : '',
         SongForm.keyPathText(formEff(cur), keyTxt) ? `<span class="pi kcpath" title="전조"><b>♯ 키</b> ${esc(SongForm.keyPathText(formEff(cur), keyTxt))}</span>` : '',
         it.memo ? `<span class="pi"><b>메모</b> ${esc(it.memo)}</span>` : '',
         song.variant_label || Variants.hasMap(it) ? `<span class="pi vbadge" title="악보 버전">${esc(song.variant_label || '')}${Variants.hasMap(it) ? (song.variant_label ? ' · ' : '') + '구간별' : ''}</span>` : '',
         extra ? `<span class="pi muted">${esc(extra)}</span>` : '',
-        hasText && files.length ? `<button class="pbtn mini" id="pswap" type="button">${isImg ? '코드 악보로' : '이미지 악보로'}</button>` : '',
-        !isImg && hasText && it.form && arrangedFor(cur) ? `<button class="pbtn mini" id="pform" type="button">${formViewOn(cur) ? '악보 순서로' : '송폼 순서로'}</button>` : '',
-        !isImg && formViewOn(cur) && arrangedFor(cur) && arrangedFor(cur).omitted.length ? `<span class="pi muted">송폼에 없는 구간 ${esc(arrangedFor(cur).omitted.join(', '))}</span>` : '',
-        nextHtml,
       ].join('');
+      const omitHtml = !isImg && formViewOn(cur) && arrangedFor(cur) && arrangedFor(cur).omitted.length ? `<span class="pi muted">송폼에 없는 구간 ${esc(arrangedFor(cur).omitted.join(', '))}</span>` : '';
+      if (compact) {
+        // 위쪽 한 줄: 키 · BPM · 박자 (키를 누르면 연주 전 조정 창). 송폼·메모·다음 곡은 그 아래에 항상 보인다(누를 필요 없음).
+        const rows = [
+          canKey ? `<div class="srow"><span>키</span><span class="row">${keyHtml}</span></div>` : '',
+          capoHtml ? `<div class="srow"><span>카포</span><span class="row">${capoHtml.replace('<span class="muted small">카포</span>', '')}</span></div>` : '',
+          swapHtml || formBtnHtml ? `<div class="srow"><span>악보</span><span class="row">${swapHtml}${formBtnHtml}</span></div>` : '',
+        ].join('');
+        ctlHtml = rows;
+        const chipTxt = keyTxt || (canKey ? kLabel : '');
+        g('pchips').innerHTML = (chipTxt
+          ? rows
+            ? `<button type="button" class="keybadge big pkey" id="pkey" aria-label="키·카포·악보 조정 열기">${esc(chipTxt)} ▾</button>`
+            : `<span class="keybadge big">${esc(chipTxt)}</span>`
+          : rows ? '<button type="button" class="keybadge big pkey" id="pkey" aria-label="조정 열기">조정 ▾</button>' : '')
+          + bpmHtml + tsigHtml;
+        g('pinfo').innerHTML = restHtml + omitHtml + nextHtml;
+        if (!g('pctl').hidden) paintCtl();
+      } else {
+        ctlHtml = '';
+        g('pchips').innerHTML = '';
+        g('pinfo').innerHTML = [keyHtml, capoHtml, tsigHtml, bpmHtml, restHtml, swapHtml, formBtnHtml, omitHtml, nextHtml].join('');
+      }
       $pb.classList.toggle('img', isImg);
       if (!isImg) {
         $pb.innerHTML = '<div class="score"></div>'; // 코드 악보는 아래 drawChord가 그리고 배치한다
@@ -4479,6 +4514,8 @@
       const it = items[i];
       g('ptitle').textContent = (multi ? `${i + 1}. ` : '') + '불러오는 중…';
       g('pinfo').innerHTML = '';
+      g('pchips').innerHTML = '';
+      g('pctl').hidden = true;
       $pb.innerHTML = '';
       $pb.scrollTop = 0;
       if (src.sl) history.replaceState(null, '', '#/play/' + src.sl + '?i=' + i);
@@ -4700,7 +4737,7 @@
     g('per').onclick = () => slide(1);
 
     // ----- 위쪽 버튼, 설정·곡 목록 창 -----
-    g('pinfo').onclick = (ev) => {
+    const onCtl = (ev) => {
       if (ev.target.closest && ev.target.closest('#pnext')) { if (idx + 1 < items.length) { if (cur && cur.pageCount > 1) { busy || loading || show(idx + 1, 0); } else slide(1); } return; }
       // 24차: 반음 단위 임시 키 변경 (이 화면 안에서만, 나가면 원래 키로)
       const kb = ev.target.closest && ev.target.closest('#kdn, #kup, #kreset');
@@ -4738,13 +4775,23 @@
       $pb.scrollTop = 0;
       draw();
     };
-    const closeSheets = () => { g('psheet').hidden = true; g('plsheet').hidden = true; };
+    g('pinfo').onclick = onCtl;
+    g('pctl').onclick = (ev) => {
+      const b = ev.target.closest && ev.target.closest('button');
+      if (ev.target === g('pctl') || (b && b.dataset.a === 'close')) return closeSheets();
+      onCtl(ev);
+    };
+    g('pchips').onclick = (ev) => {
+      if (ev.target.closest && ev.target.closest('#pkey')) { paintCtl(); g('pctl').hidden = false; }
+    };
+    const closeSheets = () => { g('psheet').hidden = true; g('plsheet').hidden = true; g('pctl').hidden = true; };
     function openSettings() {
       const seg = (name, opts, val) => opts.map(([v, t]) => `<button type="button" class="seg ${val === v ? 'on' : ''}" data-a="${name}" data-v="${v}">${t}</button>`).join('');
       g('psheet').innerHTML = `
         <div class="sheet-card">
           ${multi ? '<button type="button" class="btn" data-a="list" style="width:100%;margin-bottom:6px">곡 목록 열기</button>' : ''}
           <div class="srow"><span>화면 색</span><span class="row">${seg('theme', [['auto', '자동'], ['light', '밝게'], ['dark', '어둡게']], P.theme)}</span></div>
+          <div class="srow"><span>상단 정보</span><span class="row">${seg('head', [['1', '한 줄'], ['full', '자세히']], P.head)}</span></div>
           <div class="srow"><span>화면 꺼짐 방지</span><span class="row">${seg('wake', [['1', '켜기'], ['0', '끄기']], P.wake ? '1' : '0')}</span></div>
           ${'wakeLock' in navigator ? '' : '<p class="hint">이 브라우저는 화면 꺼짐 방지를 지원하지 않아요. 기기 설정의 자동 잠금 시간을 길게 바꿔 두세요.</p>'}
           ${me.team && window.Ink && Ink.shared ? `<div class="srow"><span>팀 필기 보기</span><span class="row">${seg('shon', [['1', '켜기'], ['0', '끄기']], Ink.shared.isOn() ? '1' : '0')}<button type="button" class="seg" data-a="shsheet">자세히</button></span></div>` : ''}
@@ -4755,7 +4802,7 @@
           <div class="srow"><span>구간 이름</span><span class="row">${seg('names', [['full', '풀네임'], ['abbr', '약어']], P.names)}</span></div>
           <div class="srow"><span>코드 표시</span><span class="row">${seg('chords', [['1', '보기'], ['0', '숨기기']], P.chords ? '1' : '0')}</span></div>
           <div class="srow"><span>코드 표기</span><span class="row">${seg('acc', [['auto', '자동'], ['sharp', '♯'], ['flat', '♭']], P.acc)}</span></div>
-          <p class="hint">키는 위쪽 −/+ 버튼으로 반음씩 바꿀 수 있어요. 연주 모드를 나가면 콘티의 키로 돌아옵니다. (콘티에 저장하려면 콘티에서 키를 고치세요.)</p>
+          <p class="hint">${P.head === '1' ? '키·카포는 위쪽 키 표시(▾)를 누르면 바꿀 수 있어요.' : '키는 위쪽 −/+ 버튼으로 반음씩 바꿀 수 있어요.'} 연주 모드를 나가면 콘티의 키로 돌아옵니다. (콘티에 저장하려면 콘티에서 키를 고치세요.)</p>
           <button type="button" class="btn primary" data-a="close" style="width:100%">닫기</button>
         </div>`;
       g('psheet').hidden = false;
@@ -4794,6 +4841,7 @@
       else if (a === 'cols') { P.cols = v; ls.set('ews_play_cols', v); }
       else if (a === 'pages') { P.pages = v === '1'; ls.set('ews_play_pages', v); }
       else if (a === 'theme') { P.theme = v; ls.set('ews_play_theme', v); }
+      else if (a === 'head') { P.head = v === 'full' ? 'full' : '1'; ls.set('ews_play_head', P.head); }
       else if (a === 'wake') { P.wake = v === '1'; ls.set('ews_play_wake', v); if (P.wake) acquireWake(); else releaseWake(); }
       ls.set('ews_play_size', String(P.size));
       applyLook();
