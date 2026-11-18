@@ -236,5 +236,36 @@
     return { st, q: (p.get('q') || '').trim(), sort };
   }
 
-  return { OTHER_KEY, normKey, effKey, keyDiffers, tsigList, tsigText, tsigInner, tsigHTML, keyTsigHTML, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, tsigChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
+  // ---------- 36차: 콘티 흐름 점검 (키 흐름 · 템포 흐름) ----------
+  // 키 사이 "멀다"는 5도권 거리 4칸 이상(예: G→E, G→B♭ 는 3칸이라 아님)으로 본다. 단조는 같은 으뜸음의 relative 장조로 센다. 둘 중 하나라도 키를 모르면 표시하지 않는다.
+  const fifthsPos = (k) => {
+    const p = Chord.parseKey(k);
+    if (!p) return null;
+    return (((p.minor ? p.idx + 3 : p.idx) * 7) % 12 + 12) % 12;
+  };
+  const keyFar = (a, b) => {
+    const x = fifthsPos(a), y = fifthsPos(b);
+    if (x === null || y === null) return false;
+    const d = Math.abs(x - y);
+    return Math.min(d, 12 - d) >= 4;
+  };
+  // 빠르기: 태그(빠른곡·중간곡·느린곡)가 먼저, 없으면 BPM(120 이상 빠름 · 90~119 중간 · 90 미만 느림). 모르면 ''.
+  const tempoClass = (tags, tempo) => {
+    const t = String(tags || '');
+    if (/빠른곡/.test(t)) return '빠';
+    if (/중간곡/.test(t)) return '중';
+    if (/느린곡/.test(t)) return '느';
+    const n = +tempo;
+    return n > 0 ? (n >= 120 ? '빠' : n >= 90 ? '중' : '느') : '';
+  };
+  // items: [{key, original_key, tags, tempo}] → {count, keys:[{k, far}], tempos:[''|빠|중|느], hasFar, hasTempo}
+  function flowSummary(items) {
+    const list = items || [];
+    const ks = list.map((it) => String((it && (it.key || it.original_key)) || '').trim());
+    const keys = ks.map((k, i) => ({ k, far: i > 0 && keyFar(ks[i - 1], k) }));
+    const tempos = list.map((it) => tempoClass(it && it.tags, it && it.tempo));
+    return { count: list.length, keys, tempos, hasFar: keys.some((x) => x.far), hasTempo: tempos.some(Boolean), hasKey: ks.some(Boolean) };
+  }
+
+  return { flowSummary, keyFar, tempoClass, OTHER_KEY, normKey, effKey, keyDiffers, tsigList, tsigText, tsigInner, tsigHTML, keyTsigHTML, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, tsigChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
 });

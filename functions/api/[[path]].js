@@ -1566,7 +1566,7 @@ export async function onRequest({ request, env }) {
         const { results } = await db
           .prepare(
             `SELECT i.id,i.uid,i.position,i.song_id,i.key,i.form,i.memo,i."view" AS view,i.variant_id,i.variant_map,
-              s.title,s.original_key,s.time_sig,
+              s.title,s.original_key,s.time_sig,s.tempo,s.tags,
               (TRIM(s.chordpro, ' ' || char(9) || char(10) || char(13)) <> '') AS has_chords,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = i.song_id) AS file_count
              FROM setlist_items i LEFT JOIN songs s ON s.id = i.song_id

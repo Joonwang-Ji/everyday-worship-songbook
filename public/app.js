@@ -3895,6 +3895,14 @@
   }
 
   // ---------- 콘티 보기 ----------
+  // 36차: 콘티 흐름 점검 줄 — 곡 수 · 키 흐름(앞 곡과 5도권으로 멀면 ⚠) · 템포 흐름. 새 입력 없이 콘티·곡 정보로만 계산한다.
+  function flowHtml(items) {
+    const f = SongFilter.flowSummary(items);
+    if (f.count < 2 || (!f.hasKey && !f.hasTempo)) return '';
+    const keys = f.hasKey ? `<div class="flow-row"><span class="flow-lab">키</span><span class="flow-seq">${f.keys.map((x, i) => `${i ? '<i class="flow-arr">→</i>' : ''}<span class="flow-k${x.far ? ' far' : ''}"${x.far ? ' title="앞 곡과 키가 많이 달라요"' : ''}>${esc(x.k || '?')}${x.far ? '⚠' : ''}</span>`).join('')}</span></div>` : '';
+    const tempos = f.hasTempo ? `<div class="flow-row"><span class="flow-lab">템포</span><span class="flow-seq">${f.tempos.map((t, i) => `${i ? '<i class="flow-arr">·</i>' : ''}<span class="flow-t t${t ? ({ 빠: 'f', 중: 'm', 느: 's' })[t] : 'u'}">${t || '?'}</span>`).join('')}</span></div>` : '';
+    return `<div class="card flow" aria-label="콘티 흐름"><div class="flow-head">${f.count}곡 흐름</div>${keys}${tempos}${f.hasFar ? '<p class="hint" style="margin:4px 0 0">⚠ 앞 곡과 키가 많이 다른 곳이에요 (이어서 연주할 때 참고).</p>' : ''}</div>`;
+  }
   async function viewSetlist(id) {
     const { setlist: s, canEdit } = await api('/setlists/' + id);
     const shownTitle = setlistTitle(s);
@@ -3928,6 +3936,7 @@
       <div class="song-meta" style="margin-bottom:10px">${tempTag(s)}${s.date ? `<span class="keybadge">${esc(fmtDate(s.date))}</span>` : ''}${s.service_name && (s.title || '').trim() ? `<span class="tag">${esc(s.service_name)}</span>` : ''}${leaderTag(s)}<span>${s.items.length}곡</span></div>
       ${s.is_temp && canEdit ? '<div class="card tempbar"><span class="small grow">⚡ 급하게 만든 임시 콘티예요. 정리가 끝나면 확정해 두세요.</span><button class="btn small primary" id="confirmtmp" type="button">확정</button></div>' : ''}
       ${s.memo ? `<div class="memo" style="margin-bottom:12px">${esc(s.memo)}</div>` : ''}
+      ${flowHtml(s.items)}
       ${rows.length ? `<div class="row actions"><a class="btn primary big grow" href="#/play/${id}">▶ 연주 모드</a><button class="btn big" id="share" type="button">공유·저장</button></div>` : ''}
       ${rows.length ? `<ul class="songs">${rows.join('')}</ul>` : '<p class="muted">아직 곡이 없습니다.</p>'}
       <p class="muted small">곡을 누르면 이 콘티의 키로 악보가 열립니다.</p>`;
