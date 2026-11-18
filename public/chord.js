@@ -56,12 +56,12 @@
   }
 
   // 30차: 화면·PDF에 보이는 코드 글자를 제대로 된 기호로 바꾼다(저장·이조 계산은 계속 # b 영문 글자).
-  //   C#→C♯ · Bb→B♭ · Am7b5→Am7♭5 · C#11→C♯11 · Bdim→B° · Caug→C+ · 슬래시 베이스(D/F#→D/F♯)
+  //   C#→C♯ · Bb→B♭ · Am7b5→Am7♭5 · C#11→C♯11 · (39차: dim·aug는 글자 그대로) · 슬래시 베이스(D/F#→D/F♯)
   function pretty(chord) {
     const m = /^([A-G][#b]?)([^/]*)(?:\/(.*))?$/.exec(String(chord == null ? '' : chord));
     if (!m) return String(chord == null ? '' : chord);
     const acc = (x) => x.replace(/^([A-G])#/, '$1♯').replace(/^([A-G])b/, '$1♭');
-    const q = m[2].replace(/dim/g, '°').replace(/aug/g, '+').replace(/([#b])(?=\d)/g, (x) => (x === '#' ? '♯' : '♭'));
+    const q = m[2].replace(/([#b])(?=\d)/g, (x) => (x === '#' ? '♯' : '♭'));
     return acc(m[1]) + q + (m[3] ? '/' + acc(m[3]) : '');
   }
 
