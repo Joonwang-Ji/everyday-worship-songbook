@@ -888,3 +888,8 @@ body.cink-txt-on { padding-bottom: 300px; }
 .flow-t.ts { background: #e0eaf7; color: #2c5a94; }
 .flow-t.tu { background: transparent; color: var(--muted); font-weight: 400; }
 
+/* ---- 37차: 악보 영역 오른쪽 위 모서리의 전환 버튼(악보↔코드·송폼 순서). 위 줄은 늘리지 않는다 ---- */
+.play-float { position: absolute; top: 6px; right: calc(8px + env(safe-area-inset-right)); z-index: 4; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; }
+.play-float:empty { display: none; }
+.pfl { pointer-events: auto; border: 1px solid var(--line); background: var(--card); color: var(--text); opacity: .88; border-radius: 999px; padding: 5px 12px; min-height: 34px; font-size: 13px; font-weight: 700; font-family: inherit; cursor: pointer; box-shadow: 0 1px 5px rgba(0, 0, 0, .22); white-space: nowrap; }
+
