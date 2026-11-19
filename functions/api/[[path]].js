@@ -152,6 +152,8 @@ function cleanInk(raw) {
     if (it.a && typeof it.a === 'object') {
       a = { b: inum(it.a.b, 0, 9999), h: /^[0-9a-z]{0,8}$/.test(it.a.h) ? it.a.h : '', v: inum(it.a.v, 0, 999999999) };
       if (typeof it.a.o === 'string' && /^[A-Za-z0-9#.]{1,12}$/.test(it.a.o)) a.o = it.a.o;
+      // 42차: 회차 필기가 송폼 순서 변경을 따라가도록 직전 구간 이름(p)도 받는다. 맨 앞 구간이면 빈 글자. 가사·코드 내용이 아니라 구간 이름만 들어간다.
+      if (a.o !== undefined && typeof it.a.p === 'string' && /^[^\u0000-\u001f<>"'\\]{0,24}$/.test(it.a.p)) a.p = it.a.p;
     }
     const lo = a ? -40000 : 0, hi = a ? 60000 : 10000;
     if (it.t === 's' || it.t === 'h') {

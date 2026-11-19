@@ -856,8 +856,8 @@
     });
     draw();
     if (hasText && window.Ink) {
-      // 31차: 두 손가락으로 벌려 확대하면 글자 크기가 바뀐다(필기하는 동안만, 끝나면 원래 크기)
-      ci = Ink.codeView($score, { songId: song.id, sl: slInk || undefined, v: vSel, zoom: { get: () => prefs.size, set: (px) => { prefs.size = px; draw(); } } });
+      // 42차: 필기는 전체 화면 필기 창에서 한다(악보 전체가 한 화면에, 두 손가락으로 확대)
+      ci = Ink.codeView($score, { songId: song.id, sl: slInk || undefined, v: vSel, occMap: slInk ? null : () => SongForm.occMap(song.base_form || '') });
       Ink.pull(song.id);
       if (slInk) Ink.pullSetlist(slInk.setlistId);
       const cb = document.getElementById('cinkbtn');
@@ -932,6 +932,12 @@
   // it: 콘티 항목 {song_id, key, form, _undo}, song: GET /api/songs/:id 의 song(없으면 null → 미리보기 없이 입력만), lastForms: 곡별 지난번 송폼
   // 위(넓은 화면은 왼쪽): 송폼 순서 미리보기 · 원래 악보 · 이미지 탭. 아래(오른쪽): 송폼 입력기. 칩을 넣을 때마다 미리보기가 바로 바뀐다.
   // 취소하면 열기 전 송폼으로 돌아간다. onDone은 완료·취소 모두 닫힐 때 불린다.
+  // 42차: 송폼을 바꿔 저장했을 때 '이 회차만' 필기에 생기는 일을 한 줄로 알린다(없으면 빈 글자)
+  function occWarnText(x) {
+    if (!x || (!x.lost && !x.moved)) return '';
+    const a = [x.moved ? x.moved + '개는 다른 자리로 갈 수 있고' : '', x.lost ? x.lost + '개는 자리를 잃어 안 보여요' : ''].filter(Boolean);
+    return ' 송폼이 바뀌어 "이 회차만" 필기 ' + (a.length === 2 ? a.join(' ') : a[0].replace('갈 수 있고', '갈 수 있어요')) + '. 송폼을 되돌리면 다시 보여요. ("모든 회차" 필기는 그대로예요)';
+  }
   function openFormWindow(it, song, lastForms, onDone) {
     const before = { form: it.form, undo: (it._undo || []).slice() };
     const hasChord = !!(song && /\S/.test(song.chordpro || ''));
@@ -2949,7 +2955,9 @@
             return;
           }
         }
-        toast('저장했습니다.');
+        let occNote = '';
+        if (id && !editVid && window.Ink && Ink.occImpact && fullSong) { try { occNote = occWarnText(await Ink.occImpact(id, null, fullSong.base_form || '', body.base_form || '')); } catch {} } // 42차: 송폼을 바꾸면 회차 필기에 생기는 일 알림
+        toast('저장했습니다.' + occNote);
         if (editVid) ls.set('ews_sv_' + id, String(editVid)); else if (id) ls.set('ews_sv_' + id, '0');
         location.hash = '#/song/' + r.id + (editVid ? '?v=' + editVid : '');
       } catch (e) {
@@ -5068,6 +5076,9 @@
           items: itemsOf(listRes.setlist, !!id),
         }
       : { date: todayKst(), title: '', memo: '', service_id: '', leaders: [], is_temp: quick, items: [] };
+    // 42차: 저장할 때 송폼이 바뀐 칸의 회차 필기 영향을 알리려고, 불러온 때의 송폼을 기억해 둔다
+    const origForms = {};
+    if (id) for (const it of data.items) if (it.uid) origForms[it.uid] = { form: it.form || '' };
     // 새 콘티에서 목록의 예배 종류 필터가 하나로 골라져 있으면 그 종류로 시작한다 (기본 요일이 있으면 날짜도 그 요일로)
     if (!id && !quick && !copyId) {
       const f = ls.get('ews_sl_svc', '');
@@ -5606,7 +5617,20 @@
         await flushQuickEdits();
         const r = id ? await api('/setlists/' + id, { method: 'PUT', body }) : await api('/setlists', { method: 'POST', body });
         leaveGuard = null;
-        toast('저장했습니다.');
+        let occNote = '';
+        if (id && window.Ink && Ink.occImpact) {
+          try {
+            const sum = { lost: 0, moved: 0 };
+            for (const it of data.items) {
+              const o0 = it.uid && origForms[it.uid];
+              if (!o0 || o0.form === it.form) continue;
+              const x = await Ink.occImpact(it.song_id, { uid: it.uid }, o0.form, it.form);
+              sum.lost += x.lost; sum.moved += x.moved;
+            }
+            occNote = occWarnText(sum);
+          } catch {}
+        }
+        toast('저장했습니다.' + occNote);
         location.hash = (play ? '#/play/' : '#/setlist/') + r.id;
       } catch (e) {
         if (e.status === 403) await loadMe();
