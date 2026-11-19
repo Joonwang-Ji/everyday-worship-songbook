@@ -3689,6 +3689,12 @@
         ${me.isAdmin || leader ? '<p style="margin:10px 0 0"><button class="btn small" id="closeperm" type="button">이 기기에서 편집 권한 닫기</button></p>' : ''}
       </div>` : ''}
       ${adminRows.length ? `<div class="card rows">${adminRows.join('')}</div>` : ''}
+      <div class="card" id="offcard">
+        <b>⬇ 전체 오프라인 저장</b>
+        <p class="muted small" style="margin:4px 0 8px">해외·산속처럼 인터넷이 안 되는 곳을 위해 우리 팀의 모든 곡과 악보(이미지·PDF)를 이 기기에 저장해요. 와이파이에서 눌러 주세요. 최대 1000장까지 저장돼요.</p>
+        <button class="btn" id="offall" type="button">전체 곡 저장하기</button>
+        <p class="muted small" id="offnote" style="margin:8px 0 0"></p>
+      </div>
       <details class="card fold"><summary>기기 · 앱 정보</summary>
         <p class="muted small" id="persistnote" style="margin-top:0"></p>
         <p class="muted small">교회 내부용 악보집입니다. 저작권 보호를 위해 외부 공유를 삼가 주세요.</p>
@@ -3709,6 +3715,12 @@
       }).catch(() => {});
     }
     if (window.Ink) Ink.mountVaultCard(el('vaultcard'));
+    offlineUsageNote();
+    el('offall').onclick = async () => {
+      const b = el('offall');
+      b.disabled = true;
+      try { await prepareAllOffline((m) => { b.textContent = m; }); } finally { b.disabled = false; b.textContent = '전체 곡 저장하기'; offlineUsageNote(); }
+    };
     const cp = el('closeperm');
     if (cp) cp.onclick = () => {
       ls.del('ews_admin');
@@ -5044,13 +5056,63 @@
     for (const it of items) {
       try {
         const { song } = await api('/songs/' + it.song_id);
-        for (const f of song.files || []) if (f.kind === 'image') await fetch(f.url).then((r) => { if (!r.ok) throw new Error('img'); return r.blob(); });
+        for (const f of song.files || []) if (f.kind === 'image' || f.kind === 'pdf') await fetch(f.url).then((r) => { if (!r.ok) throw new Error('img'); return r.blob(); });
       } catch {
         fail++;
       }
       toast(`오프라인 준비 중… ${++done}/${items.length}`);
     }
-    toast(fail ? `${fail}곡은 저장하지 못했어요. 인터넷을 확인하고 다시 눌러 주세요.` : '이 콘티를 오프라인에서도 열 수 있어요. (PDF 악보는 제외)');
+    toast(fail ? `${fail}곡은 저장하지 못했어요. 인터넷을 확인하고 다시 눌러 주세요.` : '이 콘티를 오프라인에서도 열 수 있어요.');
+  }
+
+  // 45차: 더보기의 "전체 오프라인 저장" — 팀의 모든 곡 정보와 악보 파일(이미지·PDF)을 이 기기에 저장
+  async function offlineUsageNote() {
+    const n = document.getElementById('offnote');
+    if (!n) return;
+    try {
+      const c = window.caches ? (await caches.keys()).filter((k) => k.startsWith('ews-img')) : [];
+      let cnt = 0;
+      for (const k of c) cnt += (await (await caches.open(k)).keys()).length;
+      let txt = `저장된 악보 파일 ${cnt}장 / 최대 1000장`;
+      if (navigator.storage && navigator.storage.estimate) {
+        const e = await navigator.storage.estimate();
+        if (e && e.usage != null) txt += ` · 이 앱 사용량 약 ${Math.round(e.usage / 1048576)}MB`;
+      }
+      n.textContent = txt;
+    } catch {}
+  }
+
+  async function prepareAllOffline(setLabel) {
+    if (!(navigator.serviceWorker && navigator.serviceWorker.controller)) {
+      toast('처음 한 번은 앱을 새로 고친 뒤 다시 눌러 주세요.');
+      return;
+    }
+    if (!navigator.onLine) { toast('인터넷에 연결된 상태에서 눌러 주세요.'); return; }
+    if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); // 저장 공간 보호 요청
+    const { songs } = await api('/songs');
+    const total = songs.length;
+    let done = 0;
+    let fail = 0;
+    let files = 0;
+    let idx = 0;
+    setLabel(`저장 중… 0/${total}`);
+    const one = async (s) => {
+      try {
+        const { song } = await api('/songs/' + s.id);
+        for (const f of song.files || []) {
+          if (f.kind !== 'image' && f.kind !== 'pdf') continue;
+          const r = await fetch(f.url);
+          if (!r.ok) throw new Error('file');
+          await r.blob();
+          files++;
+        }
+      } catch { fail++; }
+      setLabel(`저장 중… ${++done}/${total}`);
+    };
+    const worker = async () => { while (idx < total) await one(songs[idx++]); };
+    await Promise.all([worker(), worker(), worker()]);
+    const over = files > 1000 ? ` 악보 파일이 ${files}장이라 1000장을 넘어 오래된 것부터 빠졌어요.` : '';
+    toast(fail ? `${total - fail}곡 저장, ${fail}곡은 실패했어요. 인터넷을 확인하고 다시 눌러 주세요.${over}` : `${total}곡(악보 ${files}장)을 저장했어요. 이제 인터넷 없이도 열려요.${over}`);
   }
 
   // ---------- 콘티 편집 (팀장) ----------
