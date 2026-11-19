@@ -61,6 +61,21 @@
     return g.group ? g.open + g.parts.map(one).join(' ') + g.close : one(chord);
   };
 
+  // 41차: 코드 모양 정규식(chordedit.js isChord와 공용)과 소문자 보정. 본문에 [c]·[em]처럼 소문자로 적힌 코드도 코드로 읽는다.
+  const CHORD_RE = /^[A-G][#b]?(?:maj|min|dim|aug|sus|add|m|M|\+|-|°|ø|[#b]?\d{1,2}|\((?:add|sus|maj|m)?[#b+-]?\d{1,2}\))*(?:\/[A-G][#b]?)?$/;
+  function fixCaseOne(s) {
+    const m = /^([a-gA-G])([#b♯♭]?)(.*?)(?:\/([a-gA-G])([#b♯♭]?))?$/.exec(s);
+    if (!m) return s;
+    const acc = (a) => (a === '♯' ? '#' : a === '♭' ? 'b' : a);
+    let rest = m[3];
+    if (!/M/.test(rest)) rest = rest.toLowerCase();
+    const out = m[1].toUpperCase() + acc(m[2]) + rest + (m[4] ? '/' + m[4].toUpperCase() + acc(m[5]) : '');
+    return CHORD_RE.test(out) ? out : s; // 코드 모양이 아니면(가사 낱말 등) 건드리지 않는다
+  }
+  function fixCase(s) {
+    return mapGroup(String(s == null ? '' : s), fixCaseOne);
+  }
+
   // "Am7", "D/F#", "Bbmaj7" → 반음 이동. 코드가 아닌 것([?], N.C.)은 그대로 둔다.
   function transposeChord(chord, semis, flats) {
     return mapGroup(chord, (c) => transposeOne(c, semis, flats));
@@ -99,8 +114,11 @@
     const g = peelGroup(shown);
     return { open: g.open, close: g.close, items: g.parts.map((t) => chordParts(t) || { raw: t }) };
   }
-  const partHTML = (p) => (p.raw !== undefined ? esc(p.raw) : '<span class="cr">' + esc(p.root) + '</span>' + (p.q ? '<span class="cq">' + esc(p.q) + '</span>' : '') +
-    (p.ext ? '<span class="cx">' + esc(p.ext) + '</span>' : '') + (p.bass ? '<span class="cb">/' + esc(p.bass) + '</span>' : ''));
+  // 41차: ♯·♭은 윗첨자(.ca), 덧붙임(7·sus4·maj7·add9 …)은 아랫첨자(.cx). 글자 사이의 ♯♭만 골라 감싼다.
+  const accHTML = (t) => esc(t).replace(/[♯♭]/g, '<span class="ca">$&</span>');
+  const rootHTML = (r) => esc(r[0]) + accHTML(r.slice(1));
+  const partHTML = (p) => (p.raw !== undefined ? esc(p.raw) : '<span class="cr">' + rootHTML(p.root) + '</span>' + (p.q ? '<span class="cq">' + esc(p.q) + '</span>' : '') +
+    (p.ext ? '<span class="cx">' + accHTML(p.ext) + '</span>' : '') + (p.bass ? '<span class="cb">/' + rootHTML(p.bass) + '</span>' : ''));
   // 코드 한 덩어리 HTML: 세리프 이탤릭 굵게, 덧붙임은 작게 올림, 괄호는 연하게 (스타일은 style.css .ch)
   function chordHTML(shown) {
     const g = chordGroup(shown);
@@ -176,7 +194,7 @@
       while ((m = re.exec(raw))) {
         cur.text = raw.slice(last, m.index);
         segs.push(cur);
-        cur = { chord: m[1].trim(), text: '' };
+        cur = { chord: fixCase(m[1].trim()), text: '' };
         last = re.lastIndex;
       }
       cur.text = raw.slice(last);
@@ -429,7 +447,7 @@
 
   return {
     MAJOR_NAMES, MINOR_NAMES,
-    parseKey, keyUsesFlats, transposeChord, pretty, chordParts, chordGroup, chordHTML, peelGroup, transposeKey, noteName,
+    parseKey, keyUsesFlats, transposeChord, pretty, fixCase, CHORD_RE, chordParts, chordGroup, chordHTML, peelGroup, transposeKey, noteName,
     parseChordPro, lineHash, guessKey, plan, renderHTML, sectionBody, buildSections, shiftMemoKey,
   };
 });

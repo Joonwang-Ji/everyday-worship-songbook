@@ -4260,14 +4260,15 @@
       const canKey = (!isImg && hasText) || (isImg && hasKey);
       const baseKeyTxt = hasKey ? Chord.plan(origKey, cur.base, 0, P.acc).soundKey : '';
       const kLabel = keyTxt || (cur.shift ? (cur.shift > 0 ? '+' : '') + cur.shift : '원키');
+      // 41차: "원래대로"는 −의 왼쪽 고정 자리에 항상 두고, 바뀐 게 없을 땐 흐리게 비활성(+를 연달아 눌러도 자리가 안 움직인다)
       const keyHtml = canKey
-        ? `<span class="kstep"><button class="${bc}" id="kdn" type="button" aria-label="반음 내리기">−</button><span class="keybadge big">${esc(kLabel)}</span><button class="${bc}" id="kup" type="button" aria-label="반음 올리기">+</button></span>`
-          + (cur.delta ? `<button class="${bc}" id="kreset" type="button">원래대로${baseKeyTxt ? ' ' + esc(baseKeyTxt) : ''}</button>` : '')
+        ? `<button class="${bc} preset" id="kreset" type="button" ${cur.delta ? '' : 'disabled'}>원래대로${baseKeyTxt ? ' ' + esc(baseKeyTxt) : ''}</button>`
+          + `<span class="kstep"><button class="${bc}" id="kdn" type="button" aria-label="반음 내리기">−</button><span class="keybadge big">${esc(kLabel)}</span><button class="${bc}" id="kup" type="button" aria-label="반음 올리기">+</button></span>`
         : keyTxt ? `<span class="keybadge big">${esc(keyTxt)}</span>` : '';
       // 29차: 카포 −/+ (코드 악보에서만. 이미지 악보는 코드가 안 바뀌어 숨김)
       const capoHtml = !isImg && hasText && hasKey
-        ? `<span class="kstep capo"><span class="muted small">카포</span><button class="${bc}" id="cdn" type="button" aria-label="카포 내리기">−</button><span class="keybadge big">${cur.capo ? cur.capo : '없음'}</span><button class="${bc}" id="cup" type="button" aria-label="카포 올리기">+</button></span>`
-          + (cur.capo !== cur.baseCapo ? `<button class="${bc}" id="creset" type="button">카포 원래대로</button>` : '')
+        ? `<button class="${bc} preset" id="creset" type="button" ${cur.capo !== cur.baseCapo ? '' : 'disabled'}>카포 원래대로</button>`
+          + `<span class="kstep capo"><span class="muted small">카포</span><button class="${bc}" id="cdn" type="button" aria-label="카포 내리기">−</button><span class="keybadge big">${cur.capo ? cur.capo : '없음'}</span><button class="${bc}" id="cup" type="button" aria-label="카포 올리기">+</button></span>`
         : '';
       g('ptitle').textContent = (multi ? `${idx + 1}. ` : '') + song.title;
       // 다음 곡 미리보기: 제목 · 키 · 메모 (길면 말줄임). 누르면 다음 곡으로.
