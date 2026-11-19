@@ -14,6 +14,14 @@
 
   // 39차: 코드는 세리프 이탤릭 굵게. 루트는 크게, 덧붙임(7·sus4 …)은 작게 올려서 한 덩어리로 보이게 한다 (화면 .ch 와 같은 비율)
   const CFONT = '"Times New Roman", Georgia, "Noto Serif", "Apple SD Gothic Neo", serif';
+  // 41차: ♯·♭은 윗첨자로(작게 올림), 나머지는 base 크기·dy 그대로
+  function pushAcc(r, text, bpx, bdy, px) {
+    String(text).split(/([♯♭])/).forEach((t, i) => {
+      if (!t) return;
+      if (i % 2) r.push({ t, px: px * 0.72, dy: bdy - px * 0.38 });
+      else r.push({ t, px: bpx, dy: bdy });
+    });
+  }
   function chordRuns(shown, px) {
     const g = Chord.chordGroup(shown);
     if (!g.items.length) return [{ t: String(shown), px, dy: 0 }];
@@ -22,10 +30,10 @@
     g.items.forEach((q, i) => {
       if (i) r.push({ t: ' ', px, dy: 0 });
       if (q.raw !== undefined) { r.push({ t: q.raw, px, dy: 0 }); return; }
-      r.push({ t: q.root, px: px * 1.12, dy: 0 });
+      pushAcc(r, q.root, px * 1.12, 0, px);
       if (q.q) r.push({ t: q.q, px, dy: 0 });
-      if (q.ext) r.push({ t: q.ext, px: px * 0.72, dy: -px * 0.3 });
-      if (q.bass) r.push({ t: '/' + q.bass, px: px * 0.9, dy: 0 });
+      if (q.ext) pushAcc(r, q.ext, px * 0.72, px * 0.22, px); // 41차: 덧붙임은 아랫첨자
+      if (q.bass) { r.push({ t: '/', px: px * 0.9, dy: 0 }); pushAcc(r, q.bass, px * 0.9, 0, px); }
     });
     if (g.close) r.push({ t: ')', px, dy: 0, light: true });
     return r;

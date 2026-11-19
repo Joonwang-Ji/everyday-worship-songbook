@@ -85,7 +85,9 @@ textarea.code { font-family: ui-monospace, "SF Mono", Menlo, "D2Coding", monospa
 .sg { display: inline-flex; flex-direction: column; vertical-align: bottom; }
 .ch { font-family: "Times New Roman", Georgia, "Noto Serif", "Apple SD Gothic Neo", serif; font-style: italic; letter-spacing: .01em; font-weight: 800; color: var(--chord); font-size: .88em; line-height: 1.35; min-height: 1.35em; padding-right: .45em; white-space: pre; }
 .ch .cr { font-size: 1.12em; }
-.ch .cx { font-size: .72em; position: relative; top: -.32em; margin-left: .04em; }
+.ch .cx { font-size: .72em; position: relative; top: .3em; margin-left: .04em; } /* 41차: 덧붙임은 아랫첨자 */
+.ch .ca { font-size: .72em; position: relative; top: -.42em; font-weight: 700; margin-left: .02em; } /* ♯·♭은 윗첨자 */
+.ch .cx .ca { top: -.95em; }
 .ch .cb { font-size: .9em; }
 .ch .cp { font-weight: 400; opacity: .45; }
 .ly { white-space: pre; line-height: 1.5; min-height: 1.5em; }
@@ -897,3 +899,6 @@ body.cink-txt-on { padding-bottom: 300px; }
 .play-float:empty { display: none; }
 .pfl { pointer-events: auto; border: 1px solid var(--line); background: var(--card); color: var(--text); opacity: .88; border-radius: 999px; padding: 5px 12px; min-height: 34px; font-size: 13px; font-weight: 700; font-family: inherit; cursor: pointer; box-shadow: 0 1px 5px rgba(0, 0, 0, .22); white-space: nowrap; }
 
+
+/* 41차: 원래대로 버튼은 −의 왼쪽 고정 자리 (바뀐 게 없으면 흐리게) */
+.pbtn.preset { font-size: 14px; font-weight: 600; margin-right: 6px; white-space: nowrap; }

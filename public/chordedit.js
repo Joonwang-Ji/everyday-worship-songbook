@@ -172,8 +172,8 @@
           } else {
             const inner = raw.slice(open + 1, j).trim();
             if (!inner) add('warn', n, '빈 코드 [ ] 가 있습니다.');
-            else if (!isChord(inner)) add('warn', n, '코드 모양이 이상합니다: [' + inner + ']');
-            else chords.push({ chord: inner, line: n });
+            else if (!isChord(Chord.fixCase(inner))) add('warn', n, '코드 모양이 이상합니다: [' + inner + ']');
+            else chords.push({ chord: Chord.fixCase(inner), line: n });
             open = -1;
           }
         }
