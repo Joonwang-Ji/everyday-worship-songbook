@@ -1770,10 +1770,21 @@
     let lastDownAt = 0;
     // 42차(d): 한 번 누른 글자가 keydown·keyup·input 어느 경로로든 두 번 오면 한 번만 처리한다(0.4초 안의 같은 글자 키 = 같은 누름)
     let dupCh = '', dupAt = 0;
+    // 42차(e): 입력 이벤트(input)가 keydown 없이 오는 기기에서는 한 번 누를 때마다 "바로 오는 것 + 다음 키를 누를 때 늦게 오는 메아리" 두 번이 온다.
+    //  seenDown: keydown 이 한 번이라도 온 글자(그 글자의 input 은 모두 무시)
+    let lastInCh = ''; // keydown 이 없는 글자: 방금 input 으로 처리한 글자(같은 글자의 input 은 메아리로 보고 무시). 다른 키(Tab·화살표 등)가 오면 비운다.
+    const seenDown = new Set();
     const teHandle = (ev) => {
       const m = /^Key([A-Z])$/.exec(ev.code || '') || /^Digit(\d)$/.exec(ev.code || '');
       if (m) {
         const ch = m[1].toLowerCase(), now = Date.now();
+        if (ev.fromInput) {
+          if (seenDown.has(ch) || ch === lastInCh) {
+            if (ls.get('ews_ink_dbg', '') === '1') toast(`입력 메아리 무시: ${ch}`);
+            return;
+          }
+          lastInCh = ch;
+        }
         if (ch === dupCh && now - dupAt < 400) {
           if (ev.preventDefault) ev.preventDefault();
           if (ls.get('ews_ink_dbg', '') === '1') toast(`같은 키 중복 무시: ${ch}`);
@@ -1785,7 +1796,7 @@
     };
     const teEls = [$('te-lines'), $('te-in')].filter(Boolean);
     teEls.forEach((el) => {
-      el.addEventListener('keydown', (ev) => { lastDownAt = Date.now(); if (ev.code) kbDown.add(ev.code); teHandle(ev); });
+      el.addEventListener('keydown', (ev) => { lastDownAt = Date.now(); lastInCh = ''; if (ev.code) { kbDown.add(ev.code); const mm = /^(?:Key([A-Z])|Digit(\d))$/.exec(ev.code); if (mm) seenDown.add((mm[1] || mm[2]).toLowerCase()); } teHandle(ev); });
       el.addEventListener('keyup', (ev) => {
         const had = ev.code && kbDown.has(ev.code);
         if (ev.code) kbDown.delete(ev.code);
@@ -1808,7 +1819,7 @@
         const ch = JAMO[d] || d;
         if (!/^[a-zA-Z0-9/]$/.test(ch)) return;
         const up = ch.toUpperCase();
-        const fake = { code: /^\d$/.test(ch) ? 'Digit' + ch : ch === '/' ? 'Slash' : 'Key' + up, key: ch, shiftKey: ch !== ch.toLowerCase(), metaKey: false, ctrlKey: false, altKey: false, isComposing: false, target: teIn, currentTarget: teIn, preventDefault() {} };
+        const fake = { code: /^\d$/.test(ch) ? 'Digit' + ch : ch === '/' ? 'Slash' : 'Key' + up, key: ch, shiftKey: ch !== ch.toLowerCase(), metaKey: false, ctrlKey: false, altKey: false, isComposing: false, fromInput: true, target: teIn, currentTarget: teIn, preventDefault() {} };
         teHandle(fake);
       };
       teIn.addEventListener('input', onText); // compositionend 는 받지 않는다(조합이 끝나며 같은 글자가 한 번 더 들어가던 문제)
