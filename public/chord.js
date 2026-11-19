@@ -411,7 +411,7 @@
         closeChorus();
         out.push('<div class="cm' + (ri !== undefined ? ' refopen' : '') + (ln.free ? ' free' : '') + '"' + (ri !== undefined ? ' data-ri="' + ri + '" role="button" tabindex="0" title="탭하면 접어요"' : '') + '>' + esc(nameOf(ln.text)) + '</div>');
       } else {
-        const anc = ln.bi !== undefined && ri === undefined ? ' data-bl="' + ln.bi + '" data-h="' + (ln.h || '') + '" data-v="' + (ln.bv !== undefined ? ln.bv : o.v || 0) + '"' + (ln.occ ? ' data-o="' + ln.occ + '"' : '') : '';
+        const anc = ln.bi !== undefined && ri === undefined ? ' data-bl="' + ln.bi + '" data-h="' + (ln.h || '') + '" data-v="' + (ln.bv !== undefined ? ln.bv : o.v || 0) + '"' + (ln.occ ? ' data-o="' + esc(ln.occ) + '" data-p="' + esc(ln.occp || '') + '"' : '') : '';
         if (o.parts) {
           if (ln.chorus && !inChorus && inPart && partHasBody) closePart();
           openPart(sAttr(ri !== undefined ? secAt(i) : secAt(i)));

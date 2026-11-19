@@ -906,3 +906,11 @@ body.cink-txt-on { padding-bottom: 300px; }
 /* 42차: 키 입력 전용 보이지 않는 입력칸 */
 .te-in { position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; pointer-events: none; font-size: 16px; }
 .te:has(.te-in:focus) .tc.sel .tl { box-shadow: 0 2px 0 var(--chord); }
+
+/* 42차: 코드 악보 필기 창 — 전체 화면, 위에 도구 줄, 아래에 악보 전체(이동·확대는 변환 하나로만) */
+.cs-ov { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--bg, #fff); color: var(--text, #111); overscroll-behavior: none; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+.cs-top { flex: none; padding: calc(4px + env(safe-area-inset-top)) calc(6px + env(safe-area-inset-right)) 4px calc(6px + env(safe-area-inset-left)); background: var(--card, #fff); border-bottom: 1px solid var(--line, #ccc); }
+.cs-top .cink-bar { position: static; z-index: auto; flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px 10px; padding: 0; background: none; border: 0; border-radius: 0; box-shadow: none; }
+.cs-view { flex: 1; min-height: 0; position: relative; overflow: hidden; touch-action: none; }
+.cs-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+.cs-stage .score { margin: 0; padding: 6px 2px 40px; }

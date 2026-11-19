@@ -1140,8 +1140,37 @@
     return { x, y, w: el.offsetWidth, h: el.offsetHeight };
   }
   const lineEls = (root, v) => [...root.querySelectorAll('.ln[data-bl]')].filter((e) => (+e.dataset.v || 0) === v);
+  // 42차: 회차 이름 'C#2.1' → {구간 키, 몇 번째, 반복 번호}
+  const occParts = (o) => { const m = /^(.+)#(\d+)(?:\.(\d+))?$/.exec(o || ''); return m ? { k: m[1], n: +m[2], r: m[3] || '' } : { k: o || '', n: 0, r: '' }; };
+  // 42차: 회차 필기가 가리키던 구간 등장을 지금 송폼에서 찾는다. cands = [{o: 회차 이름, p: 그 등장 바로 앞 구간 키}].
+  //  · 앞 구간(p)이 저장된 필기: 이름도 앞 구간도 같은 등장 → 같은 구간·같은 앞 구간인 등장(번호가 가까운 것) → 이름만 같은 등장 → 없음.
+  //  · 예전 필기(p 없음): 이름이 같은 등장만. 없으면 null(못 찾음).
+  function pickOcc(a, cands) {
+    const same = cands.find((c) => c.o === a.o);
+    if (a.p === undefined) return same ? same.o : null;
+    if (same && same.p === a.p) return same.o;
+    const w = occParts(a.o);
+    const alt = cands.filter((c) => { const q = occParts(c.o); return q.k === w.k && q.r === w.r && c.p === a.p; });
+    if (alt.length) { alt.sort((x, y) => Math.abs(occParts(x.o).n - w.n) - Math.abs(occParts(y.o).n - w.n)); return alt[0].o; }
+    return same ? same.o : null;
+  }
+  // 곡 보기처럼 줄에 회차가 없는 화면에서, 송폼 지도(occMap: {'C#2': '앞 구간'})로 이 회차가 아직 있는지 본다
+  function occLost(a, map) {
+    const cands = Object.keys(map || {}).map((k) => ({ o: k, p: map[k] }));
+    if (!cands.length) return false; // 송폼이 비어 있으면 판단하지 않는다(필기는 그대로 둔다)
+    return !pickOcc({ ...a, o: String(a.o).replace(/\.\d+$/, '') }, cands);
+  }
   function matchItem(list, a) {
-    const cand = a.o ? list.filter((e) => e.dataset.o === a.o) : list;
+    let cand = list;
+    if (a.o) {
+      const occEls = list.filter((e) => e.dataset.o);
+      if (!occEls.length) return { els: [], none: true }; // 곡 보기처럼 회차가 없는 화면: 안 보이는 것이 정상
+      const seen = new Map();
+      for (const e of occEls) if (!seen.has(e.dataset.o)) seen.set(e.dataset.o, { o: e.dataset.o, p: e.dataset.p });
+      const pick = pickOcc(a, [...seen.values()]);
+      if (pick == null) return { els: [], miss: true };
+      cand = occEls.filter((e) => e.dataset.o === pick);
+    }
     if (!cand.length) return { els: [], none: true };
     const by = new Map();
     for (const e of cand) { const k = +e.dataset.bl; if (!by.has(k)) by.set(k, []); by.get(k).push(e); }
@@ -1151,6 +1180,28 @@
       if (by.has(k) && (by.get(k)[0].dataset.h || '') === want && (want || d === 0)) return { els: by.get(k) };
     }
     return { els: [], miss: true };
+  }
+  // 42차: 송폼을 oldForm → newForm으로 바꾸면 '이 회차만' 필기(songId, sl=콘티 칸이면 {uid})가 얼마나 영향받는지 센다. 서버는 건드리지 않고 이 기기의 필기만 읽는다.
+  //  lost = 그 회차가 없어져 안 보이게 될 것, moved = 앞 구간이 달라져 다른 자리로 갈 수 있는 것.
+  async function occImpact(songId, sl, oldForm, newForm) {
+    const out = { total: 0, lost: 0, moved: 0 };
+    if (!window.SongForm || oldForm === newForm) return out;
+    let rec = null;
+    try { rec = await rget(codeKeyOf(songId, sl)); } catch {}
+    const items = ((rec && rec.data && rec.data.items) || []).filter((it) => it.a && it.a.o);
+    if (!items.length) return out;
+    const om = SongForm.occMap(oldForm || ''), nm = SongForm.occMap(newForm || '');
+    const nc = Object.keys(nm).map((k) => ({ o: k, p: nm[k] }));
+    if (!nc.length) return out;
+    for (const it of items) {
+      const k = String(it.a.o).replace(/\.\d+$/, '');
+      if (!(k in om)) continue; // 예전 송폼에도 없던 회차(다른 송폼으로 쓴 필기)는 판단하지 않는다
+      out.total++;
+      const pick = pickOcc({ ...it.a, o: k, p: it.a.p !== undefined ? it.a.p : om[k] }, nc);
+      if (pick == null) out.lost++;
+      else if (pick !== k || nm[pick] !== om[k]) out.moved++;
+    }
+    return out;
   }
   // 이 코드 악보 위에 깔려 보일 팀 공유 필기(읽기 전용)
   const sharedSources = (o) => shRowsFor(-o.songId, o.sl).map((r) => ({ key: 'sh:' + r.id, data: r.data, shared: true, author: r.author }));
@@ -1183,7 +1234,10 @@
         if (!src.shared && o.hideId && it.id === o.hideId) continue; // 글자를 고치는 중이면 원래 글자는 숨긴다
         const lv = cache[a.v || 0] || (cache[a.v || 0] = lineEls(root, a.v || 0));
         const m = matchItem(lv, a);
-        if (m.miss && !src.shared) miss.push({ id: it.id, key: src.key });
+        if (!src.shared) {
+          if (m.miss) miss.push({ id: it.id, key: src.key });
+          else if (m.none && a.o && o.occMap) { try { if (occLost(a, o.occMap())) miss.push({ id: it.id, key: src.key }); } catch {} } // 42차: 송폼을 바꿔 그 회차가 없어진 필기
+        }
         for (const el of m.els || []) {
           const r = relPos(el, root);
           if (!r.w || !r.h) continue;
@@ -1206,7 +1260,7 @@
     }
     const n = o.miss.length;
     o.note.hidden = !n || o.readOnly;
-    o.note.innerHTML = n ? `화면에 안 보이는 필기 ${n}개 (가사를 고쳐서 줄을 못 찾았어요) <button type="button" class="btn small" data-cl="1">정리</button>` : '';
+    o.note.innerHTML = n ? `화면에 안 보이는 필기 ${n}개 (가사나 송폼을 고쳐서 자리를 못 찾았어요) <button type="button" class="btn small" data-cl="1">정리</button>` : '';
     const b = o.note.querySelector('button');
     if (b) b.onclick = async () => {
       if (!confirm(`안 보이는 필기 ${n}개를 지울까요? 되돌릴 수 없어요.`)) return;
@@ -1237,7 +1291,7 @@
     const base = { key: codeKeyOf(opt.songId), meta: codeMeta(opt.songId), data: null };
     const sources = [base];
     if (opt.sl) sources.push({ key: codeKeyOf(opt.songId, opt.sl), meta: codeMeta(opt.songId, opt.sl), data: null, sl: true });
-    const o = { root, songId: opt.songId, sl: opt.sl, sources, readOnly: !!opt.readOnly, geo: [], miss: [], v: opt.v || 0, zoom: opt.zoom || null };
+    const o = { root, songId: opt.songId, sl: opt.sl, sources, readOnly: !!opt.readOnly, geo: [], miss: [], v: opt.v || 0, zoom: opt.zoom || null, occMap: opt.occMap || null };
     cviews.add(o);
     o.refresh = () => cdraw(o);
     o.reload = () => cload(o);
@@ -1257,23 +1311,46 @@
   window.addEventListener('resize', () => cviews.forEach((o) => o.root.isConnected && cdraw(o)));
   window.addEventListener('ews-shared', () => cviews.forEach((o) => o.root.isConnected && !(o.busy && o.busy()) && cdraw(o)));
 
-  // 필기 모드: 화면 아래 도구 줄이 뜨고, 코드 악보 위에 바로 쓴다. 펜슬·마우스 = 쓰기, 손가락 = 스크롤(☝ 켜면 쓰기), 두 손가락 = 확대.
-  function cedit(o) {
-    if (o.editing) return;
+  // 필기 모드(42차에 다시 만듦): 전체 화면 "필기 창"이 열리고, 위쪽에 도구 줄, 그 아래에 코드 악보 전체가 한 화면에 들어오게 맞춰 보인다.
+  //  이미지 악보 필기와 같은 방식 — 악보의 복사본을 창 안에 놓고 변환(이동·확대) 하나로만 움직여서, 스크롤·레이아웃을 건드리지 않아 흔들리지 않는다.
+  //  펜슬·마우스 = 쓰기, 손가락 = 이동(☝ 켜면 쓰기), 두 손가락 = 확대·축소·이동. 곡 보기와 연주 모드가 같은 창을 쓴다.
+  //  복사본의 줄에도 같은 data-bl·data-h·data-o·data-p가 있으므로 필기 위치(앵커)와 저장 형식은 그대로다.
+  function cedit(orig) {
+    if (orig.editing) return;
+    orig.editing = true;
+    const host = orig.root.closest('.play') || document.body; // 연주 모드의 밝기·글자색 설정을 그대로 물려받는다
+    const ov = document.createElement('div');
+    ov.className = 'cs-ov';
+    ov.innerHTML = '<div class="cs-top"></div><div class="cs-view"><div class="cs-stage"></div></div>';
+    host.appendChild(ov);
+    const topEl = ov.querySelector('.cs-top'), viewEl = ov.querySelector('.cs-view'), stageEl = ov.querySelector('.cs-stage');
+    ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'touchstart', 'touchmove', 'touchend', 'click', 'wheel'].forEach((n) => ov.addEventListener(n, (e) => e.stopPropagation()));
+    const clone = orig.root.cloneNode(true);
+    clone.removeAttribute('style');
+    clone.removeAttribute('id');
+    clone.querySelectorAll('[id]').forEach((n) => n.removeAttribute('id'));
+    clone.querySelectorAll('.cink-ov, .cink-miss').forEach((n) => n.remove());
+    clone.classList.remove('cink-editing');
+    clone._cv = null;
+    const songSize = getComputedStyle(orig.root).getPropertyValue('--song-size');
+    if (songSize) clone.style.setProperty('--song-size', songSize.trim());
+    clone.style.position = 'relative';
+    stageEl.appendChild(clone);
+    // 복사본 전용 보기 객체(원본과 필기 저장소(sources)를 함께 쓴다)
+    const o = { root: clone, songId: orig.songId, sl: orig.sl, sources: orig.sources, readOnly: true, geo: [], miss: [], v: orig.v, zoom: null, occMap: orig.occMap, svg: null, note: null };
+    cviews.add(o);
     o.editing = true;
     const target = o.sources[o.sources.length - 1]; // 콘티용이 있으면 콘티용에, 없으면 곡 기본 필기에 쓴다
     if (!target.data) target.data = emptyData();
     const hasOcc = !!o.root.querySelector('.ln[data-o]');
     const opts = { tool: 'pen', prev: 'pen', pen: { c: PEN_COLORS[0], w: 1 }, hl: { c: HL_COLORS[0], w: 1 }, tx: { c: PEN_COLORS[1], z: 1 }, finger: false, scope: hasOcc ? 'this' : 'all' };
     const ER = 12; // 지우개 반지름(px)
-    const ZMIN = 12, ZMAX = 44;
-    const origSize = o.zoom ? o.zoom.get() : 0;
     const hist = [];
     const redoS = [];
-    const ZS_MAX = 3;
-    const zs = { z: 1, tx: 0 };
-    const zHost = o.zoom ? o.root.parentElement : null;
-    const zKeep = zHost ? { ov: zHost.style.overflow, tf: o.root.style.transform, to: o.root.style.transformOrigin, mb: o.root.style.marginBottom } : null;
+    // 화면 변환: 악보 복사본을 translate(x,y) scale(s)로 놓는다. s0 = 한 화면에 딱 맞는 배율(최대 1), Wl·H = 복사본의 원래 너비·높이
+    const SMAX = 4;
+    const vs = { s: 1, s0: 1, x: 0, y: 0, Wl: 0, H: 0 };
+    let ar = 0;
     let startSnap = null; // 32차: 필기를 시작할 때의 모습 (취소하면 이걸로 되돌린다)
     let changed = false;
     const mk = (cls) => { const d = document.createElement('div'); d.className = cls; return d; };
@@ -1281,7 +1358,8 @@
     const pnl = mk('cink-txt');
     pnl.hidden = true;
     pnl.innerHTML = `<textarea rows="2" maxlength="300" placeholder="글자 메모를 입력하세요" aria-label="글자 메모"></textarea><div class="cink-txr" data-r="opt"></div><div class="cink-txr"><button type="button" data-x="ok" class="done">확인</button><button type="button" data-x="del">삭제</button><button type="button" data-x="cancel">취소</button><span class="cink-hint">점선 표시를 끌거나 악보를 눌러 자리를 옮겨요</span></div>`;
-    document.body.append(bar, pnl);
+    topEl.appendChild(bar);
+    document.body.appendChild(pnl);
     const $ta = pnl.querySelector('textarea');
     let S = null;
     let act = null;
@@ -1327,10 +1405,9 @@
         (hasOcc ? `<button type="button" data-s="1">${scopeLabel()}</button>` : '') +
         `</div><div class="cink-row">` +
         `<button type="button" data-u="1" ${hist.length ? '' : 'disabled'} aria-label="되돌리기">↶</button><button type="button" data-r2="1" ${redoS.length ? '' : 'disabled'} aria-label="다시 하기">↷</button>` +
-        (o.zoom ? `<button type="button" data-zm="-1" aria-label="글자 작게">가−</button><button type="button" data-zm="1" aria-label="글자 크게">가＋</button><button type="button" data-z0="1" ${zs.z === 1 ? 'disabled' : ''} title="확대를 원래대로" aria-label="확대 원래대로">🔍 ${Math.round(zs.z * 100)}%</button>` : '') +
+        `<button type="button" data-z0="1" ${vs.s <= vs.s0 * 1.01 ? 'disabled' : ''} title="한 화면에 전체가 보이게" aria-label="전체 보기">🔍 ${Math.round((vs.s / vs.s0) * 100)}%</button>` +
+        (vs.s0 < 0.97 ? `<button type="button" data-fw="1" title="글자 크기 그대로 너비에 맞춰 봐요(위아래로 밀어 봐요)">↔ 너비</button>` : '') +
         `<button type="button" class="cancel" data-x0="1">취소</button><button type="button" class="done" data-d="1">완료</button></div>`;
-      // 도구 줄이 차지하는 높이만큼 악보 아래에 여백을 둔다
-      requestAnimationFrame(() => { if (bar.isConnected) document.documentElement.style.setProperty('--cink-h', bar.offsetHeight + 'px'); });
     }
     startSnap = snapNow();
     paint();
@@ -1347,10 +1424,10 @@
       else if (d.s) opts.scope = opts.scope === 'this' ? 'all' : 'this';
       else if (d.u) undo();
       else if (d.r2) redo();
-      else if (d.zm) zoomStep(+d.zm * 2);
+      else if (d.fw) { vs.s = 1; vs.x = 0; vs.y = 0; applyView(); }
       else if (d.d) { stop(); return; }
       else if (d.x0) { cancelAll(); return; }
-      else if (d.z0) { zs.z = 1; zs.tx = 0; applyZoom(); }
+      else if (d.z0) { vs.s = vs.s0; vs.x = 0; vs.y = 0; applyView(); }
       paint();
     };
     // 32차: 취소 — 이번에 쓴 것을 모두 버리고 시작할 때 모습으로 되돌린 뒤 닫는다
@@ -1415,84 +1492,69 @@
       }
       return best;
     }
-    const anchorOf = (el, scope) => ({ b: +el.dataset.bl, h: el.dataset.h || '', v: +el.dataset.v || 0, ...((scope || opts.scope) === 'this' && el.dataset.o ? { o: el.dataset.o } : {}) });
+    const anchorOf = (el, scope) => ({ b: +el.dataset.bl, h: el.dataset.h || '', v: +el.dataset.v || 0, ...((scope || opts.scope) === 'this' && el.dataset.o ? { o: el.dataset.o, p: el.dataset.p || '' } : {}) });
     const lineFor = (a) => { const m = matchItem(lineEls(o.root, a.v || 0), a); return m.els && m.els[0]; };
     // 화면 좌표 → 악보 안 좌표. 연주 모드처럼 악보가 가로로 밀려 있어도(transform) 맞도록 겉보기 크기 비율로 나눈다.
     const pt = (e) => { const b = o.root.getBoundingClientRect(); const k = b.width / (o.root.offsetWidth || b.width) || 1; return [(e.clientX - b.left) / k, (e.clientY - b.top) / k]; };
 
-    // ----- 스크롤(손가락 한 개): 직접 밀고, 놓으면 관성으로 더 미끄러진다 -----
-    function scrollerEl() {
-      let e = o.root.parentElement;
-      while (e && e !== document.body && e !== document.documentElement) {
-        const cs = getComputedStyle(e);
-        if (/(auto|scroll)/.test(cs.overflowY) && e.scrollHeight > e.clientHeight + 1) return e;
-        e = e.parentElement;
-      }
-      return null;
+    // ----- 화면 이동·확대(42차): 변환 하나만 바꾼다. 스크롤·레이아웃 읽기 없이 requestAnimationFrame에 한 번씩만 적용해서 흔들리지 않는다 -----
+    function layoutStage() {
+      const W = Math.max(280, viewEl.clientWidth);
+      clone.style.width = W + 'px';
+      clone.classList.toggle('cols2', W >= 700); // 넓은 화면(아이패드 등)에서는 2단으로 펼쳐 한 화면에 더 크게 들어오게 한다
+      vs.Wl = W;
+      vs.H = clone.offsetHeight;
+      vs.s0 = Math.min(1, viewEl.clientHeight / Math.max(1, vs.H));
     }
-    const scrollBy = (dy) => { const e = scrollerEl(); if (e) e.scrollTop += dy; else window.scrollBy(0, dy); };
+    function clampView() {
+      const vw = viewEl.clientWidth, vh = viewEl.clientHeight;
+      const w = vs.Wl * vs.s, h = vs.H * vs.s;
+      vs.x = w <= vw ? (vw - w) / 2 : clamp(vs.x, vw - w, 0);
+      vs.y = h <= vh ? 0 : clamp(vs.y, vh - h - (txt ? 300 : 0), 0); // 글자 입력창이 열려 있으면 그 높이만큼 더 올려 볼 수 있다
+    }
+    function applyView() {
+      vs.s = clamp(vs.s, vs.s0, SMAX);
+      clampView();
+      stageEl.style.transform = `translate(${vs.x.toFixed(1)}px,${vs.y.toFixed(1)}px) scale(${vs.s.toFixed(4)})`;
+      const zb = bar.querySelector('[data-z0]');
+      if (zb) { zb.textContent = '🔍 ' + Math.round((vs.s / vs.s0) * 100) + '%'; zb.disabled = vs.s <= vs.s0 * 1.01; }
+    }
+    const scheduleApply = () => { if (ar) return; ar = requestAnimationFrame(() => { ar = 0; applyView(); }); };
     const stopInertia = () => { if (inertia) cancelAnimationFrame(inertia); inertia = 0; };
-    function startInertia(v) {
+    function startInertia(vx, vy) {
       stopInertia();
       let last = performance.now();
       const step = (now) => {
         const dt = Math.min(40, now - last);
         last = now;
-        scrollBy(v * dt);
-        v *= Math.pow(0.94, dt / 16);
-        inertia = Math.abs(v) > 0.02 ? requestAnimationFrame(step) : 0;
+        vs.x += vx * dt; vs.y += vy * dt;
+        applyView();
+        const k = Math.pow(0.94, dt / 16);
+        vx *= k; vy *= k;
+        inertia = Math.hypot(vx, vy) > 0.02 ? requestAnimationFrame(step) : 0;
       };
       inertia = requestAnimationFrame(step);
     }
-
-    // ----- 확대(32차에 다시 만듦): 글자 크기를 바꾸지 않고 악보를 그림처럼 키운다 -----
-    //  줄바꿈·단 배치가 그대로라 찌그러지지 않고, 필기도 같은 비율로 따라온다. 넘치는 부분은 악보 칸 밖으로 나가지 않게 잘라 보인다.
-    //  두 손가락 = 확대·축소와 이동, 한 손가락(스크롤 모드) = 위아래 스크롤 + 좌우 이동. 필기를 마치면 원래대로.
-    function applyZoom() {
-      if (!zHost) return;
-      zs.z = clamp(zs.z, 1, ZS_MAX);
-      if (zs.z < 1.01) { zs.z = 1; zs.tx = 0; }
-      const W = o.root.offsetWidth, H = o.root.offsetHeight;
-      zs.tx = clamp(zs.tx, -(zs.z - 1) * W, 0);
-      if (zs.z === 1) {
-        o.root.style.transform = zKeep.tf; o.root.style.transformOrigin = zKeep.to; o.root.style.marginBottom = zKeep.mb; zHost.style.overflow = zKeep.ov;
-      } else {
-        o.root.style.transformOrigin = '0 0';
-        o.root.style.transform = `translate(${zs.tx.toFixed(1)}px,0) scale(${zs.z.toFixed(3)})`;
-        o.root.style.marginBottom = ((zs.z - 1) * H).toFixed(0) + 'px'; // 커진 만큼 아래로 자리를 잡아 줘서 끝까지 스크롤된다
-        zHost.style.overflow = 'hidden'; // 다른 칸을 덮지 않게
-      }
-      const zb = bar.querySelector('[data-z0]');
-      if (zb) { zb.textContent = '🔍 ' + Math.round(zs.z * 100) + '%'; zb.disabled = zs.z === 1; }
-    }
-    function zoomStep(d) {
-      if (!o.zoom) return;
-      const cur = o.zoom.get();
-      const ns = clamp(cur + d, ZMIN, ZMAX);
-      if (ns !== cur) { o.zoom.set(ns); requestAnimationFrame(applyZoom); }
-    }
+    // 두 손가락: 가운데 점이 가리키던 악보 위의 점이 계속 손가락 밑에 있게 확대·이동한다
     function startPinch() {
-      if (!zHost) return;
       const [a, b] = [...touches.values()];
       stopInertia();
-      const rb = o.root.getBoundingClientRect();
-      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
-      // u, v = 두 손가락 가운데가 가리키는 악보 안의 점(확대 전 크기 기준). 이 점이 계속 손가락 밑에 있게 한다.
-      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: zs.z, u: (cx - rb.left) / zs.z, v: (cy - rb.top) / zs.z, base: rb.left - zs.tx };
+      const vr = viewEl.getBoundingClientRect();
+      const cx = (a.x + b.x) / 2 - vr.left, cy = (a.y + b.y) / 2 - vr.top;
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, s: vs.s, u: (cx - vs.x) / vs.s, v: (cy - vs.y) / vs.s, l: vr.left, t: vr.top };
     }
     function movePinch() {
       const [a, b] = [...touches.values()];
-      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
-      zs.z = clamp((pinch.z * Math.hypot(a.x - b.x, a.y - b.y)) / pinch.d, 1, ZS_MAX);
-      zs.tx = cx - pinch.u * zs.z - pinch.base;
-      applyZoom();
-      const top = o.root.getBoundingClientRect().top;
-      scrollBy(top - (cy - pinch.v * zs.z));
+      const cx = (a.x + b.x) / 2 - pinch.l, cy = (a.y + b.y) / 2 - pinch.t;
+      vs.s = clamp((pinch.s * Math.hypot(a.x - b.x, a.y - b.y)) / pinch.d, vs.s0, SMAX);
+      vs.x = cx - pinch.u * vs.s;
+      vs.y = cy - pinch.v * vs.s;
+      scheduleApply();
     }
     function endPinch() {
       if (!pinch) return;
       pinch = null;
-      applyZoom();
+      applyView();
       paint();
     }
 
@@ -1513,12 +1575,12 @@
       for (const g of o.geo) {
         if (g.key !== target.key) continue;
         const it = g.it;
-        if (it.t === 'x') { if (nearBox(textBox(g), x, y, ER)) dead.add(it.id); continue; }
+        if (it.t === 'x') { if (nearBox(textBox(g), x, y, ER / vs.s)) dead.add(it.id); continue; }
         const wpx = ((it.w / 10) * g.r.w) / 1000;
         const P = (i) => [g.r.x + (it.p[i] / 10000) * g.r.w, g.r.y + (it.p[i + 1] / 1000) * g.r.h];
         for (let i = 0; i < it.p.length; i += 2) {
           const a = P(i), b = i + 2 < it.p.length ? P(i + 2) : a;
-          if (segD(x, y, a[0], a[1], b[0], b[1]) <= ER + wpx / 2) { dead.add(it.id); break; }
+          if (segD(x, y, a[0], a[1], b[0], b[1]) <= ER / vs.s + wpx / 2) { dead.add(it.id); break; }
         }
       }
       return dead;
@@ -1540,9 +1602,9 @@
         ec.setAttribute('pointer-events', 'none');
         S.appendChild(ec);
       }
-      if (ec.dataset.k !== kind + '|' + (kind === 'er' ? '' : (opts[kind] || {}).c + '|' + ((opts[kind] || {}).w ?? (opts[kind] || {}).z))) {
+      if (ec.dataset.k !== kind + '|' + (kind === 'er' ? String(Math.round(vs.s * 100)) : (opts[kind] || {}).c + '|' + ((opts[kind] || {}).w ?? (opts[kind] || {}).z))) {
         let h = '';
-        if (kind === 'er') h = `<circle r="${ER}" fill="rgba(255,255,255,.35)" stroke="#e11d48" stroke-width="1.5" stroke-dasharray="3 2"/>`;
+        if (kind === 'er') h = `<circle r="${(ER / vs.s).toFixed(1)}" fill="rgba(255,255,255,.35)" stroke="#e11d48" stroke-width="${(1.5 / vs.s).toFixed(2)}" stroke-dasharray="3 2"/>`;
         else if (kind === 'tx') h = `<path d="M-9 0h18M0 -9v18" stroke="${opts.tx.c}" stroke-width="1.5"/><circle r="9" fill="none" stroke="${opts.tx.c}" stroke-width="1" stroke-dasharray="3 2"/>`;
         else {
           const lw = o.root.offsetWidth || 600;
@@ -1550,7 +1612,7 @@
           h = `<circle r="${rpx.toFixed(1)}" fill="${opts[kind].c}" fill-opacity="${kind === 'hl' ? 0.4 : 0.9}" stroke="rgba(0,0,0,.35)" stroke-width="0.6"/>`;
         }
         ec.innerHTML = h;
-        ec.dataset.k = kind + '|' + (kind === 'er' ? '' : (opts[kind] || {}).c + '|' + ((opts[kind] || {}).w ?? (opts[kind] || {}).z));
+        ec.dataset.k = kind + '|' + (kind === 'er' ? String(Math.round(vs.s * 100)) : (opts[kind] || {}).c + '|' + ((opts[kind] || {}).w ?? (opts[kind] || {}).z));
       }
       ec.setAttribute('transform', `translate(${x.toFixed(1)},${y.toFixed(1)})`);
       ec.removeAttribute('display');
@@ -1622,7 +1684,7 @@
       const k = rb.width / (o.root.offsetWidth || rb.width) || 1;
       const my = rb.top + (r.y + (txt.y / 1000) * r.h) * k;
       const limit = pnl.getBoundingClientRect().top - 70;
-      if (my > limit) scrollBy(my - limit);
+      if (my > limit) { vs.y -= my - limit; applyView(); }
     }
     function fitVV() {
       if (!txt) return;
@@ -1636,7 +1698,7 @@
       if (!it) { placeAt(txt, at[0], at[1]); if (!txt.a) { txt = null; return; } }
       $ta.value = txt.s;
       o.hideId = it ? it.id : null;
-      bar.style.display = 'none';
+      bar.style.visibility = 'hidden'; // 자리는 그대로 두어 악보가 위로 밀려 오르지 않게
       pnl.hidden = false;
       // 탭한 뒤에 따라오는 클릭이 방금 나타난 입력창의 버튼을 누르지 않도록 잠깐 막는다
       pnl.style.pointerEvents = 'none';
@@ -1653,7 +1715,7 @@
       o.ex = null;
       o.hideId = null;
       pnl.hidden = true;
-      bar.style.display = '';
+      bar.style.visibility = '';
       document.body.classList.remove('cink-txt-on');
       try { $ta.blur(); } catch {}
     }
@@ -1701,14 +1763,18 @@
     }
 
     // ----- 선택·기본 동작 막기: 필기 중 글자 선택·돋보기·스크리블로 넘어가 획이 끊기지 않게 -----
+    layoutStage();
+    vs.s = vs.s0; vs.x = 0; vs.y = 0;
     S = o.svg;
     cdraw(o);
     S = o.svg;
+    applyView();
+    paint();
     o.afterDraw = drawExtras;
     o.busy = () => !!act || !!pinch;
-    ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((n) => S.addEventListener(n, (e) => { e.stopPropagation(); if (e.cancelable) e.preventDefault(); }, { passive: false }));
+    ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((n) => viewEl.addEventListener(n, (e) => { e.stopPropagation(); if (e.cancelable) e.preventDefault(); }, { passive: false }));
     const noSel = (e) => { if (e.type === 'contextmenu') tellOnce('ctx', '펜·손가락의 보조 신호(contextmenu)를 받았어요.'); e.preventDefault(); };
-    ['selectstart', 'contextmenu', 'dragstart', 'gesturestart'].forEach((n) => { S.addEventListener(n, noSel); o.root.addEventListener(n, noSel); });
+    ['selectstart', 'contextmenu', 'dragstart', 'gesturestart'].forEach((n) => { viewEl.addEventListener(n, noSel); o.root.addEventListener(n, noSel); });
     o.root.classList.add('cink-editing');
     try { const g = window.getSelection && window.getSelection(); if (g) g.removeAllRanges(); } catch {}
     function cancelAct() {
@@ -1717,7 +1783,7 @@
       clearLive();
       act = null;
     }
-    S.onpointerdown = (e) => {
+    viewEl.onpointerdown = (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       const pen = e.pointerType === 'pen';
       penSignal(e);
@@ -1725,11 +1791,11 @@
         if (penDown) { ignore.add(e.pointerId); return; } // 펜으로 쓰는 중에 닿은 손바닥은 무시
         touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
         if (touches.size >= 2) { cancelAct(); startPinch(); return; }
-        if (!opts.finger) { stopInertia(); act = { id: e.pointerId, scroll: true, x: e.clientX, y: e.clientY, t: performance.now(), v: 0, moved: false }; return; }
+        if (!opts.finger) { stopInertia(); act = { id: e.pointerId, scroll: true, x: e.clientX, y: e.clientY, t: performance.now(), vx: 0, vy: 0, moved: false }; return; }
       }
       if (pen) { penDown = true; touches.clear(); pinch = null; cancelAct(); }
       e.preventDefault();
-      try { S.setPointerCapture(e.pointerId); } catch {}
+      try { viewEl.setPointerCapture(e.pointerId); } catch {}
       stopInertia();
       const [x, y] = pt(e);
       if (txt) { // 글자 입력창이 열려 있으면 어디를 눌러도 글자 자리가 그리로 옮겨진다(누른 채 끌어도 따라온다)
@@ -1765,7 +1831,7 @@
       if ((e.pointerType === 'pen' || e.pointerType === 'mouse') && !txt && !e.buttons) { const [x, y] = pt(e); showCursor(x, y, opts.tool); }
       else hideCursor();
     }
-    S.onpointermove = (e) => {
+    viewEl.onpointermove = (e) => {
       if (ignore.has(e.pointerId)) return;
       if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
         touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -1773,14 +1839,13 @@
       }
       if (!act || act.id !== e.pointerId) { hover(e); return; }
       if (act.scroll) {
-        const now = performance.now(), dy = act.y - e.clientY, dt = Math.max(1, now - act.t);
-        act.v = 0.7 * act.v + 0.3 * (dy / dt);
-        act.t = now;
-        act.y = e.clientY;
-        if (Math.abs(dy) > 0) act.moved = true;
-        scrollBy(dy);
-        if (zs.z > 1) { zs.tx += e.clientX - act.x; applyZoom(); } // 확대 중에는 좌우로도 끌어서 본다
-        act.x = e.clientX;
+        const now = performance.now(), dx = e.clientX - act.x, dy = e.clientY - act.y, dt = Math.max(1, now - act.t);
+        act.vx = 0.7 * act.vx + 0.3 * (dx / dt);
+        act.vy = 0.7 * act.vy + 0.3 * (dy / dt);
+        act.t = now; act.x = e.clientX; act.y = e.clientY;
+        if (dx || dy) act.moved = true;
+        vs.x += dx; vs.y += dy;
+        scheduleApply();
         return;
       }
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
@@ -1802,7 +1867,7 @@
       else if (act.tmove && act.moved) textLive(act.draft, false);
       else if (act.pts) paintLive();
     };
-    S.onpointerleave = (e) => { if (e.pointerType !== 'touch') hideCursor(); };
+    viewEl.onpointerleave = (e) => { if (e.pointerType !== 'touch') hideCursor(); };
     const end = async (e) => {
       if (ignore.delete(e.pointerId)) return;
       if (e.pointerType === 'pen') penDown = false;
@@ -1816,7 +1881,7 @@
       if (!act || act.id !== e.pointerId) return;
       const a = act;
       act = null;
-      if (a.scroll) { if (a.moved && performance.now() - a.t < 90 && Math.abs(a.v) > 0.08) startInertia(a.v); return; }
+      if (a.scroll) { if (a.moved && performance.now() - a.t < 90 && Math.hypot(a.vx, a.vy) > 0.08) startInertia(a.vx, a.vy); return; }
       if (a.drag) return;
       if (a.erase) {
         if (e.pointerType === 'touch') hideCursor();
@@ -1844,8 +1909,8 @@
       target.data.items.push(it);
       await commit(a.snap);
     };
-    S.onpointerup = end;
-    S.onpointercancel = end;
+    viewEl.onpointerup = end;
+    viewEl.onpointercancel = end;
 
     // ----- 키보드(맥북): ⌘Z 되돌리기, ⌘⇧Z 다시, E 펜↔지우개 -----
     const onKey = (e) => {
@@ -1856,7 +1921,23 @@
     document.addEventListener('keydown', onKey);
 
     // ----- 화면을 떠나면 도구 줄도 닫는다(다른 메뉴로 가거나, 코드 악보가 가려지거나, 악보가 바뀌었을 때) -----
-    const guard = setInterval(() => { if (!o.root.isConnected || !o.root.offsetWidth) stop(); }, 400);
+    const guard = setInterval(() => { if (!ov.isConnected || !o.root.offsetWidth) stop(); }, 400);
+    let lw = viewEl.clientWidth, lh = viewEl.clientHeight;
+    let ro2 = null;
+    try {
+      ro2 = new ResizeObserver(() => { // 화면을 돌리거나 창 크기가 바뀌면 다시 맞춘다
+        const w = viewEl.clientWidth, h = viewEl.clientHeight;
+        if (!o.editing || (w === lw && h === lh) || act || pinch) return;
+        const wasFit = vs.s <= vs.s0 * 1.01;
+        lw = w; lh = h;
+        layoutStage();
+        if (wasFit) { vs.s = vs.s0; vs.x = 0; vs.y = 0; }
+        applyView();
+        cdraw(o);
+        paint();
+      });
+      ro2.observe(viewEl);
+    } catch {}
     const onNav = () => stop();
     window.addEventListener('hashchange', onNav);
     window.addEventListener('pagehide', onNav);
@@ -1865,33 +1946,34 @@
       cancelAct();
       closeText();
       o.editing = false;
+      orig.editing = false;
       clearInterval(guard);
       stopInertia();
+      if (ar) cancelAnimationFrame(ar);
+      try { ro2 && ro2.disconnect(); } catch {}
       document.removeEventListener('keydown', onKey);
       window.removeEventListener('hashchange', onNav);
       window.removeEventListener('pagehide', onNav);
       ['selectstart', 'contextmenu', 'dragstart', 'gesturestart'].forEach((n) => o.root.removeEventListener(n, noSel)); // 34차: 필기를 끝낸 뒤에도 글자 선택이 막혀 있던 것
       if (window.visualViewport) { visualViewport.removeEventListener('resize', vvFn); visualViewport.removeEventListener('scroll', vvFn); }
-      if (S) S.onpointerdown = S.onpointermove = S.onpointerup = S.onpointercancel = S.onpointerleave = null;
+      viewEl.onpointerdown = viewEl.onpointermove = viewEl.onpointerup = viewEl.onpointercancel = viewEl.onpointerleave = null;
       o.afterDraw = null;
       o.busy = null;
       o.ex = null;
       o.hideId = null;
       bar.remove();
       pnl.remove();
+      ov.remove();
+      cviews.delete(o);
+      if (o.note) o.note.remove();
       if (dbgBox) { dbgBox.remove(); dbgBox = null; }
       pinch = null;
-      if (zHost) { zs.z = 1; zs.tx = 0; o.root.style.transform = zKeep.tf; o.root.style.transformOrigin = zKeep.to; o.root.style.marginBottom = zKeep.mb; zHost.style.overflow = zKeep.ov; }
-      o.root.classList.remove('cink-editing');
-      document.body.classList.remove('cink-on', 'cink-txt-on');
-      document.documentElement.style.removeProperty('--cink-h');
-      if (o.zoom && origSize && o.zoom.get() !== origSize) o.zoom.set(origSize); // 확대는 필기하는 동안만
-      cdraw(o);
-      cload(o);
-      if (o.onStop) o.onStop();
+      document.body.classList.remove('cink-txt-on');
+      // 원래 악보에 새 필기를 다시 보여 준다
+      if (orig.root.isConnected) { cdraw(orig); cload(orig); }
+      if (orig.onStop) orig.onStop();
     }
-    o.stop = stop;
-    document.body.classList.add('cink-on');
+    orig.stop = stop;
   }
 
   function init(c) {
@@ -1902,7 +1984,7 @@
   }
 
   window.Ink = {
-    init, edit, codeView, attachImg, decorate, pull, pullSetlist, flush, get, save, mountVaultCard, hasVault, wipeLocal, mergeInk, simplify,
+    init, edit, codeView, attachImg, decorate, pull, pullSetlist, flush, get, save, mountVaultCard, hasVault, wipeLocal, mergeInk, simplify, occImpact, pickOcc,
     // 31차: 팀 공유 필기
     shared: { pull: pullShared, pullSoon: pullSharedSoon, rows: () => sh.rows.filter((r) => r.team_id === cfg.teamId()), authors: shAuthors, isOn: () => sh.on, setOn: shSetOn, toggleAuthor: shToggleAuthor, me: shMe, myCount: shMyCount, up: shUp, down: shDown, load: shLoad },
   };

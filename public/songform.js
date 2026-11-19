@@ -147,6 +147,26 @@
     return out;
   }
 
+  // 42차: 송폼의 각 구간 등장을 { 'C#2': '직전 구간 이름' } 으로. 회차 필기가 송폼 순서가 바뀐 뒤에도 같은 자리를 찾도록 쓴다.
+  //  키 = arrangeByForm이 줄에 붙이는 회차 이름(×반복의 '.n'은 뗀 것)과 같은 규칙(전조·괄호 칩은 세지 않음, 직접 적은 구간은 '~이름').
+  //  값 = 송폼에서 바로 앞에 놓인 구간 키(맨 처음이면 '').
+  function occMap(form) {
+    const nth = {};
+    const out = {};
+    let prev = '';
+    for (const tok of parse(form)) {
+      if (/^\(/.test(tok) || isKeyChange(tok)) continue;
+      const base = splitRepeat(tok).base;
+      const id = canonSection(base);
+      const key = id || (String(base).trim() ? '~' + String(base).trim() : '');
+      if (!key) continue;
+      nth[key] = (nth[key] || 0) + 1;
+      out[key + '#' + nth[key]] = prev;
+      prev = key;
+    }
+    return out;
+  }
+
   // ---------- 송폼 순서로 다시 배열한 악보 (23차) ----------
   // parsed(Chord.parseChordPro 결과) + 송폼 글자 + 시작 키(소리 나는 키) → 새 parsed. 저장된 악보는 건드리지 않는다.
   //  · 송폼 순서대로 구간을 놓는다. 같은 구간이 다시 나오면, 직전에 나온 같은 이름의 구간과 키가 같을 때만 "위와 같음"(자리표시)로 두고,
@@ -175,6 +195,7 @@
     const last = {}; // 구간 이름 → 마지막으로 놓은 때의 ks
     const used = new Set();
     const missing = [];
+    let prevSec = ''; // 42차: 직전 구간 키(회차 필기가 송폼 순서 변경을 따라가는 단서)
     for (const tok of toks) {
       if (/^\(/.test(tok)) continue;
       if (isKeyChange(tok)) {
@@ -196,6 +217,8 @@
         const fi = secs.findIndex((x) => !x.isRef && !x.id && String(x.label || '').trim() === name);
         const fkey = '~' + name;
         nthOf[fkey] = (nthOf[fkey] || 0) + 1;
+        const prevHere = prevSec;
+        prevSec = fkey;
         const ftimes = Math.max(1, n);
         if (lines.length && lines[lines.length - 1].type !== 'blank') lines.push({ type: 'blank' });
         if (fi < 0) {
@@ -208,11 +231,13 @@
           if (r && lines[lines.length - 1].type !== 'blank') lines.push({ type: 'blank' });
           lines.push({ type: 'comment', text: name, free: true });
           const occ = fkey + '#' + nthOf[fkey] + (ftimes > 1 ? '.' + (r + 1) : '');
-          for (const b of Chord.sectionBody(parsed, fi)) lines.push(Object.assign({}, b, ks ? { ks } : {}, { occ }));
+          for (const b of Chord.sectionBody(parsed, fi)) lines.push(Object.assign({}, b, ks ? { ks } : {}, { occ, occp: prevHere }));
         }
         continue;
       }
       nthOf[id] = (nthOf[id] || 0) + 1;
+      const prevHere = prevSec;
+      prevSec = id;
       const vid = opt && opt.pick ? opt.pick(id, nthOf[id]) || 0 : 0;
       const P = (opt && opt.parsedFor ? opt.parsedFor(vid) : null) || parsed;
       const si = findIn(P.sections || [], id);
@@ -231,7 +256,7 @@
         } else {
           lines.push({ type: 'comment', text: id });
           const occ = id + '#' + nthOf[id] + (times > 1 ? '.' + (r + 1) : '');
-          for (const b of Chord.sectionBody(P, si)) lines.push(Object.assign({}, b, ks ? { ks } : {}, { occ }, P === parsed ? {} : { bv: vid }));
+          for (const b of Chord.sectionBody(P, si)) lines.push(Object.assign({}, b, ks ? { ks } : {}, { occ, occp: prevHere }, P === parsed ? {} : { bv: vid }));
         }
         last[id] = here;
       }
@@ -392,5 +417,5 @@
     return { text: blocks.join(mode === 'plain' ? '\n\n\n' : '\n\n'), noText, noForm, missing };
   }
 
-  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, isKeyChange, keyChange, makeKeyChange, keySteps, keyStepText, keyPathText, formDisplay, hasKeyChange, shiftTargets, semisBetween, occurrences, arrangeByForm, parseKeyName, keyNameOf, KEY_NAMES: KMAJOR, KEY_NAMES_MINOR: KMINOR, fmtDate, kakaoText, leaderList, canonSection, lyricSections, formOrder, songLyrics, lyricsText };
+  return { MAX, PALETTE, parse, format, splitRepeat, cycleRepeat, isKeyChange, keyChange, makeKeyChange, keySteps, keyStepText, keyPathText, formDisplay, hasKeyChange, shiftTargets, semisBetween, occurrences, occMap, arrangeByForm, parseKeyName, keyNameOf, KEY_NAMES: KMAJOR, KEY_NAMES_MINOR: KMINOR, fmtDate, kakaoText, leaderList, canonSection, lyricSections, formOrder, songLyrics, lyricsText };
 });
