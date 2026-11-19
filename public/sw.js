@@ -1,14 +1,14 @@
 // Everyday Worship Songbook — 오프라인 지원 (서비스 워커)
 // - 앱 파일(화면 코드): 인터넷이 되면 항상 새것을 받고, 안 되면 저장해 둔 것을 쓴다.
 // - 곡·콘티 정보: 같은 방식. 한 번 열어 본 곡/콘티는 오프라인에서도 열린다.
-// - 악보 이미지: 한 번 받으면 저장해 두고 그대로 쓴다. (파일 번호가 같으면 내용도 같음)
+// - 악보 이미지·PDF: 한 번 받으면 저장해 두고 그대로 쓴다. (파일 번호가 같으면 내용도 같음)
 // 로그아웃하면 앱이 이 저장소(ews-data, ews-img)를 지운다.
-const VER = 'v14';
+const VER = 'v15';
 const SHELL = `ews-shell-${VER}`;
 const DATA = `ews-data-${VER}`;
 const IMG = `ews-img-${VER}`;
 const SHELL_FILES = ['/', '/index.html', '/style.css', '/sections.js', '/variants.js', '/chord.js', '/songfilter.js', '/files.js', '/ink.js', '/songform.js', '/chordedit.js', '/tabedit.js', '/imgconv.js', '/export.js', '/vendor/pdf-lib.min.js', '/app.js', '/manifest.webmanifest', '/icon-192.png'];
-const MAX_IMG = 150;
+const MAX_IMG = 1000; // 45차: 해외 등 통신이 안 되는 곳을 위해 150 → 1000 (이미지·PDF 합산)
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
