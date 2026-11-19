@@ -3738,6 +3738,15 @@
 
   // ---------- 팀 ----------
   const goHash = (h) => { if (location.hash === h) route(); else location.hash = h; };
+  // 46차: 관리자는 가입코드·팀장 PIN 없이 팀에 팀장으로 입장한다 (관리자 열쇠가 있어야 함)
+  async function adminEnterTeam(tid) {
+    const r = await api('/admin/teams/' + tid + '/enter', { method: 'POST' });
+    addTeam(r.team, r.teamToken, r.leaderToken || '');
+    ls.del('ews_team_skip');
+    meAt = 0;
+    toast(`"${r.team.name}" 팀에 관리자로 입장했습니다.`);
+    goHash('#/setlists');
+  }
   async function viewTeam(q) {
     // 팀이 없거나(또는 "다른 팀 추가"로 들어왔으면): 가입코드로 입장 / 새 팀 만들기 / 팀 없이 보기
     const adding = !!(q && q.get('add') === '1');
@@ -3749,9 +3758,21 @@
         : staleTeams.length && !me.team
           ? `<p class="muted"><b>${esc(staleTeams.map((x) => x.name || '팀').join(', '))}</b> 팀은 가입코드가 바뀌어 다시 입장해야 해요. 새 가입코드를 입력하면 돼요.</p>`
           : '';
+      let adminTeams = null;
+      if (me.isAdmin) { try { adminTeams = (await api('/admin/teams')).teams; } catch {} }
+      const adminBox = me.isAdmin
+        ? `<div class="card"><h2 style="margin-top:0">관리자 입장</h2>${
+            adminTeams && adminTeams.length
+              ? adminTeams.map((t) => `<button type="button" class="btn" style="display:block;width:100%;margin-bottom:6px;text-align:left" data-aenter="${t.id}">${esc(t.name)}${me.team && me.team.id === t.id ? ' (지금 보는 팀)' : ''}</button>`).join('')
+              : '<p class="muted small">아직 팀이 없습니다. 아래 “새 팀 만들기”를 쓰거나 더보기 → 앱 관리에서 만들어 주세요.</p>'
+          }<p class="hint">가입코드·팀장 PIN 없이 팀장으로 들어갑니다.</p></div>`
+        : me.adminRequired
+          ? `<details class="card"><summary>관리자 PIN으로 입장</summary><form id="af"><label for="apin">관리자 PIN</label><input id="apin" type="password" autocomplete="off"><p class="error" id="aerr"></p><p><button class="btn">확인</button></p></form></details>`
+          : '';
       $app.innerHTML = `
         ${me.team ? '<div class="row between"><a href="#/more" class="small">← 더보기</a></div>' : ''}
         <h1>${me.team ? '다른 팀 추가' : '팀 가입'}</h1>
+        ${adminBox}
         ${note}
         <p class="muted">콘티는 팀 단위로 공유됩니다. 팀장에게 받은 <b>가입코드</b>로 입장하세요.${me.team ? ' 여러 팀에 가입해 두고 팀 이름 칩으로 바꿔 볼 수 있어요.' : ''}</p>
         <form class="card" id="jf">
@@ -3793,6 +3814,22 @@
           if (el('jf')) delete el('jf').dataset.busy;
         }
       };
+      $app.querySelectorAll('[data-aenter]').forEach((b) => (b.onclick = () => adminEnterTeam(b.dataset.aenter).catch((e) => toast(e.message))));
+      const af = el('af');
+      if (af)
+        af.onsubmit = async (ev) => {
+          ev.preventDefault();
+          el('aerr').textContent = '';
+          try {
+            const r = await api('/admin', { method: 'POST', body: { pin: el('apin').value } });
+            ls.set('ews_admin', r.adminToken);
+            meAt = 0;
+            toast('관리자로 로그인했습니다.');
+            route();
+          } catch (e) {
+            el('aerr').textContent = e.message;
+          }
+        };
       const cf = el('cf');
       if (cf)
         cf.onsubmit = async (ev) => {
@@ -5796,6 +5833,7 @@
                 (t) => `<div class="card tcard" data-t="${t.id}">
                 <div class="row between"><div class="song-title">${esc(t.name)}</div><span class="song-meta" style="margin:0"><span>콘티 ${t.setlist_count}개</span>${t.has_leader ? '' : '<span class="error" style="margin:0">팀장 없음</span>'}${t.can_edit_songs ? '<span class="tag">악보 편집 가능</span>' : ''}</span></div>
                 <div class="row" style="margin-top:6px"><span class="muted small">가입코드</span><span class="bigcode small">${esc(t.join_code)}</span><button class="btn small" data-a="copy" data-code="${esc(t.join_code)}">복사</button></div>
+                <div class="row" style="margin-top:6px"><button class="btn small primary" data-a="enter">이 팀으로 입장 (팀장)</button></div>
                 <details class="tmore"><summary>팀 관리</summary>
                   <label class="check"><input type="checkbox" data-a="edit" ${t.can_edit_songs ? 'checked' : ''}> 이 팀 팀장에게 악보 편집 권한 주기</label>
                   <div class="row" style="margin-top:8px">
@@ -5913,6 +5951,7 @@
       const t = teams.find((x) => String(x.id) === tid);
       const a = b.dataset.a;
       if (a === 'copy') return copyText(b.dataset.code);
+      if (a === 'enter') return adminEnterTeam(tid).catch((e) => toast(e.message));
       if (a === 'code') {
         if (!confirm(`"${t.name}" 팀의 가입코드를 다시 발급할까요?\n기존 팀원은 새 코드로 다시 입장해야 합니다.`)) return;
         return act(() => api(`/admin/teams/${tid}/join-code`, { method: 'POST' }));
