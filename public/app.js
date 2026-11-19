@@ -1291,6 +1291,7 @@
             <div id="cv-note" class="cv-note hint" hidden></div>
             <div id="tabpane" class="te">
               <div id="te-lines" class="te-lines" tabindex="0" aria-label="악보 편집 (키보드: Tab 이동, Enter 다음 줄, A~G 코드)"></div>
+              <input id="te-in" class="te-in" type="text" inputmode="none" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" tabindex="-1" aria-hidden="true">
               <div class="te-pal" id="te-pal"></div>
             </div>
             <textarea id="cp" hidden aria-hidden="true">${esc(song.chordpro)}</textarea>
@@ -1490,7 +1491,7 @@
       kbBuf = null;
       // 팔레트 버튼을 눌러도 키보드가 계속 편집기로 가도록 포커스를 되돌린다(시트를 여는 버튼은 제외)
       kbHint = '';
-      if (kbOK() && !t.closest('[data-gut],[data-op],[data-act="direct"],[data-act="kbhelp"]')) setTimeout(() => { const te = $('te-lines'); if (te && te.isConnected && !document.querySelector('.sheet-wrap')) te.focus({ preventScroll: true }); });
+      if (kbOK() && !t.closest('[data-gut],[data-op],[data-act="direct"],[data-act="kbhelp"]')) setTimeout(() => { const te = $('te-in') || $('te-lines'); if (te && te.isConnected && !document.querySelector('.sheet-wrap')) te.focus({ preventScroll: true }); });
       const gut = t.closest('[data-gut]');
       if (gut) { lineSheet(+gut.dataset.gut); return; }
       const op = t.closest('[data-op]');
@@ -1694,7 +1695,7 @@
       // 32b: 진단(더보기 → 필기 진단)을 켜면 받은 키를 그대로 보여 준다 — 기기에 따라 키가 안 먹을 때 원인을 보기 위해
       if (ls.get('ews_ink_dbg', '') === '1') toast(`키: code=${ev.code || '(없음)'} key=${ev.key} 조합=${ev.isComposing ? 'Y' : 'N'}`);
       if (!tsel) return;
-      if (ev.target !== ev.currentTarget && ev.target.closest && ev.target.closest('button, a, input, textarea, select')) return;
+      if (ev.target !== ev.currentTarget && ev.target.id !== 'te-in' && ev.target.closest && ev.target.closest('button, a, input, textarea, select')) return;
       // 32b: 이 칸은 글자 입력칸이 아니라서 입력기 "조합 중" 표시가 와도 무시하지 않는다(일부 기기에서 c·e 같은 키가 조합 중으로 옴).
       //  code 가 비어 오는 기기는 key 글자로 대신 알아낸다(영문 글자·숫자·/·한글 두벌식 자모).
       let code = ev.code;
@@ -1764,15 +1765,40 @@
       } else if (hadHint) teRender();
     };
     // 일부 기기(아이패드 키보드)는 e·z·x·c 같은 키의 keydown 이 안 오고 keyup 만 온다 → keydown 이 없던 키는 keyup 으로 처리한다
-    $('te-lines').addEventListener('keydown', (ev) => { if (ev.code) kbDown.add(ev.code); onTeKey(ev); });
-    $('te-lines').addEventListener('keyup', (ev) => {
-      const had = ev.code && kbDown.has(ev.code);
-      if (ev.code) kbDown.delete(ev.code);
-      if (had) return;
-      if (ls.get('ews_ink_dbg', '') === '1') toast(`keyup만 도착: code=${ev.code || '(없음)'} key=${ev.key}`);
-      if (/^Key[A-Z]$|^(Digit|Numpad)\d$|^Slash$/.test(ev.code || '') || /^[a-zA-Z0-9/]$/.test(ev.key || '')) onTeKey(ev);
+    // 42차: 키 입력을 받는 곳은 보이지 않는 입력칸(#te-in)과 te-lines. 입력칸은 글자 입력 이벤트(input)도 받아서,
+    //  e·z·x·c 같은 키의 keydown·keyup 이 아예 안 오는 기기에서도 글자를 알아낼 수 있다.
+    let lastDownAt = 0;
+    const teEls = [$('te-lines'), $('te-in')].filter(Boolean);
+    teEls.forEach((el) => {
+      el.addEventListener('keydown', (ev) => { lastDownAt = Date.now(); if (ev.code) kbDown.add(ev.code); onTeKey(ev); });
+      el.addEventListener('keyup', (ev) => {
+        const had = ev.code && kbDown.has(ev.code);
+        if (ev.code) kbDown.delete(ev.code);
+        if (had) return;
+        lastDownAt = Date.now();
+        if (ls.get('ews_ink_dbg', '') === '1') toast(`keyup만 도착: code=${ev.code || '(없음)'} key=${ev.key}`);
+        if (/^Key[A-Z]$|^(Digit|Numpad)\d$|^Slash$/.test(ev.code || '') || /^[a-zA-Z0-9/]$/.test(ev.key || '')) onTeKey(ev);
+      });
+      el.addEventListener('blur', () => { kbDown.clear(); if (kbBuf) kbCommit(); });
     });
-    $('te-lines').addEventListener('blur', () => { kbDown.clear(); if (kbBuf) kbCommit(); });
+    const teIn = $('te-in');
+    if (teIn) {
+      const JAMO = { 'ㅁ': 'a', 'ㅠ': 'b', 'ㅊ': 'c', 'ㅇ': 'd', 'ㄷ': 'e', 'ㄹ': 'f', 'ㅎ': 'g', 'ㅑ': 'i', 'ㅓ': 'j', 'ㅏ': 'k', 'ㅣ': 'l', 'ㅡ': 'm', 'ㅜ': 'n', 'ㅐ': 'o', 'ㅔ': 'p', 'ㅂ': 'q', 'ㄱ': 'r', 'ㄴ': 's', 'ㅕ': 'u', 'ㅍ': 'v', 'ㅈ': 'w', 'ㅌ': 'x', 'ㅛ': 'y', 'ㅋ': 'z', 'ㅗ': 'h', 'ㅅ': 't' };
+      const onText = (ev) => {
+        const d = ev.data || '';
+        teIn.value = '';
+        const recent = Date.now() - lastDownAt < 300; // keydown 이 방금 왔으면 이미 처리한 것
+        if (ls.get('ews_ink_dbg', '') === '1') toast(`입력 도착: ${ev.type} data=${d || '(없음)'} 조합=${ev.isComposing ? 'Y' : 'N'}${recent ? ' (keydown 처리됨)' : ''}`);
+        if (recent || !tsel) return;
+        const ch = JAMO[d] || d;
+        if (!/^[a-zA-Z0-9/]$/.test(ch)) return;
+        const up = ch.toUpperCase();
+        const fake = { code: /^\d$/.test(ch) ? 'Digit' + ch : ch === '/' ? 'Slash' : 'Key' + up, key: ch, shiftKey: ch !== ch.toLowerCase(), metaKey: false, ctrlKey: false, altKey: false, isComposing: false, target: teIn, currentTarget: teIn, preventDefault() {} };
+        onTeKey(fake);
+      };
+      teIn.addEventListener('input', onText);
+      teIn.addEventListener('compositionend', onText);
+    }
 
     function directSheet() {
       if (!tsel) { toast('먼저 코드를 붙일 글자를 탭하세요.'); return; }
@@ -2967,9 +2993,9 @@
       if (!(ev.metaKey || ev.ctrlKey) || ev.altKey || ev.shiftKey || (ev.code !== 'KeyS' && String(ev.key).toLowerCase() !== 's')) return;
       ev.preventDefault();
       if (document.querySelector('.sheet-wrap:not([hidden])') || sb.disabled) return;
-      if (document.activeElement && document.activeElement.blur && document.activeElement !== document.body && document.activeElement.id !== 'te-lines') document.activeElement.blur();
+      if (document.activeElement && document.activeElement.blur && document.activeElement !== document.body && document.activeElement.id !== 'te-lines' && document.activeElement.id !== 'te-in') document.activeElement.blur();
       const te = $('te-lines');
-      if (te && document.activeElement === te) { te.blur(); te.focus({ preventScroll: true }); } // 치던 코드를 확정한 뒤 저장
+      if (te && (document.activeElement === te || document.activeElement === $('te-in'))) { const f = document.activeElement; f.blur(); f.focus({ preventScroll: true }); } // 치던 코드를 확정한 뒤 저장
       save(false);
     };
     document.addEventListener('keydown', onSaveKey);

@@ -902,3 +902,7 @@ body.cink-txt-on { padding-bottom: 300px; }
 
 /* 41차: 원래대로 버튼은 −의 왼쪽 고정 자리 (바뀐 게 없으면 흐리게) */
 .pbtn.preset { font-size: 14px; font-weight: 600; margin-right: 6px; white-space: nowrap; }
+
+/* 42차: 키 입력 전용 보이지 않는 입력칸 */
+.te-in { position: fixed; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; pointer-events: none; font-size: 16px; }
+.te:has(.te-in:focus) .tc.sel .tl { box-shadow: 0 2px 0 var(--chord); }
