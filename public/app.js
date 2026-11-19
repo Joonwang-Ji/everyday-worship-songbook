@@ -1690,7 +1690,6 @@
       to.push(ta.value);
       setBody(from.pop(), null, true);
     }
-    const kbDown = new Set(); // keydown 이 온 키(keyup 으로 되받기 위해)
     const onTeKey = (ev) => {
       // 32b: 진단(더보기 → 필기 진단)을 켜면 받은 키를 그대로 보여 준다 — 기기에 따라 키가 안 먹을 때 원인을 보기 위해
       if (ls.get('ews_ink_dbg', '') === '1') toast(`키: code=${ev.code || '(없음)'} key=${ev.key} 조합=${ev.isComposing ? 'Y' : 'N'}`);
@@ -1764,66 +1763,17 @@
         teRender();
       } else if (hadHint) teRender();
     };
-    // 일부 기기(아이패드 키보드)는 e·z·x·c 같은 키의 keydown 이 안 오고 keyup 만 온다 → keydown 이 없던 키는 keyup 으로 처리한다
-    // 42차: 키 입력을 받는 곳은 보이지 않는 입력칸(#te-in)과 te-lines. 입력칸은 글자 입력 이벤트(input)도 받아서,
-    //  e·z·x·c 같은 키의 keydown·keyup 이 아예 안 오는 기기에서도 글자를 알아낼 수 있다.
-    let lastDownAt = 0;
-    // 42차(d): 한 번 누른 글자가 keydown·keyup·input 어느 경로로든 두 번 오면 한 번만 처리한다(0.4초 안의 같은 글자 키 = 같은 누름)
-    let dupCh = '', dupAt = 0;
-    // 42차(e): 입력 이벤트(input)가 keydown 없이 오는 기기에서는 한 번 누를 때마다 "바로 오는 것 + 다음 키를 누를 때 늦게 오는 메아리" 두 번이 온다.
-    //  seenDown: keydown 이 한 번이라도 온 글자(그 글자의 input 은 모두 무시)
-    let lastInCh = ''; // keydown 이 없는 글자: 방금 input 으로 처리한 글자(같은 글자의 input 은 메아리로 보고 무시). 다른 키(Tab·화살표 등)가 오면 비운다.
-    const seenDown = new Set();
-    const teHandle = (ev) => {
-      const m = /^Key([A-Z])$/.exec(ev.code || '') || /^Digit(\d)$/.exec(ev.code || '');
-      if (m) {
-        const ch = m[1].toLowerCase(), now = Date.now();
-        if (ev.fromInput) {
-          if (seenDown.has(ch) || ch === lastInCh) {
-            if (ls.get('ews_ink_dbg', '') === '1') toast(`입력 메아리 무시: ${ch}`);
-            return;
-          }
-          lastInCh = ch;
-        }
-        if (ch === dupCh && now - dupAt < 400) {
-          if (ev.preventDefault) ev.preventDefault();
-          if (ls.get('ews_ink_dbg', '') === '1') toast(`같은 키 중복 무시: ${ch}`);
-          return;
-        }
-        dupCh = ch; dupAt = now;
-      }
-      onTeKey(ev);
-    };
-    const teEls = [$('te-lines'), $('te-in')].filter(Boolean);
-    teEls.forEach((el) => {
-      el.addEventListener('keydown', (ev) => { lastDownAt = Date.now(); lastInCh = ''; if (ev.code) { kbDown.add(ev.code); const mm = /^(?:Key([A-Z])|Digit(\d))$/.exec(ev.code); if (mm) seenDown.add((mm[1] || mm[2]).toLowerCase()); } teHandle(ev); });
-      el.addEventListener('keyup', (ev) => {
-        const had = ev.code && kbDown.has(ev.code);
-        if (ev.code) kbDown.delete(ev.code);
-        if (had) return;
-        lastDownAt = Date.now();
-        if (ls.get('ews_ink_dbg', '') === '1') toast(`keyup만 도착: code=${ev.code || '(없음)'} key=${ev.key}`);
-        if (/^Key[A-Z]$|^(Digit|Numpad)\d$|^Slash$/.test(ev.code || '') || /^[a-zA-Z0-9/]$/.test(ev.key || '')) teHandle(ev);
-      });
-      el.addEventListener('blur', () => { kbDown.clear(); if (kbBuf) kbCommit(); });
+    // 42차: 키 입력은 보이지 않는 입력칸(#te-in)이 받는다(e·z·x·c 소문자는 div 에는 키 신호가 안 오던 기기가 있었다). 처리는 keydown 하나뿐.
+    //  입력 이벤트(input)는 처리하지 않고, 진단을 켰을 때 도착 사실만 알려 준다.
+    [$('te-lines'), $('te-in')].filter(Boolean).forEach((el) => {
+      el.addEventListener('keydown', onTeKey);
+      el.addEventListener('blur', () => { if (kbBuf) kbCommit(); });
     });
     const teIn = $('te-in');
     if (teIn) {
-      const JAMO = { 'ㅁ': 'a', 'ㅠ': 'b', 'ㅊ': 'c', 'ㅇ': 'd', 'ㄷ': 'e', 'ㄹ': 'f', 'ㅎ': 'g', 'ㅑ': 'i', 'ㅓ': 'j', 'ㅏ': 'k', 'ㅣ': 'l', 'ㅡ': 'm', 'ㅜ': 'n', 'ㅐ': 'o', 'ㅔ': 'p', 'ㅂ': 'q', 'ㄱ': 'r', 'ㄴ': 's', 'ㅕ': 'u', 'ㅍ': 'v', 'ㅈ': 'w', 'ㅌ': 'x', 'ㅛ': 'y', 'ㅋ': 'z', 'ㅗ': 'h', 'ㅅ': 't' };
-      const onText = (ev) => {
-        const d = ev.data || '';
-        teIn.value = '';
-        const recent = Date.now() - lastDownAt < 300; // keydown 이 방금 왔으면 이미 처리한 것
-        if (ls.get('ews_ink_dbg', '') === '1') toast(`입력 도착: ${ev.type} data=${d || '(없음)'} 조합=${ev.isComposing ? 'Y' : 'N'}${recent ? ' (keydown 처리됨)' : ''}`);
-        if (recent || !tsel) return;
-        const ch = JAMO[d] || d;
-        if (!/^[a-zA-Z0-9/]$/.test(ch)) return;
-        const up = ch.toUpperCase();
-        const fake = { code: /^\d$/.test(ch) ? 'Digit' + ch : ch === '/' ? 'Slash' : 'Key' + up, key: ch, shiftKey: ch !== ch.toLowerCase(), metaKey: false, ctrlKey: false, altKey: false, isComposing: false, fromInput: true, target: teIn, currentTarget: teIn, preventDefault() {} };
-        teHandle(fake);
-      };
-      teIn.addEventListener('input', onText); // compositionend 는 받지 않는다(조합이 끝나며 같은 글자가 한 번 더 들어가던 문제)
-      teIn.addEventListener('compositionend', () => { teIn.value = ''; });
+      const clear = () => { teIn.value = ''; };
+      teIn.addEventListener('input', (ev) => { if (ls.get('ews_ink_dbg', '') === '1') toast(`입력 도착: data=${ev.data || '(없음)'} 조합=${ev.isComposing ? 'Y' : 'N'}`); clear(); });
+      teIn.addEventListener('compositionend', clear);
     }
 
     function directSheet() {
