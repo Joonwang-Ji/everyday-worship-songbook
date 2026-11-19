@@ -32,7 +32,7 @@
       if (q.raw !== undefined) { r.push({ t: q.raw, px, dy: 0 }); return; }
       pushAcc(r, q.root, px * 1.12, 0, px);
       if (q.q) r.push({ t: q.q, px, dy: 0 });
-      if (q.ext) pushAcc(r, q.ext, px * 0.72, px * 0.22, px); // 41차: 덧붙임은 아랫첨자
+      if (q.ext) pushAcc(r, q.ext, px * 0.72, px * 0.03, px); // 41차: 덧붙임은 아랫첨자(기준선에 맞춤)
       if (q.bass) { r.push({ t: '/', px: px * 0.9, dy: 0 }); pushAcc(r, q.bass, px * 0.9, 0, px); }
     });
     if (g.close) r.push({ t: ')', px, dy: 0, light: true });
