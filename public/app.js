@@ -1796,8 +1796,8 @@
         const fake = { code: /^\d$/.test(ch) ? 'Digit' + ch : ch === '/' ? 'Slash' : 'Key' + up, key: ch, shiftKey: ch !== ch.toLowerCase(), metaKey: false, ctrlKey: false, altKey: false, isComposing: false, target: teIn, currentTarget: teIn, preventDefault() {} };
         onTeKey(fake);
       };
-      teIn.addEventListener('input', onText);
-      teIn.addEventListener('compositionend', onText);
+      teIn.addEventListener('input', onText); // compositionend 는 받지 않는다(조합이 끝나며 같은 글자가 한 번 더 들어가던 문제)
+      teIn.addEventListener('compositionend', () => { teIn.value = ''; });
     }
 
     function directSheet() {
