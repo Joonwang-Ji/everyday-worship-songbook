@@ -478,7 +478,7 @@
     }
     function drawChips() {
       SongFilter.prune(listState.f, groups, kchips, tchips);
-      $chips.innerHTML = SongFilter.chipsHTML(listState.f, groups, kchips, esc, tchips);
+      $chips.innerHTML = SongFilter.chipsHTML(listState.f, groups, kchips, esc, tchips, { needs: !!(me.isAdmin || (me.team && me.team.isLeader)) });
       const sum = SongFilter.summary(listState.f);
       document.getElementById('fsum').textContent = sum ? `분류·키·박자로 찾기 · ${sum}` : '분류·키·박자로 찾기';
       document.getElementById('fclear').hidden = !SongFilter.isActive(listState.f);
@@ -496,7 +496,7 @@
       document.getElementById('vfull').classList.toggle('on', !compact);
       $list.innerHTML = shown
         .map((s) => {
-          if (compact) return `<li class="song-item"><a href="#/song/${s.id}"><span class="song-title">${esc(s.title)}</span><span class="song-meta">${SongFilter.keyTsigHTML(s, esc)}</span></a></li>`;
+          if (compact) return `<li class="song-item"><a href="#/song/${s.id}"><span class="song-title">${esc(s.title)}</span><span class="song-meta">${SongFilter.keyTsigHTML(s, esc)}${SongFilter.needsBadge(s, esc)}</span></a></li>`;
           const used = me.team && anyUsed ? (s.last_used ? `<span class="tag used" title="우리 팀이 가장 최근에 부른 날">최근 ${mmdd(s.last_used)}</span>` : '<span class="tag unused">안 불러 봄</span>') : '';
           return `<li class="song-item"><a href="#/song/${s.id}">
             <div class="song-title">${esc(s.title)}${s.orig_title ? `<span class="orig"> · ${esc(s.orig_title)}</span>` : ''}</div>
@@ -650,6 +650,7 @@
         ${yt ? `<a href="${esc(yt)}" target="_blank" rel="noopener noreferrer">▶ 원곡 영상</a>` : ''}
       </div>
       ${SongFilter.tagsLineHTML(song.tags, esc)}
+      ${me.isAdmin || isLeader ? `<div class="row needsrow"><span class="ctl-label">🚩 보완 필요</span><select id="needsel" aria-label="보완 필요 표시">${[['', '없음'], ...Object.entries(SongFilter.NEEDS)].map(([v, t]) => `<option value="${v}" ${v === (song.needs_work || '') ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select><span class="muted small" id="needsmsg"></span></div>` : ''}
       ${usageHTML(song.usage)}
       ${vLabels.length > 1 ? `<div class="chips vchips" id="vchips" role="tablist" aria-label="악보 버전">${vLabels.map((x) => `<button type="button" class="chip${x.id === vSel ? ' on' : ''}" role="tab" aria-selected="${x.id === vSel}" data-v="${x.id}">${x.lang ? `<span class="vlang">${esc(x.lang.toUpperCase())}</span> ` : ''}${esc(x.text)}</button>`).join('')}</div>` : ''}
       ${hasText && files.length ? '<div class="tabs" id="tabs"><button class="tab" data-tab="chord">코드 악보</button><button class="tab" data-tab="img">이미지 악보</button></div>' : ''}
@@ -820,6 +821,24 @@
         $tk.disabled = false;
       }
     };
+    // 44차: 관리자·팀장 — "보완 필요" 표시 고르기(바로 저장)
+    const $ns = document.getElementById('needsel');
+    if ($ns) {
+      $ns.onchange = async () => {
+        const msg = document.getElementById('needsmsg');
+        $ns.disabled = true;
+        try {
+          await api('/songs/' + id + '/needs', { method: 'PUT', body: { kind: $ns.value } });
+          song.needs_work = $ns.value;
+          if (msg) msg.textContent = $ns.value ? '표시했어요' : '표시를 지웠어요';
+        } catch (e) {
+          $ns.value = song.needs_work || '';
+          toast(e.message);
+        } finally {
+          $ns.disabled = false;
+        }
+      };
+    }
     // 팀장: 이미지·PDF만 있는 곡의 팀 기본 키(기록용). 비워서 저장하면 지워진다.
     const $ik = document.getElementById('imgkey');
     const $iks = document.getElementById('imgkeysave');

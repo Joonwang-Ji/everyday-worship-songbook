@@ -505,6 +505,8 @@ body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 
 .fixrow { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
 .fixrow:first-child { border-top: 0; }
 .fixrow .btn.small { flex: none; }
+.tag.needs { background: #fde8e8; color: #9b1c1c; border: 1px solid #f3b4b4; font-weight: 700; }
+.needsrow { margin: 6px 0; align-items: center; gap: 8px; }
 .tag.warn { background: #fff3cd; color: #7a5b00; border: 1px solid #f0d98a; font-weight: 700; }
 .bar { height: 10px; border-radius: 999px; background: var(--line); overflow: hidden; margin-top: 8px; }
 .bar > span { display: block; height: 100%; background: var(--brand); border-radius: 999px; }
