@@ -56,6 +56,11 @@
     const n = s.file_count || 0;
     return { chord: !!s.has_chords, image, pdf, n, both: image && pdf };
   }
+  // ---------- "보완 필요" 표시 (44차) ----------
+  // 관리자·팀장만 서버에서 값을 받는다(팀원에게는 항상 빈 값). 종류 하나를 고른다.
+  const NEEDS = { chord: '코드 확인', lyrics: '가사 확인', image: '이미지 교체', other: '기타' };
+  const needsText = (s) => NEEDS[s && s.needs_work] || '';
+  const needsBadge = (s, esc) => (needsText(s) ? `<span class="tag needs" title="보완 필요: ${esc(needsText(s))}">🚩 ${esc(needsText(s))}</span>` : '');
   // ---------- 악보 보완 (13차) ----------
   // 이상적인 곡은 코드 악보와 이미지·PDF 악보가 모두 있는 곡. 'full' | 'chord'(코드만) | 'file'(이미지·PDF만) | 'none'
   function completeness(s) {
@@ -89,6 +94,9 @@
 
   // 곡 한 줄에 붙는 형식 배지. 주제 태그와 모양이 달라서 한눈에 구분된다.
   function badgesHTML(s, esc) {
+    return badgesBase(s, esc) + needsBadge(s, esc);
+  }
+  function badgesBase(s, esc) {
     const f = formatOf(s);
     const out = [];
     // 21차: 코드 악보는 "Cm" 같은 코드 기호로, 이미지 악보는 높은음자리표(🎼)로 보여 준다. (악보 모양이 있는 쪽이 이미지라서)
@@ -147,6 +155,7 @@
     if (st.fmt === 'file' && !(s.file_count > 0)) return false;
     if (st.fmt === 'missing' && completeness(s) === 'full') return false;
     if (st.fmt === 'full' && completeness(s) !== 'full') return false;
+    if (st.fmt === 'needs' && !needsText(s)) return false;
     return true;
   }
   const isActive = (st) => !!(st.tags.length || st.keys.length || st.tsigs.length || st.fmt);
@@ -185,16 +194,16 @@
       st.tsigs = st.tsigs.filter((t) => ts.has(t));
     }
   }
-  const summary = (st) => [...st.tags, st.keys.length ? st.keys.join('·') : '', st.tsigs.length ? st.tsigs.join('·') : '', st.fmt === 'chord' ? '코드 악보' : st.fmt === 'file' ? '이미지·PDF' : st.fmt === 'missing' ? '빠진 것 있음' : st.fmt === 'full' ? '둘 다 있음' : ''].filter(Boolean).join(' + ');
+  const summary = (st) => [...st.tags, st.keys.length ? st.keys.join('·') : '', st.tsigs.length ? st.tsigs.join('·') : '', st.fmt === 'chord' ? '코드 악보' : st.fmt === 'file' ? '이미지·PDF' : st.fmt === 'missing' ? '빠진 것 있음' : st.fmt === 'full' ? '둘 다 있음' : st.fmt === 'needs' ? '보완 필요 표시' : ''].filter(Boolean).join(' + ');
 
   // ---------- 칩 그리기 ----------
-  function chipsHTML(st, groups, chips, esc, tsChips) {
+  function chipsHTML(st, groups, chips, esc, tsChips, opt) {
     const grp = (label, body) => `<div class="chipgroup"><span class="ctl-label">${esc(label)}</span><div class="chips">${body}</div></div>`;
     const chip = (on, attrs, text) => `<button type="button" class="chip ${on ? 'on' : ''}" ${attrs}>${text}</button>`;
     const parts = groups.map((g) => grp(g.label, g.items.map((t) => chip(st.tags.includes(t), `data-t="${esc(t)}"`, esc(t))).join('')));
     if (chips.length) parts.push(grp('키 (팀 키 기준)', chips.map((c) => chip(st.keys.includes(c.key), `data-k="${esc(c.key)}"`, `${esc(c.key)} <small>${c.n}</small>`)).join('')));
     if (tsChips && tsChips.length) parts.push(grp('박자', tsChips.map((c) => chip(st.tsigs.includes(c.key), `data-ts="${esc(c.key)}"`, `${esc(c.key)} <small>${c.n}</small>`)).join('')));
-    parts.push(grp('악보', chip(st.fmt === 'chord', 'data-fmt="chord"', '<b class="cmk">Chord</b> 악보') + chip(st.fmt === 'file', 'data-fmt="file"', '🎼 이미지·PDF') + chip(st.fmt === 'missing', 'data-fmt="missing"', '⚠ 빠진 것 있음') + chip(st.fmt === 'full', 'data-fmt="full"', '✓ 둘 다 있음')));
+    parts.push(grp('악보', chip(st.fmt === 'chord', 'data-fmt="chord"', '<b class="cmk">Chord</b> 악보') + chip(st.fmt === 'file', 'data-fmt="file"', '🎼 이미지·PDF') + chip(st.fmt === 'missing', 'data-fmt="missing"', '⚠ 빠진 것 있음') + chip(st.fmt === 'full', 'data-fmt="full"', '✓ 둘 다 있음') + (opt && opt.needs ? chip(st.fmt === 'needs', 'data-fmt="needs"', '🚩 보완 필요 표시') : '')));
     return parts.join('');
   }
 
@@ -231,7 +240,7 @@
     st.keys = [...new Set((p.get('key') || '').split(',').map((k) => normKey(k.trim().replace(/^./, (c) => c.toUpperCase()))).filter(Boolean))].sort((a, b) => keyRank(a) - keyRank(b));
     st.tsigs = [...new Set((p.get('ts') || '').split(',').map((t) => t.trim()).filter(Boolean))].sort((a, b) => tsigRank(a) - tsigRank(b) || a.localeCompare(b));
     const f = p.get('fmt');
-    st.fmt = f === 'chord' || f === 'file' || f === 'missing' || f === 'full' ? f : '';
+    st.fmt = f === 'chord' || f === 'file' || f === 'missing' || f === 'full' || f === 'needs' ? f : '';
     const sort = SORTS.includes(p.get('sort')) ? p.get('sort') : 'title';
     return { st, q: (p.get('q') || '').trim(), sort };
   }
@@ -267,5 +276,5 @@
     return { count: list.length, keys, tempos, hasFar: keys.some((x) => x.far), hasTempo: tempos.some(Boolean), hasKey: ks.some(Boolean) };
   }
 
-  return { flowSummary, keyFar, tempoClass, OTHER_KEY, normKey, effKey, keyDiffers, tsigList, tsigText, tsigInner, tsigHTML, keyTsigHTML, keyRank, formatOf, completeness, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, tsigChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
+  return { flowSummary, keyFar, tempoClass, OTHER_KEY, normKey, effKey, keyDiffers, tsigList, tsigText, tsigInner, tsigHTML, keyTsigHTML, keyRank, formatOf, completeness, NEEDS, needsText, needsBadge, missingText, fixTarget, stats, suggest, badgesHTML, tagsLineHTML, newState, groupTags, keyChips, tsigChips, matches, isActive, toggle, prune, summary, chipsHTML, sortSongs, toQuery, fromQuery, hasFilterParams };
 });

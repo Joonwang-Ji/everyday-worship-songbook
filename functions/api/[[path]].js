@@ -387,6 +387,8 @@ async function ensureSchema(db) {
   await ensureColumn(db, 'song_files', 'position', `position INTEGER`);
   await ensureColumn(db, 'setlist_items', 'variant_id', `variant_id INTEGER`);
   await ensureColumn(db, 'setlist_items', 'variant_map', `variant_map TEXT NOT NULL DEFAULT ''`);
+  // 44차: 곡별 "보완 필요" 표시(관리자·팀장만 보고 바꿈): '' | chord | lyrics | image | other
+  await ensureColumn(db, 'songs', 'needs_work', `needs_work TEXT NOT NULL DEFAULT ''`);
   // 11차: 콘티의 예배 종류 / 인도자(이름 글자, 쉼표로 구분) / 임시(급하게 만든) 표시
   await ensureColumn(db, 'setlists', 'service_id', `service_id INTEGER`);
   await ensureColumn(db, 'setlists', 'leaders', `leaders TEXT NOT NULL DEFAULT ''`);
@@ -498,6 +500,9 @@ async function getCtx(env, request) {
   return ctx;
 }
 // 악보 편집: 관리자, 또는 관리자가 편집 권한을 켜 준 팀의 팀장
+// 44차: "보완 필요" 표시는 관리자·팀장만 보고 바꾼다(팀원에게는 항상 빈 값)
+const canMark = (ctx) => !!(ctx.admin || ctx.leader);
+const NEEDS_KINDS = ['chord', 'lyrics', 'image', 'other'];
 const canEdit = (ctx) => ctx.admin || (ctx.leader && ctx.team.can_edit_songs === 1);
 function requireEdit(env, ctx) {
   if (canEdit(ctx)) return;
@@ -1642,12 +1647,12 @@ export async function onRequest({ request, env }) {
         const { results } = await db
           .prepare(
             pq.all
-              ? `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,chordpro,lyrics_extra,chart_name,chart_lang,updated_at,
+              ? `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,chordpro,needs_work,lyrics_extra,chart_name,chart_lang,updated_at,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
               (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds,
               (SELECT COUNT(*) FROM song_variants v WHERE v.song_id = songs.id) AS variant_count
              FROM songs ORDER BY title`
-              : `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,chart_name,chart_lang,updated_at,
+              : `SELECT id,title,orig_title,artist,original_key,tempo,time_sig,base_form,tags,needs_work,chart_name,chart_lang,updated_at,
               (TRIM(chordpro, ' ' || char(9) || char(10) || char(13)) <> '') AS has_chords,
               (SELECT COUNT(*) FROM song_files f WHERE f.song_id = songs.id) AS file_count,
               (SELECT group_concat(DISTINCT kind) FROM song_files f WHERE f.song_id = songs.id) AS file_kinds,
@@ -1693,6 +1698,7 @@ export async function onRequest({ request, env }) {
           const lu = lastMap[s.id];
           return {
             ...rest,
+            needs_work: canMark(ctx) ? rest.needs_work || '' : '',
             file_kinds: rest.file_kinds || '',
             variants_brief: vbMap[s.id] || [],
             has_chords: chordpro === undefined ? !!rest.has_chords : /\S/.test(chordpro),
@@ -1703,6 +1709,17 @@ export async function onRequest({ request, env }) {
           };
         });
         return json({ songs });
+      }
+
+      // 44차: "보완 필요" 표시 켜기·끄기. body {kind:''|chord|lyrics|image|other}. 곡 수정 이력·수정일은 건드리지 않는다.
+      if (id && parts[2] === 'needs' && method === 'PUT') {
+        if (!canMark(ctx)) throw new HttpError(403, '관리자나 팀장만 “보완 필요” 표시를 바꿀 수 있습니다.');
+        const body = await readBody();
+        const kind = String(body.kind || '');
+        if (kind && !NEEDS_KINDS.includes(kind)) throw new HttpError(400, '알 수 없는 표시입니다.');
+        const r = await db.prepare('UPDATE songs SET needs_work=? WHERE id=?').bind(kind, id).run();
+        if (!r.meta || !r.meta.changes) throw new HttpError(404, '곡을 찾을 수 없습니다.');
+        return json({ ok: true, needs_work: kind });
       }
 
       // 악보 파일(이미지·PDF) 올리기: 본문 자체가 파일 내용이다
@@ -1863,6 +1880,7 @@ export async function onRequest({ request, env }) {
       if (id && method === 'GET') {
         const song = await db.prepare('SELECT * FROM songs WHERE id=?').bind(id).first();
         if (!song) throw new HttpError(404, '곡을 찾을 수 없습니다.');
+        song.needs_work = canMark(ctx) ? song.needs_work || '' : '';
         song.files = await songFiles(env, id);
         song.variants = (await db.prepare('SELECT id,name,lang,chordpro,position FROM song_variants WHERE song_id=? ORDER BY position,id').bind(id).all()).results;
         song.tags = makeTagOrder(await getPresets(db))(song.tags);
