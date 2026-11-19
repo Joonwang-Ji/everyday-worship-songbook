@@ -1313,6 +1313,14 @@ export async function onRequest({ request, env }) {
           await db.prepare('UPDATE teams SET join_code=? WHERE id=?').bind(code, tid).run();
           return json({ join_code: code });
         }
+        // 46차: 관리자는 가입코드·팀장 PIN 없이 어느 팀이든 팀장 권한으로 입장한다(이 기기용 열쇠를 받는다)
+        if (tid && parts[3] === 'enter' && method === 'POST') {
+          return json({
+            team: { id: team.id, name: team.name },
+            teamToken: await teamToken(env, team),
+            leaderToken: team.leader_pin_hash ? await leaderToken(env, team) : '',
+          });
+        }
         // 팀장 지정(재지정): 새 PIN을 정하면 이전 팀장 로그인은 모두 풀린다
         if (tid && parts[3] === 'leader-pin' && method === 'POST') {
           const pinHash = await hashPin(cleanPin((await readBody()).pin));
