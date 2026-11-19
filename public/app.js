@@ -1689,7 +1689,8 @@
       to.push(ta.value);
       setBody(from.pop(), null, true);
     }
-    $('te-lines').addEventListener('keydown', (ev) => {
+    const kbDown = new Set(); // keydown 이 온 키(keyup 으로 되받기 위해)
+    const onTeKey = (ev) => {
       // 32b: 진단(더보기 → 필기 진단)을 켜면 받은 키를 그대로 보여 준다 — 기기에 따라 키가 안 먹을 때 원인을 보기 위해
       if (ls.get('ews_ink_dbg', '') === '1') toast(`키: code=${ev.code || '(없음)'} key=${ev.key} 조합=${ev.isComposing ? 'Y' : 'N'}`);
       if (!tsel) return;
@@ -1761,8 +1762,17 @@
         else kbHint = `${name}(으)로는 코드를 시작할 수 없어요. A~G로 시작해요.`;
         teRender();
       } else if (hadHint) teRender();
+    };
+    // 일부 기기(아이패드 키보드)는 e·z·x·c 같은 키의 keydown 이 안 오고 keyup 만 온다 → keydown 이 없던 키는 keyup 으로 처리한다
+    $('te-lines').addEventListener('keydown', (ev) => { if (ev.code) kbDown.add(ev.code); onTeKey(ev); });
+    $('te-lines').addEventListener('keyup', (ev) => {
+      const had = ev.code && kbDown.has(ev.code);
+      if (ev.code) kbDown.delete(ev.code);
+      if (had) return;
+      if (ls.get('ews_ink_dbg', '') === '1') toast(`keyup만 도착: code=${ev.code || '(없음)'} key=${ev.key}`);
+      if (/^Key[A-Z]$|^(Digit|Numpad)\d$|^Slash$/.test(ev.code || '') || /^[a-zA-Z0-9/]$/.test(ev.key || '')) onTeKey(ev);
     });
-    $('te-lines').addEventListener('blur', () => { if (kbBuf) kbCommit(); });
+    $('te-lines').addEventListener('blur', () => { kbDown.clear(); if (kbBuf) kbCommit(); });
 
     function directSheet() {
       if (!tsel) { toast('먼저 코드를 붙일 글자를 탭하세요.'); return; }

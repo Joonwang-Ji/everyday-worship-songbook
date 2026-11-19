@@ -85,9 +85,9 @@ textarea.code { font-family: ui-monospace, "SF Mono", Menlo, "D2Coding", monospa
 .sg { display: inline-flex; flex-direction: column; vertical-align: bottom; }
 .ch { font-family: "Times New Roman", Georgia, "Noto Serif", "Apple SD Gothic Neo", serif; font-style: italic; letter-spacing: .01em; font-weight: 800; color: var(--chord); font-size: .88em; line-height: 1.35; min-height: 1.35em; padding-right: .45em; white-space: pre; }
 .ch .cr { font-size: 1.12em; }
-.ch .cx { font-size: .72em; position: relative; top: .3em; margin-left: .04em; } /* 41차: 덧붙임은 아랫첨자 */
+.ch .cx { font-size: .72em; position: relative; top: .04em; margin-left: .04em; } /* 41차: 덧붙임은 아랫첨자 — 42차: 메인 코드 밑줄(기준선)에 맞춤 */
 .ch .ca { font-size: .72em; position: relative; top: -.42em; font-weight: 700; margin-left: .02em; } /* ♯·♭은 윗첨자 */
-.ch .cx .ca { top: -.95em; }
+.ch .cx .ca { top: -.75em; }
 .ch .cb { font-size: .9em; }
 .ch .cp { font-weight: 400; opacity: .45; }
 .ly { white-space: pre; line-height: 1.5; min-height: 1.5em; }
