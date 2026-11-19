@@ -528,7 +528,7 @@
       </div>
       <div class="ink-scroll"><div class="ink-stage"><img alt="악보" draggable="false"><svg class="ink-svg" preserveAspectRatio="none"></svg></div></div>
       <div class="ink-txt" hidden>
-        <textarea rows="3" maxlength="300" placeholder="글자 메모를 입력하세요" aria-label="글자 메모"></textarea>
+        <textarea rows="2" maxlength="300" placeholder="글자 메모를 입력하세요" aria-label="글자 메모"></textarea>
         <div class="ink-row" id="ink-tr"></div>
         <div class="ink-row"><button type="button" class="ink-b" data-t="ok">확인</button><button type="button" class="ink-b" data-t="del">지우기</button><button type="button" class="ink-b" data-t="cancel">취소</button></div>
       </div>`;
@@ -934,13 +934,14 @@
       const zi = zIdx(cur.z);
       q('#ink-tr').innerHTML = dots(PEN_COLORS, cur.c) + TEXT_SIZES.map((sz, i) => `<button type="button" class="ink-w txs${i === zi ? ' on' : ''}" data-z2="${i}" style="font-size:${12 + i * 4}px">가</button>`).join('');
     }
-    // 입력창이 가리지 않도록 글자 자리가 보이게 화면을 옮긴다
+    // 입력창(위)이나 키보드(아래)가 가리지 않도록 글자 자리가 보이게 화면을 옮긴다
     function revealPoint() {
       if (!txtEdit) return;
       const r = scroller.getBoundingClientRect();
       const sy = r.top + view.y + (txtEdit.y / 10000) * bh * view.s;
-      const limit = $txt.getBoundingClientRect().top - 70;
-      if (sy > limit) { view.y -= sy - limit; applyView(); }
+      const topLim = Math.max(r.top, $txt.getBoundingClientRect().bottom) + 40, botLim = r.bottom - 40;
+      if (sy < topLim) { view.y += topLim - sy; applyView(); }
+      else if (sy > botLim) { view.y -= sy - botLim; applyView(); }
     }
     const zFor = (i) => clamp(Math.round(TEXT_SIZES[i] / view.s), 60, 600);
     const zIdx = (z) => { let bi = 0; TEXT_SIZES.forEach((_, i) => { if (Math.abs(zFor(i) - z) < Math.abs(zFor(bi) - z)) bi = i; }); return bi; };
@@ -948,6 +949,8 @@
       const z0 = zFor(opts.tx.z);
       txtEdit = it ? { ...it, isNew: false } : { id: uid(), t: 'x', x: Math.round(at[0] * 10000), y: Math.round(at[1] * 10000), c: opts.tx.c, z: z0, s: '', isNew: true };
       $ta.value = txtEdit.s;
+      $txt.style.top = q('.ink-top').offsetHeight + 'px'; // 입력창은 도구 줄 자리(위쪽)에 뜬다
+      ov.classList.add('txt');
       $txt.hidden = false;
       // 탭한 뒤에 따라오는 클릭이 방금 나타난 입력창의 버튼(취소 등)을 누르지 않도록 잠깐 막는다
       $txt.style.pointerEvents = 'none';
@@ -959,6 +962,7 @@
     }
     function closeText() {
       $txt.hidden = true;
+      ov.classList.remove('txt');
       txtEdit = null;
       redraw();
       clampView();
@@ -1357,9 +1361,9 @@
     const bar = mk('cs-bar');
     const pnl = mk('cink-txt');
     pnl.hidden = true;
-    pnl.innerHTML = `<textarea rows="3" maxlength="300" placeholder="글자 메모를 입력하세요" aria-label="글자 메모"></textarea><div class="ink-row" data-r="opt"></div><div class="ink-row"><button type="button" class="ink-b" data-x="ok">확인</button><button type="button" class="ink-b" data-x="del">삭제</button><button type="button" class="ink-b" data-x="cancel">취소</button><span class="ink-hint">점선 표시를 끌거나 악보를 눌러 자리를 옮겨요</span></div>`;
+    pnl.innerHTML = `<textarea rows="2" maxlength="300" placeholder="글자 메모를 입력하세요" aria-label="글자 메모"></textarea><div class="ink-row" data-r="opt"></div><div class="ink-row"><button type="button" class="ink-b" data-x="ok">확인</button><button type="button" class="ink-b" data-x="del">삭제</button><button type="button" class="ink-b" data-x="cancel">취소</button><span class="ink-hint">점선 표시를 끌거나 악보를 눌러 자리를 옮겨요</span></div>`;
     topEl.appendChild(bar);
-    document.body.appendChild(pnl);
+    ov.appendChild(pnl); // 글자 입력창은 도구 줄 자리(위쪽)에 뜬다 — 키보드가 아래를 가려도 도구와 입력창이 그대로 보이고 손이 오르내리지 않는다
     const $ta = pnl.querySelector('textarea');
     let S = null;
     let act = null;
@@ -1520,7 +1524,8 @@
       const vw = viewEl.clientWidth, vh = viewEl.clientHeight;
       const w = vs.Wl * vs.s, h = vs.H * vs.s;
       vs.x = w <= vw ? (vw - w) / 2 : clamp(vs.x, vw - w, 0);
-      vs.y = h <= vh ? 0 : clamp(vs.y, vh - h - (txt ? 300 : 0), 0); // 글자 입력창이 열려 있으면 그 높이만큼 더 올려 볼 수 있다
+      // 글자 입력 중에는 입력창(위)·키보드(아래)에 가려지는 만큼 악보를 위아래로 더 밀어 볼 수 있다
+      vs.y = h <= vh && !txt ? 0 : clamp(vs.y, Math.min(0, vh - h) - (txt ? 320 : 0), txt ? 240 : 0);
     }
     function applyView() {
       vs.s = clamp(vs.s, vs.s0, SMAX);
@@ -1695,6 +1700,7 @@
     function renderTxtBar() {
       pnl.querySelector('[data-r="opt"]').innerHTML = PEN_COLORS.map((c) => `<button type="button" class="ink-dot${txt.c === c ? ' on' : ''}" data-c="${c}" style="background:${c}" aria-label="색 ${c}"></button>`).join('') + TEXT_SIZES.map((z, i) => `<button type="button" class="ink-w txs${txt.z === z ? ' on' : ''}" data-z="${z}" aria-label="글자 크기 ${i + 1}" style="font-size:${12 + i * 4}px">가</button>`).join('');
     }
+    // 글자를 놓을 자리가 입력창(위)이나 키보드(아래)에 가리지 않게 악보를 옮긴다
     function revealMark() {
       if (!txt) return;
       const el = lineFor(txt.a);
@@ -1702,22 +1708,23 @@
       const r = relPos(el, o.root), rb = o.root.getBoundingClientRect();
       const k = rb.width / (o.root.offsetWidth || rb.width) || 1;
       const my = rb.top + (r.y + (txt.y / 1000) * r.h) * k;
-      const limit = pnl.getBoundingClientRect().top - 70;
-      if (my > limit) { vs.y -= my - limit; applyView(); }
+      const vr = viewEl.getBoundingClientRect();
+      const topLim = Math.max(vr.top, pnl.getBoundingClientRect().bottom) + 40, botLim = vr.bottom - 40;
+      if (my < topLim) { vs.y += topLim - my; applyView(); }
+      else if (my > botLim) { vs.y -= my - botLim; applyView(); }
     }
     function fitVV() {
-      if (!txt) return;
       const vv = window.visualViewport;
-      const kb = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
-      pnl.style.bottom = `${kb}px`;
-      revealMark();
+      if (vv) { ov.style.top = vv.offsetTop + 'px'; ov.style.height = vv.height + 'px'; ov.style.bottom = 'auto'; }
+      if (txt) revealMark();
     }
     function openText(it, at) {
       txt = it ? { ...it, isNew: false } : { id: uid(), t: 'x', a: null, x: 0, y: 0, c: opts.tx.c, z: TEXT_SIZES[opts.tx.z], s: '', isNew: true };
       if (!it) { placeAt(txt, at[0], at[1]); if (!txt.a) { txt = null; return; } }
       $ta.value = txt.s;
       o.hideId = it ? it.id : null;
-      bar.style.visibility = 'hidden'; // 자리는 그대로 두어 악보가 위로 밀려 오르지 않게
+      bar.classList.add('txt'); // 도구(펜·색 등)는 입력창에 가려 숨기고, 맨 위 줄(취소·완료·확대)은 그대로 둔다
+      pnl.style.top = bar.querySelector('.ink-top').offsetHeight + 'px';
       pnl.hidden = false;
       // 탭한 뒤에 따라오는 클릭이 방금 나타난 입력창의 버튼을 누르지 않도록 잠깐 막는다
       pnl.style.pointerEvents = 'none';
@@ -1734,7 +1741,8 @@
       o.ex = null;
       o.hideId = null;
       pnl.hidden = true;
-      bar.style.visibility = '';
+      bar.classList.remove('txt');
+      if (o.editing) applyView();
       document.body.classList.remove('cink-txt-on');
       try { $ta.blur(); } catch {}
     }
@@ -1946,7 +1954,7 @@
     try {
       ro2 = new ResizeObserver(() => { // 화면을 돌리거나 창 크기가 바뀌면 다시 맞춘다
         const w = viewEl.clientWidth, h = viewEl.clientHeight;
-        if (!o.editing || (w === lw && h === lh) || act || pinch) return;
+        if (!o.editing || txt || (w === lw && h === lh) || act || pinch) return;
         const wasFit = vs.s <= vs.s0 * 1.01;
         lw = w; lh = h;
         layoutStage();
