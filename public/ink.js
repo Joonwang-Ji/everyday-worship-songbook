@@ -522,11 +522,11 @@
           <button type="button" data-a="in" aria-label="확대">+</button>
         </span>
       </div>
-      <div class="ink-scroll"><div class="ink-stage"><img alt="악보" draggable="false"><svg class="ink-svg" preserveAspectRatio="none"></svg></div></div>
       <div class="ink-tools">
         <div class="ink-row" id="ink-r1"></div>
         <div class="ink-row" id="ink-r2"></div>
       </div>
+      <div class="ink-scroll"><div class="ink-stage"><img alt="악보" draggable="false"><svg class="ink-svg" preserveAspectRatio="none"></svg></div></div>
       <div class="ink-txt" hidden>
         <textarea rows="3" maxlength="300" placeholder="글자 메모를 입력하세요" aria-label="글자 메모"></textarea>
         <div class="ink-row" id="ink-tr"></div>
@@ -1354,10 +1354,10 @@
     let startSnap = null; // 32차: 필기를 시작할 때의 모습 (취소하면 이걸로 되돌린다)
     let changed = false;
     const mk = (cls) => { const d = document.createElement('div'); d.className = cls; return d; };
-    const bar = mk('cink-bar');
+    const bar = mk('cs-bar');
     const pnl = mk('cink-txt');
     pnl.hidden = true;
-    pnl.innerHTML = `<textarea rows="2" maxlength="300" placeholder="글자 메모를 입력하세요" aria-label="글자 메모"></textarea><div class="cink-txr" data-r="opt"></div><div class="cink-txr"><button type="button" data-x="ok" class="done">확인</button><button type="button" data-x="del">삭제</button><button type="button" data-x="cancel">취소</button><span class="cink-hint">점선 표시를 끌거나 악보를 눌러 자리를 옮겨요</span></div>`;
+    pnl.innerHTML = `<textarea rows="3" maxlength="300" placeholder="글자 메모를 입력하세요" aria-label="글자 메모"></textarea><div class="ink-row" data-r="opt"></div><div class="ink-row"><button type="button" class="ink-b" data-x="ok">확인</button><button type="button" class="ink-b" data-x="del">삭제</button><button type="button" class="ink-b" data-x="cancel">취소</button><span class="ink-hint">점선 표시를 끌거나 악보를 눌러 자리를 옮겨요</span></div>`;
     topEl.appendChild(bar);
     document.body.appendChild(pnl);
     const $ta = pnl.querySelector('textarea');
@@ -1394,20 +1394,28 @@
       const t = opts.tool;
       const colors = t === 'hl' ? HL_COLORS : PEN_COLORS;
       const cur = opts[t] || opts.pen;
-      // 좁은 화면(아이폰)에서는 글자 이름표를 숨기고 그림만 보여 도구 줄이 악보를 덜 가린다
-      const tb = (id, ico, label) => `<button type="button" data-t="${id}" class="${t === id ? 'on' : ''}" aria-label="${label}" title="${label}"><span class="ico">${ico}</span><span class="lbl"> ${label}</span></button>`;
+      const tn = (id, label) => `<button type="button" class="ink-b${t === id ? ' on' : ''}" data-t="${id}" aria-pressed="${t === id}">${label}</button>`;
+      const dots = (list, c) => list.map((x) => `<button type="button" class="ink-dot${x === c ? ' on' : ''}" data-c="${x}" style="background:${x}" aria-label="색 ${x}"></button>`).join('');
+      let r2 = '';
+      if (t === 'pen' || t === 'hl') {
+        r2 += dots(colors, cur.c);
+        r2 += WIDTHS[t].map((w, i) => `<button type="button" class="ink-w${i === cur.w ? ' on' : ''}" data-w="${i}" aria-label="굵기 ${i + 1}"><i style="height:${t === 'pen' ? 2 + i * 2 : 6 + i * 4}px"></i></button>`).join('');
+      } else if (t === 'tx') {
+        r2 += dots(PEN_COLORS, opts.tx.c);
+        r2 += TEXT_SIZES.map((sz, i) => `<button type="button" class="ink-w txs${i === opts.tx.z ? ' on' : ''}" data-z="${i}" aria-label="글자 크기 ${i + 1}" style="font-size:${12 + i * 4}px">가</button>`).join('');
+        r2 += '<span class="ink-hint">빈 곳을 누르면 글자를 넣고, 글자를 누르면 고칩니다</span>';
+      } else r2 += '<span class="ink-hint">지울 필기 위를 문지르세요 (획 하나씩 지워져요)</span>';
+      r2 += `<span class="ink-sp"></span><button type="button" class="ink-b small${opts.finger ? ' on' : ''}" data-f="1" aria-pressed="${opts.finger}" title="Apple Pencil만 쓰려면 끄세요. 끄면 한 손가락은 화면 이동이에요">☝ 손가락 ${opts.finger ? '쓰기' : '이동'}</button>` +
+        (hasOcc ? `<button type="button" class="ink-b small" data-s="1">${scopeLabel()}</button>` : '');
+      // 이미지 필기와 같은 구성: 위 줄(취소·완료·보기), 도구 줄, 색·굵기 줄
       bar.innerHTML =
-        `<div class="cink-row">${tb('pen', '✎', '펜')}${tb('hl', '🖍', '형광펜')}${tb('tx', '가', '글자')}${tb('er', '⌫', '지우개')}<button type="button" class="swap" data-sw="1" aria-label="${t === 'er' ? '펜으로' : '지우개로'} 바꾸기" title="펜과 지우개를 서로 바꿔요 (키보드 E)"><span class="ico">⇄</span><span class="lbl"> ${t === 'er' ? '펜으로' : '지우개로'}</span></button></div>` +
-        `<div class="cink-row">` +
-        (t !== 'er' ? colors.map((c) => `<button type="button" class="sw${cur.c === c ? ' on' : ''}" data-c="${c}" style="background:${c}" aria-label="색"></button>`).join('') : '') +
-        (t === 'pen' || t === 'hl' ? `<button type="button" data-w="1">굵기 ${(cur.w || 0) + 1}</button>` : t === 'tx' ? `<button type="button" data-z="1">크기 ${(opts.tx.z || 0) + 1}</button>` : `<span class="cink-hint">지울 필기에 대세요 (닿는 즉시 지워져요)</span>`) +
-        `<button type="button" data-f="1" class="${opts.finger ? 'on' : ''}" title="켜면 손가락으로도 써요">☝ ${opts.finger ? '손가락 쓰기' : '손가락 스크롤'}</button>` +
-        (hasOcc ? `<button type="button" data-s="1">${scopeLabel()}</button>` : '') +
-        `</div><div class="cink-row">` +
-        `<button type="button" data-u="1" ${hist.length ? '' : 'disabled'} aria-label="되돌리기">↶</button><button type="button" data-r2="1" ${redoS.length ? '' : 'disabled'} aria-label="다시 하기">↷</button>` +
-        `<button type="button" data-z0="1" ${vs.s <= vs.s0 * 1.01 ? 'disabled' : ''} title="한 화면에 전체가 보이게" aria-label="전체 보기">🔍 ${Math.round((vs.s / vs.s0) * 100)}%</button>` +
-        (vs.s0 < 0.97 ? `<button type="button" data-fw="1" title="글자 크기 그대로 너비에 맞춰 봐요(위아래로 밀어 봐요)">↔ 너비</button>` : '') +
-        `<button type="button" class="cancel" data-x0="1">취소</button><button type="button" class="done" data-d="1">완료</button></div>`;
+        `<div class="ink-top"><button type="button" class="ink-cancel" data-x0="1">취소</button><button type="button" class="ink-done" data-d="1">완료</button>` +
+        `<button type="button" class="ink-n" data-z0="1" ${vs.s <= vs.s0 * 1.01 ? 'disabled' : ''} aria-label="화면에 맞추기">🔍 ${Math.round((vs.s / vs.s0) * 100)}%</button>` +
+        `<span class="ink-nav">${vs.s0 < 0.97 ? '<button type="button" data-fw="1" aria-label="너비에 맞춤" title="글자 크기 그대로 너비에 맞춰 봐요(위아래로 밀어 봐요)">↔</button>' : ''}<button type="button" data-zo="1" aria-label="축소">−</button><button type="button" data-zi="1" aria-label="확대">+</button></span></div>` +
+        `<div class="ink-tools"><div class="ink-row">${tn('pen', '✎ 펜')}${tn('hl', '🖍 형광펜')}${tn('er', '⌫ 지우개')}${tn('tx', 'T 글자')}` +
+        `<button type="button" class="ink-b" data-sw="1" aria-label="${t === 'er' ? '펜으로' : '지우개로'} 바꾸기" title="펜과 지우개를 서로 바꿔요 (키보드 E)">⇄ ${t === 'er' ? '펜으로' : '지우개로'}</button>` +
+        `<span class="ink-sp"></span><button type="button" class="ink-b" data-u="1" ${hist.length ? '' : 'disabled'} aria-label="되돌리기">↶</button><button type="button" class="ink-b" data-r2="1" ${redoS.length ? '' : 'disabled'} aria-label="다시 하기">↷</button></div>` +
+        `<div class="ink-row">${r2}</div></div>`;
     }
     startSnap = snapNow();
     paint();
@@ -1418,8 +1426,10 @@
       if (d.t) { if (d.t !== 'er') opts.prev = d.t; opts.tool = d.t; hideCursor(); }
       else if (d.sw) swapTool();
       else if (d.c) (opts[opts.tool] || opts.pen).c = d.c;
-      else if (d.w) { const x = opts[opts.tool]; x.w = (x.w + 1) % 3; }
-      else if (d.z) opts.tx.z = (opts.tx.z + 1) % 3;
+      else if (d.w) opts[opts.tool].w = +d.w;
+      else if (d.z) opts.tx.z = +d.z;
+      else if (d.zi) zoomBy(1.25);
+      else if (d.zo) zoomBy(1 / 1.25);
       else if (d.f) opts.finger = !opts.finger;
       else if (d.s) opts.scope = opts.scope === 'this' ? 'all' : 'this';
       else if (d.u) undo();
@@ -1518,6 +1528,15 @@
       stageEl.style.transform = `translate(${vs.x.toFixed(1)}px,${vs.y.toFixed(1)}px) scale(${vs.s.toFixed(4)})`;
       const zb = bar.querySelector('[data-z0]');
       if (zb) { zb.textContent = '🔍 ' + Math.round((vs.s / vs.s0) * 100) + '%'; zb.disabled = vs.s <= vs.s0 * 1.01; }
+    }
+    // 창 가운데를 기준으로 한 단계 확대·축소(이미지 필기의 + − 와 같은 느낌)
+    function zoomBy(f) {
+      const cx = viewEl.clientWidth / 2, cy = viewEl.clientHeight / 2;
+      const u = (cx - vs.x) / vs.s, v = (cy - vs.y) / vs.s;
+      vs.s = clamp(vs.s * f, vs.s0, SMAX);
+      vs.x = cx - u * vs.s; vs.y = cy - v * vs.s;
+      applyView();
+      paint();
     }
     const scheduleApply = () => { if (ar) return; ar = requestAnimationFrame(() => { ar = 0; applyView(); }); };
     const stopInertia = () => { if (inertia) cancelAnimationFrame(inertia); inertia = 0; };
@@ -1674,7 +1693,7 @@
       item.y = Math.round(((y - n.r.y) / n.r.h) * 1000);
     }
     function renderTxtBar() {
-      pnl.querySelector('[data-r="opt"]').innerHTML = PEN_COLORS.map((c) => `<button type="button" class="sw${txt.c === c ? ' on' : ''}" data-c="${c}" style="background:${c}" aria-label="색"></button>`).join('') + TEXT_SIZES.map((z, i) => `<button type="button" class="${txt.z === z ? 'on' : ''}" data-z="${z}" style="font-size:${12 + i * 4}px">가</button>`).join('');
+      pnl.querySelector('[data-r="opt"]').innerHTML = PEN_COLORS.map((c) => `<button type="button" class="ink-dot${txt.c === c ? ' on' : ''}" data-c="${c}" style="background:${c}" aria-label="색 ${c}"></button>`).join('') + TEXT_SIZES.map((z, i) => `<button type="button" class="ink-w txs${txt.z === z ? ' on' : ''}" data-z="${z}" aria-label="글자 크기 ${i + 1}" style="font-size:${12 + i * 4}px">가</button>`).join('');
     }
     function revealMark() {
       if (!txt) return;
@@ -1690,7 +1709,7 @@
       if (!txt) return;
       const vv = window.visualViewport;
       const kb = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
-      pnl.style.bottom = `${kb + 8}px`;
+      pnl.style.bottom = `${kb}px`;
       revealMark();
     }
     function openText(it, at) {
