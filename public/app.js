@@ -1491,6 +1491,8 @@
       if (chordSel) {
         const chordOnly = !l.text.trim();
         h += `<div class="te-pal-row"><button type="button" class="chip ctb sm" data-act="left" aria-label="코드 왼쪽으로">◀</button><button type="button" class="chip ctb sm" data-act="right" aria-label="코드 오른쪽으로">▶</button><button type="button" class="chip ctb sm" data-act="more">${chordOnly ? '＋ 코드 이어 붙이기' : '＋ 같은 자리에 하나 더'}</button><button type="button" class="chip ctb sm danger" data-act="del">코드 삭제</button></div>`;
+        // 48차: 키보드 없이 괄호 — 선택한 코드를 ( )로 묶기/풀기 · 칸을 나눠 적는 "(" ")" · 코드 안쪽 괄호 (add2) (add9)
+        h += `<div class="te-pal-row"><span class="ctl-label">괄호</span><button type="button" class="chip ctb sm" data-par="wrap" title="코드를 ( )로 묶거나 풀어요">( )</button><button type="button" class="chip ctb sm" data-par="open" title="앞에 ( 를 붙이거나 떼요 — 칸을 나눠 적을 때">(</button><button type="button" class="chip ctb sm" data-par="close" title="뒤에 ) 를 붙이거나 떼요 — 칸을 나눠 적을 때">)</button><button type="button" class="chip ctb sm" data-par="add2" title="코드 뒤에 (add2) 를 붙이거나 떼요">(add2)</button><button type="button" class="chip ctb sm" data-par="add9" title="코드 뒤에 (add9) 를 붙이거나 떼요">(add9)</button></div>`;
         const bn = ChordEdit.bassNotes(gk.key);
         h += `<div class="te-pal-row"><span class="ctl-label">모양</span>${ChordEdit.QUALITIES.map(([q, lab]) => `<button type="button" class="chip ctb sm" data-pq="${esc(q)}">${esc(Chord.pretty('C' + lab).slice(1))}</button>`).join('')}${bn ? `<span class="ctl-label">베이스</span>${bn.map((n) => `<button type="button" class="chip ctb sm" data-pb="${esc(n)}">/${esc(Chord.pretty(n))}</button>`).join('')}<button type="button" class="chip ctb sm" data-pb="">없음</button>` : ''}</div>`;
       }
@@ -1505,6 +1507,26 @@
       if (!l || l.kind !== 'lyric') { toast('가사 줄에서 글자를 탭해 주세요.'); return; }
       const r = tsel.ci >= 0 ? TabEdit.replaceChord(tm, tsel.li, tsel.ci, chord) : TabEdit.addChord(tm, tsel.li, tsel.pos, chord);
       if (r) apply(r, { li: tsel.li, pos: tsel.ci >= 0 ? l.chords[tsel.ci].pos : tsel.pos, ci: r.ci });
+    }
+    // 48차: 괄호 칩 — wrap = ( )로 묶기/풀기 · open/close = 앞 "(" · 뒤 ")" 붙이기/떼기(칸을 나눠 적을 때) · add2/add9 = 코드 안쪽 괄호 붙이기/떼기
+    function parenEdit(kind) {
+      const cur = selectedChord();
+      if (!cur) { toast('괄호를 넣을 코드를 먼저 고르세요.'); return; }
+      const c = cur.c;
+      if (c === '?') { toast('? 에는 괄호를 붙일 수 없어요.'); return; }
+      const g = Chord.peelGroup(c), inner = g.group ? g.parts.join(' ') : c;
+      let nc;
+      if (kind === 'wrap') nc = g.open && g.close ? inner : '(' + inner + ')';
+      else if (kind === 'open') nc = g.open ? inner + g.close : '(' + c;
+      else if (kind === 'close') nc = g.close ? g.open + inner : c + ')';
+      else {
+        const ext = '(' + kind + ')', parts = g.group ? g.parts.slice() : [c], i = parts.length - 1;
+        parts[i] = parts[i].endsWith(ext) ? parts[i].slice(0, -ext.length) : parts[i] + ext;
+        nc = g.open + parts.join(' ') + g.close;
+      }
+      if (!nc || !ChordEdit.isChord(nc)) { toast('코드 모양이 아니라서 바꿀 수 없어요.'); return; }
+      const r = TabEdit.replaceChord(tm, tsel.li, tsel.ci, nc);
+      if (r) apply(r, { li: tsel.li, pos: tsel.pos, ci: r.ci });
     }
     function selectedChord() {
       const l = tsel && tm.lines[tsel.li];
@@ -1546,6 +1568,8 @@
         apply(r, { li: tsel.li, pos: tsel.pos, ci: r.ci });
         return;
       }
+      const par = t.closest('[data-par]');
+      if (par) { parenEdit(par.dataset.par); return; }
       const act = t.closest('[data-act]');
       if (!act || act.disabled) return;
       const a = act.dataset.act;
