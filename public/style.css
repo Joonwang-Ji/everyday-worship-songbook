@@ -89,7 +89,8 @@ textarea.code { font-family: ui-monospace, "SF Mono", Menlo, "D2Coding", monospa
 .ch .ca { font-size: .72em; position: relative; top: -.42em; font-weight: 700; margin-left: .02em; } /* ♯·♭은 윗첨자 */
 .ch .cx .ca { top: -.75em; }
 .ch .cb { font-size: .9em; }
-.ch .cp { font-weight: 400; opacity: .45; }
+.ch .cg { opacity: .45; } /* 48차: 괄호 코드 전체를 연하게 */
+.ch .cp { font-weight: 400; }
 .ly { white-space: pre; line-height: 1.5; min-height: 1.5em; }
 .cm { display: inline-block; margin: 14px 0 4px; padding: 1px 10px; font-size: .78em; font-weight: 700; background: var(--accent-bg); color: var(--brand); border-radius: 6px; }
 .chorus { border-left: 3px solid var(--brand); padding-left: 10px; margin: 2px 0; }

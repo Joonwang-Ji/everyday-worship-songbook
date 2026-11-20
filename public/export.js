@@ -36,6 +36,7 @@
       if (q.bass) { r.push({ t: '/', px: px * 0.9, dy: 0 }); pushAcc(r, q.bass, px * 0.9, 0, px); }
     });
     if (g.close) r.push({ t: ')', px, dy: 0, light: true });
+    if (g.open || g.close) r.forEach((x) => { x.dim = true; }); // 48차: 괄호 코드는 안쪽 코드도 연하게
     return r;
   }
   const runFont = (r) => (r.light ? '400 ' : 'italic 800 ') + r.px + 'px ' + CFONT; // 괄호는 연하고 가늘게
@@ -46,7 +47,7 @@
   }
   function drawChord(g, shown, x, y, px) {
     const a = g.globalAlpha;
-    for (const r of chordRuns(shown, px)) { g.font = runFont(r); g.globalAlpha = r.light ? a * 0.45 : a; g.fillText(r.t, x, y + r.dy); x += g.measureText(r.t).width; }
+    for (const r of chordRuns(shown, px)) { g.font = runFont(r); g.globalAlpha = r.light || r.dim ? a * 0.45 : a; g.fillText(r.t, x, y + r.dy); x += g.measureText(r.t).width; }
     g.globalAlpha = a;
   }
   const font = (px, weight) => `${weight || 400} ${px}px ${FONT}`;

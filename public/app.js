@@ -1661,7 +1661,7 @@
         ${row('b · ⇧3(#)', '플랫 · 샵 (예: B b → B♭, F ⇧3 → F♯)')}
         ${row('/ 다음 A ~ G', '베이스 (예: D / F ⇧3 → D/F♯)')}
         ${row('⇧/ (?)', '불확실한 코드 ?')}
-        ${row('⇧9 ( … ⇧0 )', '괄호 코드 — 연주자 선택·생략 가능 (예: ⇧9 A ⇧D m ⇧0 → (A Dm))')}
+        ${row('⇧9 ( … ⇧0 )', '괄호 코드 — 연주자 선택·생략 가능 (예: ⇧9 A ⇧D m ⇧0 → (A Dm)) · 칸을 나눠도 돼요: 앞 칸 ⇧9 A, 뒷 칸 D m ⇧0')}
         ${row('.', '바로 앞 코드를 한 번 더')}
         ${row('Tab · →', '다음 글자로 (줄 끝에서는 빈칸이 늘어나요)')}
         ${row('Space', '여기에 빈칸 한 칸 넣기 (줄 끝이면 뒤로 한 칸)')}
@@ -1773,7 +1773,10 @@
           return;
         }
         const cur = selectedChord();
-        if (cur) apply(TabEdit.deleteChord(tm, tsel.li, tsel.ci), { li: tsel.li, pos: cur.pos, ci: -1 });
+        if (cur) { apply(TabEdit.deleteChord(tm, tsel.li, tsel.ci), { li: tsel.li, pos: cur.pos, ci: -1 }); return; }
+        // 48차: 코드가 없는 빈칸에서 Backspace = 그 빈칸 지우기 (화면의 "빈칸 지우기" 버튼과 같다)
+        const rs = TabEdit.removeSpace(tm, tsel.li, tsel.pos);
+        if (rs) apply(rs, { li: tsel.li, pos: rs.pos, ci: -1 });
         return;
       }
       if (code === 'Period' || code === 'NumpadDecimal' || ev.key === '.') {

@@ -123,7 +123,8 @@
   function chordHTML(shown) {
     const g = chordGroup(shown);
     if (!g.items.length) return esc(shown);
-    return (g.open ? '<span class="cp">(</span>' : '') + g.items.map(partHTML).join(' ') + (g.close ? '<span class="cp">)</span>' : '');
+    const html = (g.open ? '<span class="cp">(</span>' : '') + g.items.map(partHTML).join(' ') + (g.close ? '<span class="cp">)</span>' : '');
+    return g.open || g.close ? '<span class="cg">' + html + '</span>' : html; // 48차: 괄호 코드는 안쪽 코드도 연하게 (칸을 나눠 적은 "(A"·"Dm)" 포함)
   }
 
   // acc(27차): 'sharp'/'flat'이면 검은 건반 키 이름을 모두 그 표기로, 'auto'(기본)이면 흔히 쓰는 이름(Db·Eb·F#·Ab·Bb …)을 쓰되
