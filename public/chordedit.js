@@ -236,7 +236,8 @@
     m = /^(?:Digit|Numpad)(\d)$/.exec(code);
     if (m) {
       if (shift && code === 'Digit9') return !buf ? '(' : null;
-      if (shift && code === 'Digit0') return buf.startsWith('(') && !closed && cur && cur !== '?' && !cur.endsWith('/') ? ')' : null;
+      // 괄호를 칸을 나눠 적을 때(앞 칸 "(A", 이 칸 "Dm)")도 닫을 수 있게, 같은 칸에 "("가 없어도 코드 뒤에는 ")"를 받는다
+      if (shift && code === 'Digit0') return !closed && cur && cur !== '?' && !cur.endsWith('/') ? ')' : null;
       if (shift && code === 'Digit3') return cur && !closed && /[A-G]$|\d$/.test(cur) ? '#' : null;
       if (shift || closed || !cur || cur === '?' || cur.endsWith('/')) return null;
       return m[1];
