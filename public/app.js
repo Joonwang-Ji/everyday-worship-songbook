@@ -1773,7 +1773,10 @@
           return;
         }
         const cur = selectedChord();
-        if (cur) apply(TabEdit.deleteChord(tm, tsel.li, tsel.ci), { li: tsel.li, pos: cur.pos, ci: -1 });
+        if (cur) { apply(TabEdit.deleteChord(tm, tsel.li, tsel.ci), { li: tsel.li, pos: cur.pos, ci: -1 }); return; }
+        // 48차: 코드가 없는 빈칸에서 Backspace = 그 빈칸 지우기 (화면의 "빈칸 지우기" 버튼과 같다)
+        const rs = TabEdit.removeSpace(tm, tsel.li, tsel.pos);
+        if (rs) apply(rs, { li: tsel.li, pos: rs.pos, ci: -1 });
         return;
       }
       if (code === 'Period' || code === 'NumpadDecimal' || ev.key === '.') {
