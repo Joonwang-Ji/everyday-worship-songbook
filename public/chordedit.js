@@ -223,28 +223,41 @@
   function keyToken(code, shift, buf) {
     buf = buf || '';
     // 40차: 괄호 코드 "(A Dm)" — 지금 치는 코드(cur)는 앞의 "("와 띄어쓰기 앞부분을 뺀 마지막 조각
-    const closed = buf.endsWith(')');
+    // 48차: 코드 안쪽 괄호 A(add2) — cur 안에 열린 "("가 있으면 innerOpen. 바깥 괄호가 닫혔는지는 peelGroup 기준(안쪽 ")"는 닫힘이 아님).
+    const closed = Chord.peelGroup(buf).close === ')';
     const cur = buf.replace(/^\(/, '').split(' ').pop();
+    const cnt = (c) => cur.split(c).length - 1;
+    const innerOpen = cnt('(') > cnt(')');
+    const afterOpen = cur.endsWith('(');
     let m = /^Key([A-Z])$/.exec(code);
     if (m) {
       const L = m[1];
       if (closed || cur === '?') return null;
       if (!cur || cur.endsWith('/')) return /[A-G]/.test(L) ? L : null;
-      if (L === 'B') return /^[A-G]$/.test(cur) || /\/[A-G]$/.test(cur) || /\d$/.test(cur) ? 'b' : null;
+      if (L === 'B') return /^[A-G]$/.test(cur) || /\/[A-G]$/.test(cur) || /\d$/.test(cur) || afterOpen ? 'b' : null;
       return 'majsudig'.includes(L.toLowerCase()) ? L.toLowerCase() : null;
     }
     m = /^(?:Digit|Numpad)(\d)$/.exec(code);
     if (m) {
-      if (shift && code === 'Digit9') return !buf ? '(' : null;
-      // 괄호를 칸을 나눠 적을 때(앞 칸 "(A", 이 칸 "Dm)")도 닫을 수 있게, 같은 칸에 "("가 없어도 코드 뒤에는 ")"를 받는다
-      if (shift && code === 'Digit0') return !closed && cur && cur !== '?' && !cur.endsWith('/') ? ')' : null;
-      if (shift && code === 'Digit3') return cur && !closed && /[A-G]$|\d$/.test(cur) ? '#' : null;
+      if (shift && code === 'Digit9') {
+        if (!buf) return '(';
+        // 코드 뒤의 "(" = 코드 안쪽 괄호 (예: A(add2))
+        return !closed && cur && cur !== '?' && !cur.endsWith('/') && !innerOpen && /[A-G][#b]?[^/]*$/.test(cur) && !/\)$/.test(cur) ? '(' : null;
+      }
+      if (shift && code === 'Digit0') {
+        if (innerOpen) return afterOpen ? null : ')'; // 안쪽 괄호 닫기
+        if (closed || !cur || cur === '?' || cur.endsWith('/')) return null;
+        // 안쪽 괄호를 닫은 코드 뒤의 ")"는 바깥 괄호 안에서만 (칸을 나눠 적을 때 "Dm)"는 안쪽 괄호가 없는 코드)
+        if (cur.endsWith(')') && !buf.startsWith('(')) return null;
+        return ')'; // 칸을 나눠 적을 때(앞 칸 "(A", 이 칸 "Dm)")도 닫을 수 있게 같은 칸에 "("가 없어도 받는다
+      }
+      if (shift && code === 'Digit3') return cur && !closed && /[A-G]$|\d$|\($/.test(cur) ? '#' : null;
       if (shift || closed || !cur || cur === '?' || cur.endsWith('/')) return null;
       return m[1];
     }
     if (code === 'Slash') {
       if (shift) return !buf ? '?' : null;
-      return cur && cur !== '?' && !cur.includes('/') && !cur.endsWith('/') && !closed ? '/' : null;
+      return cur && cur !== '?' && !cur.includes('/') && !cur.endsWith('/') && !closed && !innerOpen ? '/' : null;
     }
     return null;
   }

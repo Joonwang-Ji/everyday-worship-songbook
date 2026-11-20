@@ -194,10 +194,12 @@
     const l = m.lines[li];
     const n = l.text.length;
     pos = Math.max(0, Math.min(n, pos));
-    l.text = l.text.slice(0, pos) + ' ' + l.text.slice(pos);
-    if (pos < n) l.chords.forEach((c) => { if (c.pos >= pos) c.pos += 1; });
+    // 48차: 빈칸은 선택한 글자의 오른편에 생긴다(줄 끝 칸에서는 끝에 덧붙임). 선택은 새 빈칸으로 옮긴다.
+    const at = pos < n ? pos + 1 : n;
+    l.text = l.text.slice(0, at) + ' ' + l.text.slice(at);
+    if (at < n) l.chords.forEach((c) => { if (c.pos >= at) c.pos += 1; });
     commitLine(l);
-    return { model: m, pos: pos < n ? pos : pos + 1 };
+    return { model: m, pos: pos < n ? at : at + 1 };
   }
   // pos 자리(줄 끝이면 마지막 글자)가 띄어쓰기일 때 그 한 칸을 지운다. 그 칸의 코드는 앞 글자 자리로 남는다.
   function removeSpace(model, li, pos) {
