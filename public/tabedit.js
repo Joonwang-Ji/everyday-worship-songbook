@@ -869,10 +869,12 @@
     const src = String(text || '').replace(/\r\n?/g, '\n').split('\n').map((s) => s.replace(/\s+$/, ''));
     const clean = (raw) => raw.replace(/\[/g, '(').replace(/\]/g, ')').replace(/[{}]/g, '');
     const blocks = [];
+    const holders = []; // 가사 없이 이름표만 적은 자리표시("후렴"만 한 줄): 나중에 앞의 같은 이름 구간으로 채워 자리표시로 만든다
     let cur = [];
     let pending = '';
     const flush = () => {
       if (cur.length) blocks.push({ lines: cur, label: pending, fixed: !!pending, guess: false, ref: false, expand: false });
+      else if (pending) holders.push({ at: blocks.length, label: pending });
       cur = [];
       pending = '';
     };
@@ -884,7 +886,7 @@
     }
     flush();
     // 빈 줄이 하나도 없어 한 덩어리뿐이면, 반복되는 줄을 기준으로 경계를 추측한다
-    if (!(opt && opt.noBreaks) && blocks.length === 1 && !blocks[0].fixed && blocks[0].lines.length >= 6) {
+    if (!(opt && opt.noBreaks) && !holders.length && blocks.length === 1 && !blocks[0].fixed && blocks[0].lines.length >= 6) {
       const br = guessBreaks(blocks[0].lines);
       if (br.length) {
         const ls = blocks[0].lines;
@@ -896,7 +898,18 @@
         blocks.guessedBreaks = true;
       }
     }
-    return autoLabel(blocks);
+    const res = autoLabel(blocks);
+    if (!holders.length) return res;
+    // 이름표만 있는 자리: 앞에서 같은 이름이 된 구간의 가사를 복사해 끼워 넣는다(→ markRefs가 자리표시로 만든다). 앞에 없으면 버린다.
+    let added = 0;
+    for (const h of holders) {
+      const at = h.at + added;
+      const src = res.slice(0, at).find((b) => b.label === h.label && b.lines.length);
+      if (!src) continue;
+      res.splice(at, 0, { lines: src.lines.slice(), label: h.label, fixed: true, guess: false, ref: false, expand: false });
+      added++;
+    }
+    return markRefs(res);
   }
   // 이름 추측 + 반복 자동 자리표시. 사람이 정한 이름(fixed)은 건드리지 않는다.
   //  · 같은 가사가 가장 많이 반복되는 덩어리 → C(앞의 것이 원본)  · 첫 C 앞은 V1, C 사이는 V2·V3…

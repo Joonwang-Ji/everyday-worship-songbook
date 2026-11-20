@@ -1663,8 +1663,9 @@
         ${row('⇧/ (?)', '불확실한 코드 ?')}
         ${row('⇧9 ( … ⇧0 )', '괄호 코드 — 연주자 선택·생략 가능 (예: ⇧9 A ⇧D m ⇧0 → (A Dm))')}
         ${row('.', '바로 앞 코드를 한 번 더')}
-        ${row('Tab · Space · →', '다음 글자로 (줄 끝에서는 빈칸이 늘어나요)')}
-        ${row('⇧Tab · ⇧Space · ←', '앞 글자로')}
+        ${row('Tab · →', '다음 글자로 (줄 끝에서는 빈칸이 늘어나요)')}
+        ${row('Space', '여기에 빈칸 한 칸 넣기 (줄 끝이면 뒤로 한 칸)')}
+        ${row('⇧Tab · ←', '앞 글자로')}
         ${row('Enter · ⇧Enter', '다음 줄 · 윗줄 처음으로')}
         ${row('↓ · ↑', '아랫줄 · 윗줄 같은 자리로')}
         ${row('치는 중에 C · E · F', '같은 칸에 코드 하나 더')}
@@ -1741,7 +1742,16 @@
       if (mod || ev.altKey) return;
       const hadHint = !!kbHint;
       kbHint = '';
-      if (code === 'Tab' || code === 'Space') { ev.preventDefault(); kbMove(ev.shiftKey ? -1 : 1, 'tab'); return; } // 31차: 스페이스바도 Tab과 같다
+      if (code === 'Tab') { ev.preventDefault(); kbMove(ev.shiftKey ? -1 : 1, 'tab'); return; }
+      if (code === 'Space') { // 47차: 스페이스바 = 빈칸 넣기(자리 이동은 Tab). 화면의 "␣ 빈칸" 버튼과 같다.
+        ev.preventDefault();
+        kbCommit();
+        if (!tsel) return;
+        const r = TabEdit.insertSpace(tm, tsel.li, tsel.pos);
+        if (!r) { kbHint = '가사 줄에서 글자를 먼저 골라 주세요.'; teRender(); return; }
+        setBody(TabEdit.serialize(r.model), { li: tsel.li, pos: r.pos, ci: -1 }, true);
+        return;
+      }
       if (code === 'ArrowRight') { ev.preventDefault(); kbMove(1, 'char'); return; }
       if (code === 'ArrowLeft') { ev.preventDefault(); kbMove(-1, 'char'); return; }
       if (code === 'ArrowDown') { ev.preventDefault(); kbLine(1, false); return; }
@@ -1768,7 +1778,7 @@
       }
       if (code === 'Period' || code === 'NumpadDecimal' || ev.key === '.') {
         ev.preventDefault();
-        if (kbBuf) { kbHint = '코드를 치는 중이에요. Tab·스페이스로 칸을 옮긴 뒤 . 을 누르세요.'; teRender(); } else kbRepeat();
+        if (kbBuf) { kbHint = '코드를 치는 중이에요. Tab으로 칸을 옮긴 뒤 . 을 누르세요.'; teRender(); } else kbRepeat();
         return;
       }
       const buf = kbBuf ? kbBuf.text : '';
@@ -1782,8 +1792,8 @@
         ev.preventDefault();
         const name = /^Key/.test(code) ? code.slice(3) : ev.key;
         if (!tm.lines[tsel.li] || tm.lines[tsel.li].kind !== 'lyric') kbHint = '가사 줄의 글자를 먼저 고르세요.';
-        else if (buf === '?') kbHint = '? 뒤에는 더 붙일 수 없어요. Tab·스페이스로 칸을 옮기세요.';
-        else if (buf) kbHint = `${Chord.pretty(buf)} 뒤에 ${name}은(는) 붙일 수 없어요. 다음 코드는 Tab·스페이스로 칸을 옮긴 뒤에, 같은 칸에 더 넣으려면 ⇧+A~G.`;
+        else if (buf === '?') kbHint = '? 뒤에는 더 붙일 수 없어요. Tab으로 칸을 옮기세요.';
+        else if (buf) kbHint = `${Chord.pretty(buf)} 뒤에 ${name}은(는) 붙일 수 없어요. 다음 코드는 Tab으로 칸을 옮긴 뒤에, 같은 칸에 더 넣으려면 ⇧+A~G.`;
         else kbHint = `${name}(으)로는 코드를 시작할 수 없어요. A~G로 시작해요.`;
         teRender();
       } else if (hadHint) teRender();
