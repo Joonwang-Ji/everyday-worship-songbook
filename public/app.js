@@ -1436,7 +1436,7 @@
                 .join('')}</span><span class="tl">${glyph}</span></span>`;
             };
             let cells = '';
-            [...l.text].forEach((c, i) => { cells += cell(i, c === ' ' ? '&nbsp;' : esc(c), c === ' ' ? ' sp' : ''); });
+            [...l.text].forEach((c, i) => { cells += cell(i, TabEdit.isSp(c) ? '&nbsp;' : esc(c), TabEdit.isSp(c) ? ' sp' : ''); });
             cells += cell(l.text.length, '＋', ' tend');
             body = `<div class="te-ln">${cells}</div>`;
           } else if (l.kind === 'comment') {
@@ -1496,7 +1496,7 @@
       // 32차: 키보드 없이 빈칸 넣기 — 줄 끝·가운데에 띄어쓰기를 넣어 그 자리에 코드만 놓을 수 있다(간주·중간 코드)
       const onLyric = !!(l && l.kind === 'lyric');
       const spAt = onLyric ? (tsel.pos >= l.text.length ? l.text.length - 1 : tsel.pos) : -1;
-      const canUnspace = onLyric && spAt >= 0 && l.text[spAt] === ' ';
+      const canUnspace = onLyric && spAt >= 0 && TabEdit.isSp(l.text[spAt]);
       let h = `<div class="te-pal-row te-top"><button type="button" class="chip ctb sm" data-act="undo" aria-label="되돌리기" ${undoS.length ? '' : 'disabled'}>↶</button><button type="button" class="chip ctb sm" data-act="redo" aria-label="다시 하기" ${redoS.length ? '' : 'disabled'}>↷</button><span class="te-status">${status}</span>${onLyric ? `<button type="button" class="chip ctb sm" data-act="space" title="여기에 빈칸을 넣어요 (줄 끝이면 뒤로 한 칸)">␣ 빈칸</button>${canUnspace ? '<button type="button" class="chip ctb sm" data-act="unspace" title="빈칸 한 칸 지우기">␣✕</button>' : ''}` : ''}${canSplit ? '<button type="button" class="chip ctb sm" data-act="split" title="선택한 글자 앞에서 줄을 나눠요">✂ 줄 나누기</button>' : ''}${kbOK() ? '<button type="button" class="chip ctb sm" data-act="kbhelp" title="키보드 단축키" aria-label="키보드 단축키">⌨</button>' : ''}</div>`;
       h += `<div class="te-pal-row">${roots.map((d) => `<button type="button" class="chip ctb" data-pc="${esc(d.chord)}"><b>${esc(Chord.pretty(d.chord))}</b>${d.label ? `<small>${esc(d.label)}</small>` : ''}</button>`).join('')}<button type="button" class="chip ctb" data-pc="?" title="불확실한 코드">?</button><button type="button" class="chip ctb sm" data-act="direct">다른 코드…</button></div>`;
       if (chordSel) {

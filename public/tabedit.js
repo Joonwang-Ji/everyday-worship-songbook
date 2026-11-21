@@ -159,13 +159,15 @@
   // ---------- 키보드 이동 (30차) ----------
   // Tab·방향키가 설 수 있는 글자 앞 자리. 띄어쓰기 칸은 건너뛰고, 줄 끝(과 줄 끝 뒤 띄어쓰기 칸)은 선다.
   // mode 'word'면 낱말의 첫 글자에만 선다(영어 줄의 Tab).
+  const NBSP = '\u00a0';
+  const isSp = (c) => c === ' ' || c === NBSP;
   function stops(text, mode) {
     const t = String(text || '');
     const end = t.replace(/\s+$/, '').length;
     const out = [];
     for (let i = 0; i < end; i++) {
-      if (t[i] === ' ') continue;
-      if (mode === 'word' && i > 0 && t[i - 1] !== ' ') continue;
+      if (isSp(t[i])) continue;
+      if (mode === 'word' && i > 0 && !isSp(t[i - 1])) continue;
       out.push(i);
     }
     for (let i = end; i <= t.length; i++) out.push(i);
@@ -196,7 +198,8 @@
     pos = Math.max(0, Math.min(n, pos));
     // 48차: 빈칸은 선택한 글자의 오른편에 생긴다(줄 끝 칸에서는 끝에 덧붙임). 선택은 새 빈칸으로 옮긴다.
     const at = pos < n ? pos + 1 : n;
-    l.text = l.text.slice(0, at) + ' ' + l.text.slice(at);
+    // 51차: 줄 가운데 빈칸은 "코드용 빈칸"(NBSP)으로 넣는다. 화면은 똑같이 빈칸이지만 가사 복사에서 한글 사이면 빠진다.
+    l.text = l.text.slice(0, at) + (at < n ? NBSP : ' ') + l.text.slice(at);
     if (at < n) l.chords.forEach((c) => { if (c.pos >= at) c.pos += 1; });
     commitLine(l);
     return { model: m, pos: pos < n ? at : at + 1 };
@@ -206,7 +209,7 @@
     if (!editable(model, li)) return null;
     const t0 = model.lines[li].text;
     const at = pos >= t0.length ? t0.length - 1 : pos;
-    if (at < 0 || t0[at] !== ' ') return null;
+    if (at < 0 || !isSp(t0[at])) return null;
     const m = clone(model);
     const l = m.lines[li];
     l.text = l.text.slice(0, at) + l.text.slice(at + 1);
@@ -670,7 +673,7 @@
   // 2절이 1절과 같은 진행이거나 후렴이 되풀이될 때, 이미 코드를 단 줄·구간의 코드를 다른 줄·구간으로 복사한다.
   // 가사 글자가 완전히 같으면 코드 자리도 그대로, 글자 수가 다르면 줄 길이에 비례해 옮기고 가까운 낱말 시작으로 맞춘다.
   const lyricKey = (s) => String(s == null ? '' : s).normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
-  const isWordStart = (t, p) => p === 0 ? t[0] !== ' ' : p >= t.length ? false : t[p - 1] === ' ' && t[p] !== ' ';
+  const isWordStart = (t, p) => p === 0 ? !isSp(t[0]) : p >= t.length ? false : isSp(t[p - 1]) && !isSp(t[p]);
   const wordSpans = (t) => { const r = []; const re = /\S+/g; let m; while ((m = re.exec(t))) r.push([m.index, m.index + m[0].length]); return r; };
   // src 줄의 코드들을 dstText 위의 자리로 옮긴 목록 [{pos,c}]
   // 띄어쓰기를 뺀 글자 수 / k번째(0부터) 글자의 위치(없으면 끝) / 한글이 절반 이상인 줄
@@ -1024,7 +1027,7 @@
     insertSection, belowAt, chorusAround, blockRange, toggleChorus, isInChorus,
     listSections, sectionAt, sectionRaws, refSource, sectionToRef, refToSection, repeatCandidates, collapseRepeats, insertRef, usedSectionIds, refProblems,
     colBreakAt, setColBreak, clearColBreaks,
-    stops, isLatinLine, extendTail, trimTail, insertSpace, removeSpace,
+    NBSP, isSp, stops, isLatinLine, extendTail, trimTail, insertSpace, removeSpace,
     lyricKey, findSameLyric, copyLineChords, bodyBlocks, copyBlock,
     splitLyrics, buildFromBlocks, canonLabel, labelOfLine, guessBreaks, autoLabel, markRefs, renameBlock, splitBlockAt, mergeBlockUp, estimateForm,
   };
