@@ -314,17 +314,9 @@
     let cur = { label: '', canon: '', paras: [[]] };
     const hasText = (sec) => sec.paras.some((p) => p.length);
     const flush = () => { if (hasText(cur)) { cur.paras = cur.paras.filter((p) => p.length); out.push(cur); } };
-    // 51차: 한글 글자 사이에 코드를 놓으려고 넣은 빈칸(코드가 빈칸 위에 있고 앞뒤가 모두 한글)은 복사할 때 뺀다. "사랑 으로" → "사랑으로"
-    const HANGUL = /[\uAC00-\uD7A3]/;
-    const lineText = (ln) => {
-      let acc = '';
-      for (const x of ln.segs || []) {
-        let t = x.text || '';
-        if (x.chord && /^ +[\uAC00-\uD7A3]/.test(t) && HANGUL.test(acc.slice(-1))) t = t.replace(/^ +/, '');
-        acc += t;
-      }
-      return acc.replace(/\s+/g, ' ').trim();
-    };
+    // 51차: "빈칸" 버튼으로 넣은 코드용 빈칸(NBSP)이 한글 글자 사이에 있으면 복사할 때 뺀다("사랑 으로"→"사랑으로"). 그 밖의 NBSP는 보통 빈칸으로. 원래 띄어쓰기(보통 빈칸)는 건드리지 않는다.
+    const lineText = (ln) => (ln.segs || []).map((x) => x.text).join('')
+      .replace(/([\uAC00-\uD7A3])\u00a0+(?=[\uAC00-\uD7A3])/g, '$1').replace(/\s+/g, ' ').trim();
     const add = (ln) => {
       if (ln.type === 'blank') { if (cur.paras[cur.paras.length - 1].length) cur.paras.push([]); }
       else if (ln.type === 'lyric') { const t = lineText(ln); if (t) cur.paras[cur.paras.length - 1].push(t); }
