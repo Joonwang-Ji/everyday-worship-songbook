@@ -1079,8 +1079,19 @@
       const st = kst[i] || {};
       // 곡 악보에 실제 있는 구간(opts.avail)을 먼저 보여 주고, 나머지는 "더 보기"로 접는다. 구간을 알 수 없으면(이미지 곡) 전부 보인다.
       const av = opts.avail && opts.avail.size ? opts.avail : null;
-      const palMain = av ? SongForm.PALETTE.filter((q) => av.has(q.code)) : SongForm.PALETTE;
-      const palRest = av ? SongForm.PALETTE.filter((q) => !av.has(q.code)) : [];
+      // 51차: 악보에 C2·C3·B2처럼 번호 붙은 구간이 있으면 그 버튼도 만든다(기본 버튼에 없는 이름)
+      const base = SongForm.PALETTE.slice();
+      if (av) {
+        const known = new Set(base.map((q) => q.code));
+        [...av].filter((c) => !known.has(c) && /^(Intro|PC|C|B|Inter|Tag|Outro|End)\d+$/.test(c)).forEach((c) => {
+          const kind = c.replace(/\d+$/, '');
+          let at = base.map((q) => q.code.replace(/\d+$/, '')).lastIndexOf(kind);
+          while (at + 1 < base.length && base[at + 1].code.startsWith(kind) && /\d$/.test(base[at + 1].code) && +base[at + 1].code.slice(kind.length) < +c.slice(kind.length)) at++;
+          base.splice(at + 1, 0, { code: c, hint: Sections.display(c, 'full') });
+        });
+      }
+      const palMain = av ? base.filter((q) => av.has(q.code)) : base;
+      const palRest = av ? base.filter((q) => !av.has(q.code)) : [];
       const palBtn = (q) => `<button type="button" class="pchip" data-fa="add" data-i="${i}" data-c="${esc(q.code)}">${esc(q.code)}${q.hint ? `<small>${esc(q.hint)}</small>` : ''}</button>`;
       const kpanel = st.open
         ? `<div class="fkey">
