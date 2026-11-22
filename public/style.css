@@ -891,3 +891,12 @@ input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; app
 .cink-txt[hidden] { display: none; }
 .cink-txt textarea { width: 100%; box-sizing: border-box; font-size: 16px; border-radius: 8px; border: 0; padding: 8px; background: #fff; color: #111; resize: none; -webkit-user-select: text; user-select: text; }
 .ink-top .ink-n:disabled { opacity: 1; }
+
+/* 52차: 콘티에서 연 곡 보기 — 좌우로 밀어 이전·다음 곡 */
+#app.swipeable { min-height: calc(100vh - 140px); }
+.swipe-ghost { position: fixed; top: 0; bottom: 0; left: 0; width: 100%; z-index: 5; background: var(--bg); display: flex; justify-content: center; align-items: flex-start; padding: calc(96px + env(safe-area-inset-top)) 24px 0; box-sizing: border-box; pointer-events: none; will-change: transform; }
+.swg-card { text-align: center; max-width: 420px; }
+.swg-dir { color: var(--muted); font-size: 14px; }
+.swg-num { color: var(--muted); font-size: 13px; margin-top: 2px; }
+.swg-title { font-size: 26px; font-weight: 700; margin: 14px 0 10px; word-break: keep-all; }
+.swg-meta { display: flex; gap: 8px; justify-content: center; align-items: center; }
