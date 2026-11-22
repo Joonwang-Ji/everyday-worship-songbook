@@ -570,7 +570,9 @@
   // q: 콘티에서 열었을 때 넘어오는 값 (key=그날의 키, view=chord|image, sl=콘티 번호)
   async function viewSong(id, q) {
     q = q || new URLSearchParams();
-    const fullSong = (await api('/songs/' + id)).song;
+    // 52차(c): 좌우로 넘겨서 온 것이면 미리 받아 둔 곡을 쓴다(없거나 실패하면 평소처럼 받는다)
+    const pre = swipeEnter ? takePrefetchedSong(id) : null;
+    const fullSong = (pre && (await pre)) || (await api('/songs/' + id)).song;
     // 28차: 버전(한글·영어 가사 등). 주소의 v → 이 기기에서 마지막으로 고른 버전 → 기본 버전
     const vLabels = Variants.labels(fullSong);
     let vSel = q.has('v') ? parseInt(q.get('v'), 10) || 0 : parseInt(ls.get('ews_sv_' + id, '0'), 10) || 0;
@@ -4063,6 +4065,35 @@
   // 손가락을 따라 화면이 같이 움직이고, 충분히 밀거나 빠르게 털면 지금 곡이 밀려 나가면서 이웃 곡 화면이 반대쪽에서 들어온다.
   // 덜 밀면 제자리로 돌아온다. (안내 면 없이 바로 이웃 곡 화면으로 간다)
   let swipeHint = null; // 연속으로 넘길 때 콘티 곡 목록을 다시 받지 않게 넘겨 주는 값
+  // 넘기기 전에 이웃 곡 데이터(와 첫 이미지)를 미리 받아 두어, 넘긴 뒤 빈 화면이 보이는 시간을 줄인다.
+  // api()는 화면이 바뀌면 응답을 버려서 따로 fetch로 받는다. 한 번 쓰면 지우고, 60초가 지나면 쓰지 않는다.
+  const songPre = new Map(); // 곡 번호 → { t, p: 곡 데이터를 돌려주는 약속(실패하면 null) }
+  function prefetchSong(songId) {
+    const k = String(songId);
+    const old = songPre.get(k);
+    if (old && Date.now() - old.t < 60000) return;
+    let path = '/songs/' + k;
+    const at = activeTeam();
+    if (at && at.id > 0) path += '?_t=' + at.id;
+    const p = fetch('/api' + path, { headers: { 'Content-Type': 'application/json', ...authHeaders() } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const song = d && d.song ? d.song : null;
+        if (!song) { songPre.delete(k); return null; }
+        const img = (song.files || []).find((f) => f.kind === 'image');
+        if (img && img.url) { const im = new Image(); im.src = img.url; } // 이미지 악보는 첫 장도 미리 받아 둔다
+        return song;
+      })
+      .catch(() => { songPre.delete(k); return null; });
+    songPre.set(k, { t: Date.now(), p });
+    if (songPre.size > 6) songPre.delete(songPre.keys().next().value);
+  }
+  function takePrefetchedSong(songId) {
+    const k = String(songId);
+    const e = songPre.get(k);
+    songPre.delete(k);
+    return e && Date.now() - e.t < 60000 ? e.p : null;
+  }
   let swipeEnter = null; // 이웃 곡이 열리는 중이면 { dir, timer }: 새 화면이 그려지면 반대쪽에서 밀려 들어온다
   function endSwipeEnter() {
     const g = swipeEnter;
@@ -4095,6 +4126,7 @@
     let idx = uid ? items.findIndex((x) => x.uid === uid) : -1;
     if (idx < 0) idx = items.findIndex((x) => String(x.song_id) === String(songId));
     if (idx < 0) return;
+    [-1, 1].forEach((d) => { if (items[idx + d]) prefetchSong(items[idx + d].song_id); }); // 이웃 곡 미리 받기
 
     const REDUCE = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
     const MS = 260;
