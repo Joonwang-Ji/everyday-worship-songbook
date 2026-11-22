@@ -332,7 +332,7 @@
       teardown = null;
     }
     for (const fn of leaveFns.splice(0)) { try { fn(); } catch {} }
-    $app.classList.remove('wide');
+    $app.classList.remove('wide', 'swipeable');
     $app.onclick = null;
     const [hash, qs] = (location.hash.replace(/^#/, '') || '/').split('?');
     const q = new URLSearchParams(qs || '');
@@ -918,6 +918,9 @@
     if (hasText && files.length && (q.get('view') === 'chord' || q.get('view') === 'image')) startTab = q.get('view') === 'image' ? 'img' : 'chord';
     showTab(startTab, false);
     if (!hasText) $pc.hidden = true;
+    // 52차: 콘티에서 열었으면 좌우로 밀어 이전·다음 곡으로 (이웃 곡에서 넘어오는 중이면 안내 면을 걷는다)
+    endSwipeGhost();
+    if (slId) bindSongSwipe(slId, q.get('u') || '', id).catch(() => {});
   }
 
   // ---------- 곡 편집 ----------
@@ -4045,6 +4048,173 @@
     const tempos = f.hasTempo ? `<div class="flow-row"><span class="flow-lab">템포</span><span class="flow-seq">${f.tempos.map((t, i) => `${i ? '<i class="flow-arr">·</i>' : ''}<span class="flow-t t${t ? ({ 빠: 'f', 중: 'm', 느: 's' })[t] : 'u'}">${t || '?'}</span>`).join('')}</span></div>` : '';
     return `<div class="card flow" aria-label="콘티 흐름"><div class="flow-head">${f.count}곡 흐름</div>${keys}${tempos}${f.hasFar ? '<p class="hint" style="margin:4px 0 0">⚠ 앞 곡과 키가 많이 다른 곳이에요 (이어서 연주할 때 참고).</p>' : ''}</div>`;
   }
+  // 콘티의 곡 하나를 곡 보기로 여는 주소 (콘티 목록과 좌우 넘기기가 같이 쓴다)
+  function setlistSongHref(it, slId) {
+    const p = new URLSearchParams();
+    if (it.key) p.set('key', it.key);
+    if (it.view !== 'auto') p.set('view', it.view);
+    if (it.variant_id) p.set('v', it.variant_id);
+    p.set('sl', slId);
+    if (it.uid) p.set('u', it.uid);
+    return '#/song/' + it.song_id + '?' + p.toString();
+  }
+
+  // ---------- 콘티에서 연 곡 보기: 좌우로 밀어 이전·다음 곡 (52차) ----------
+  // 손가락을 따라 화면이 같이 움직이고, 옆에는 이웃 곡의 안내 면(번호·제목·키)이 따라온다.
+  // 충분히 밀거나 빠르게 털면 이웃 곡이 열리고, 아니면 제자리로 돌아온다. (연주 모드의 넘기기와 같은 손맛)
+  let swipeHint = null; // 연속으로 넘길 때 콘티 곡 목록을 다시 받지 않게 넘겨 주는 값
+  let swipeGhost = null; // 이웃 곡이 열리는 동안 화면을 덮고 있는 안내 면
+  function endSwipeGhost() {
+    const g = swipeGhost;
+    swipeGhost = null;
+    if (!g) return;
+    clearTimeout(g.timer);
+    $app.style.transition = 'none';
+    $app.style.transform = '';
+    $app.style.willChange = '';
+    document.documentElement.style.overflowX = '';
+    g.el.style.transition = 'opacity 160ms ease';
+    g.el.style.opacity = '0';
+    setTimeout(() => g.el.remove(), 220);
+  }
+  async function bindSongSwipe(slId, uid, songId) {
+    const gen = routeGen;
+    let items = swipeHint && swipeHint.id === slId ? swipeHint.items : null;
+    swipeHint = null;
+    if (!items) {
+      try { items = (await api('/setlists/' + slId)).setlist.items || []; } catch { return; }
+    }
+    if (gen !== routeGen || items.length < 2) return;
+    let idx = uid ? items.findIndex((x) => x.uid === uid) : -1;
+    if (idx < 0) idx = items.findIndex((x) => String(x.song_id) === String(songId));
+    if (idx < 0) return;
+
+    const REDUCE = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const MS = 260;
+    const EASE = 'cubic-bezier(.22,.8,.3,1)';
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const W = () => window.innerWidth;
+    let ghost = null, ghostDir = 0, busy = false;
+    let sx = 0, sy = 0, lx = 0, lt = 0, vx = 0, mode = ''; // mode: '' 아직 모름 / 'h' 가로 넘기기 / 'x' 무시(세로 스크롤·여러 손가락·펜 등)
+
+    const makeGhost = (dir) => {
+      const it = items[idx + dir];
+      if (!it) return null;
+      const key = it.key || it.original_key || '';
+      const el = document.createElement('div');
+      el.className = 'swipe-ghost';
+      el.setAttribute('aria-hidden', 'true');
+      el.innerHTML = `<div class="swg-card"><div class="swg-dir">${dir > 0 ? '다음 곡 ›' : '‹ 이전 곡'}</div><div class="swg-num">${idx + dir + 1} / ${items.length}</div><div class="swg-title">${esc(it.title)}</div><div class="swg-meta">${key ? `<span class="keybadge">${esc(key)}</span>` : ''}${SongFilter.tsigHTML(it.time_sig, esc)}</div></div>`;
+      document.body.appendChild(el);
+      return el;
+    };
+    const dropGhost = () => { if (ghost) { ghost.remove(); ghost = null; } ghostDir = 0; };
+    const setX = (dx) => {
+      $app.style.transform = `translate3d(${dx}px,0,0)`;
+      if (ghost) ghost.style.transform = `translate3d(${dx + (ghostDir > 0 ? W() : -W())}px,0,0)`;
+    };
+    const setTr = (on) => {
+      const t = on && !REDUCE ? `transform ${MS}ms ${EASE}` : 'none';
+      $app.style.transition = t;
+      if (ghost) ghost.style.transition = t;
+    };
+    const resetApp = () => {
+      $app.style.transition = 'none';
+      $app.style.transform = '';
+      $app.style.willChange = '';
+      document.documentElement.style.overflowX = '';
+    };
+    async function settleBack() {
+      busy = true;
+      setTr(true);
+      setX(0);
+      await wait(REDUCE ? 0 : MS + 30);
+      resetApp();
+      dropGhost();
+      busy = false;
+    }
+    async function commit(dir) {
+      busy = true;
+      const it = items[idx + dir];
+      swipeHint = { id: slId, items };
+      setTr(true);
+      $app.style.transform = `translate3d(${-dir * W()}px,0,0)`;
+      ghost.style.transform = 'translate3d(0,0,0)';
+      await wait(REDUCE ? 0 : MS + 30);
+      // 안내 면이 화면을 덮은 채로 이웃 곡을 연다. 새 악보가 그려지면 안내 면이 사라진다.
+      swipeGhost = { el: ghost, timer: setTimeout(endSwipeGhost, 5000) };
+      ghost = null;
+      location.replace(setlistSongHref(it, slId)); // 기록에 쌓지 않아서 ← 를 누르면 바로 콘티로 돌아간다
+    }
+    // 입력칸·열린 창·옆으로 스크롤되는 곳에서 시작한 손짓은 넘기기로 보지 않는다
+    const blocked = (el) => {
+      if (!el || !el.closest) return false;
+      if (el.closest('input,textarea,select,[contenteditable="true"],.sheet-wrap')) return true;
+      for (let n = el; n && n !== $app; n = n.parentElement) {
+        if (n.scrollWidth > n.clientWidth + 2) {
+          const ox = getComputedStyle(n).overflowX;
+          if (ox === 'auto' || ox === 'scroll') return true;
+        }
+      }
+      return false;
+    };
+    const onStart = (e) => {
+      const t = e.touches[0];
+      if (e.touches.length > 1 && mode === 'h') settleBack(); // 넘기는 중에 두 번째 손가락이 닿으면 제자리로
+      // 화면 가장자리는 브라우저의 뒤로 가기 손짓과 겹치고, Apple Pencil은 필기용이라 넘기기에 쓰지 않는다
+      if (busy || e.touches.length !== 1 || t.touchType === 'stylus' || t.clientX < 24 || t.clientX > window.innerWidth - 24 || blocked(e.target)) { mode = 'x'; return; }
+      sx = lx = t.clientX; sy = t.clientY; lt = Date.now(); vx = 0; mode = '';
+    };
+    const onMove = (e) => {
+      if (mode === 'x') return;
+      if (e.touches.length > 1) { if (mode === 'h') settleBack(); mode = 'x'; return; }
+      const t = e.touches[0];
+      const dx = t.clientX - sx, dy = t.clientY - sy;
+      if (!mode) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        mode = Math.abs(dx) > Math.abs(dy) * 1.2 ? 'h' : 'x';
+        if (mode === 'x') return;
+        setTr(false);
+        $app.style.willChange = 'transform';
+        document.documentElement.style.overflowX = 'hidden'; // 옆으로 밀 때 가로 스크롤바가 생기지 않게
+      }
+      if (e.cancelable) e.preventDefault(); // 가로로 넘기는 동안은 화면이 같이 스크롤되지 않게
+      const dir = dx < 0 ? 1 : -1;
+      if (dir !== ghostDir) { dropGhost(); ghost = makeGhost(dir); ghostDir = dir; if (ghost) setTr(false); }
+      const now = Date.now();
+      if (now > lt) vx = 0.7 * vx + 0.3 * ((t.clientX - lx) / (now - lt));
+      lx = t.clientX; lt = now;
+      setX(ghost ? dx : dx * 0.3); // 더 갈 곳이 없으면 고무줄처럼 뻑뻑하게
+    };
+    const onEnd = (cancelled) => (e) => {
+      if (mode !== 'h') { mode = ''; return; }
+      mode = '';
+      const dx = e.changedTouches[0].clientX - sx;
+      const fast = Math.abs(vx) > 0.4 && Math.abs(dx) > 24 && vx * dx > 0;
+      const far = Math.abs(dx) > W() * 0.28 && !(Math.abs(vx) > 0.3 && vx * dx < 0);
+      if (!cancelled && ghost && (fast || far)) commit(ghostDir);
+      else {
+        if (!cancelled && !ghost) toast(dx < 0 ? '마지막 곡입니다.' : '첫 곡입니다.');
+        settleBack();
+      }
+    };
+    const onEndOk = onEnd(false), onEndCancel = onEnd(true);
+    $app.addEventListener('touchstart', onStart, { passive: true });
+    $app.addEventListener('touchmove', onMove, { passive: false });
+    $app.addEventListener('touchend', onEndOk, { passive: true });
+    $app.addEventListener('touchcancel', onEndCancel, { passive: true });
+    $app.classList.add('swipeable');
+    onLeave(() => {
+      $app.removeEventListener('touchstart', onStart);
+      $app.removeEventListener('touchmove', onMove);
+      $app.removeEventListener('touchend', onEndOk);
+      $app.removeEventListener('touchcancel', onEndCancel);
+      $app.classList.remove('swipeable');
+      dropGhost();
+      if (!swipeGhost) resetApp(); // 이웃 곡이 열리는 중이면 안내 면이 덮고 있으니, 새 화면이 그려진 뒤에 정리한다
+    });
+  }
+
   async function viewSetlist(id) {
     const { setlist: s, canEdit } = await api('/setlists/' + id);
     const shownTitle = setlistTitle(s);
@@ -4054,14 +4224,8 @@
     const rows = s.items.map((it, i) => {
       const key = it.key || it.original_key || '';
       const imageOnly = it.view === 'image' || (!it.has_chords && it.file_count > 0);
-      const p = new URLSearchParams();
-      if (it.key) p.set('key', it.key);
-      if (it.view !== 'auto') p.set('view', it.view);
-      if (it.variant_id) p.set('v', it.variant_id);
-      p.set('sl', id);
-      if (it.uid) p.set('u', it.uid);
       const imgKeyNote = imageOnly && it.key && it.original_key && it.key !== it.original_key;
-      return `<li class="song-item"><a href="#/song/${it.song_id}?${p.toString()}">
+      return `<li class="song-item"><a href="${setlistSongHref(it, id)}">
         <div class="row between"><div class="song-title"><span class="num">${i + 1}</span>${esc(it.title)}</div>${key || it.time_sig ? `<span class="row" style="gap:6px">${key ? `<span class="keybadge">${esc(key)}</span>` : ''}${SongFilter.tsigHTML(it.time_sig, esc)}</span>` : ''}</div>
         <div class="song-meta">
           ${it.form ? `<span>송폼 ${formHtml(it.form, key)}</span>` : ''}
